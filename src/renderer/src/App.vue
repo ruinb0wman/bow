@@ -3,6 +3,24 @@ import { computed, onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue'
 import type { BookmarkNode, BookmarkTree, Settings, TabInfo } from '@shared/types'
 import { childrenOf, findNode, flatten } from '@shared/bookmarkTree'
 import { SEARCH_ENGINES } from '@shared/url'
+import {
+  ArrowLeft,
+  ArrowRight,
+  BookMarked,
+  Bookmark,
+  ChevronDown,
+  ChevronRight,
+  Folder,
+  Minus,
+  Plus,
+  RotateCw,
+  Settings as SettingsIcon,
+  Square,
+  Star,
+  TriangleAlert,
+  Undo2,
+  X
+} from 'lucide-vue-next'
 
 const api = window.browserAPI
 
@@ -137,6 +155,9 @@ async function forward(): Promise<void> {
 }
 async function reload(): Promise<void> {
   await api.reload()
+}
+async function stopLoading(): Promise<void> {
+  await api.stop()
 }
 
 // ---------- 书签 ----------
@@ -312,25 +333,43 @@ function openBookmarkUrl(url: string): void {
           @click="activateTab(t.id)"
           @auxclick="(e) => { if (e.button === 1) closeTab(t.id) }"
         >
-          <span class="tab-letter">{{ t.crashed ? '💥' : faviconLetter(t) }}</span>
+          <span class="tab-letter">
+            <TriangleAlert v-if="t.crashed" :size="13" />
+            <template v-else>{{ faviconLetter(t) }}</template>
+          </span>
           <span class="tab-title">{{ t.crashed ? '页面崩溃' : t.title }}</span>
           <span v-if="t.loading" class="tab-spinner"></span>
-          <button class="tab-close no-drag" title="关闭标签 (Ctrl+W)" @click.stop="closeTab(t.id)">×</button>
+          <button class="tab-close no-drag" title="关闭标签 (Ctrl+W)" @click.stop="closeTab(t.id)">
+            <X :size="12" />
+          </button>
         </div>
-        <button class="tab-new no-drag" title="新标签页 (Ctrl+T)" @click="newTab">＋</button>
+        <button class="tab-new no-drag" title="新标签页 (Ctrl+T)" @click="newTab">
+          <Plus :size="15" />
+        </button>
       </div>
       <div class="win-controls no-drag">
-        <button class="win-btn" title="最小化" @click="minimize">─</button>
-        <button class="win-btn" title="最大化/还原" @click="maximize">□</button>
-        <button class="win-btn close" title="关闭" @click="closeWindow">×</button>
+        <button class="win-btn" title="最小化" @click="minimize"><Minus :size="13" /></button>
+        <button class="win-btn" title="最大化/还原" @click="maximize"><Square :size="11" /></button>
+        <button class="win-btn close" title="关闭" @click="closeWindow"><X :size="13" /></button>
       </div>
     </div>
 
     <!-- 工具栏 -->
     <div class="toolbar">
-      <button class="tool-btn no-drag" title="后退" :disabled="!activeTab?.canGoBack" @click="back">←</button>
-      <button class="tool-btn no-drag" title="前进" :disabled="!activeTab?.canGoForward" @click="forward">→</button>
-      <button class="tool-btn no-drag" title="刷新 (Ctrl+R)" @click="reload">{{ loading ? '✕' : '⟳' }}</button>
+      <button class="tool-btn no-drag" title="后退" :disabled="!activeTab?.canGoBack" @click="back">
+        <ArrowLeft :size="16" />
+      </button>
+      <button class="tool-btn no-drag" title="前进" :disabled="!activeTab?.canGoForward" @click="forward">
+        <ArrowRight :size="16" />
+      </button>
+      <button
+        class="tool-btn no-drag"
+        :title="loading ? '停止加载' : '刷新 (Ctrl+R)'"
+        @click="loading ? stopLoading() : reload()"
+      >
+        <X v-if="loading" :size="16" />
+        <RotateCw v-else :size="16" />
+      </button>
       <div class="addressbar no-drag">
         <input
           ref="addressInput"
@@ -343,10 +382,21 @@ function openBookmarkUrl(url: string): void {
           @keydown.enter="go(address)"
           @keydown.esc="syncAddress"
         />
-        <button class="star no-drag" :class="{ on: bookmarked }" :title="bookmarked ? '取消收藏' : '收藏当前页 (Ctrl+D)'" @click="toggleStar">★</button>
+        <button
+          class="star no-drag"
+          :class="{ on: bookmarked }"
+          :title="bookmarked ? '取消收藏' : '收藏当前页 (Ctrl+D)'"
+          @click="toggleStar"
+        >
+          <Star :size="15" :fill="bookmarked ? 'currentColor' : 'none'" />
+        </button>
       </div>
-      <button class="tool-btn no-drag" title="管理书签" @click="showManager = true">📑</button>
-      <button class="tool-btn no-drag" title="设置" @click="openSettings">⚙</button>
+      <button class="tool-btn no-drag" title="管理书签" @click="showManager = true">
+        <BookMarked :size="16" />
+      </button>
+      <button class="tool-btn no-drag" title="设置" @click="openSettings">
+        <SettingsIcon :size="16" />
+      </button>
     </div>
 
     <!-- 书签栏 -->
@@ -359,9 +409,15 @@ function openBookmarkUrl(url: string): void {
           :title="'文件夹: ' + node.title"
           @click="toggleFolder(node.id)"
         >
-          📁 {{ node.title }} ▾
+          <Folder :size="13" />
+          <span class="bm-label">{{ node.title }}</span>
+          <ChevronDown v-if="isFolderOpen(node.id)" :size="12" class="bm-chevron" />
+          <ChevronRight v-else :size="12" class="bm-chevron" />
         </button>
-        <button v-else class="bm-item" :title="node.url" @click="openBookmarkUrl(node.url)">🔖 {{ node.title }}</button>
+        <button v-else class="bm-item" :title="node.url" @click="openBookmarkUrl(node.url)">
+          <Bookmark :size="13" />
+          <span class="bm-label">{{ node.title }}</span>
+        </button>
       </template>
       <!-- 展开的文件夹子项 -->
       <template v-for="node in rootChildren" :key="'c' + node.id">
@@ -374,14 +430,18 @@ function openBookmarkUrl(url: string): void {
             :title="child.type === 'folder' ? child.title : child.url"
             @click="child.type === 'folder' ? toggleFolder(child.id) : openBookmarkUrl(child.url)"
           >
-            {{ child.type === 'folder' ? '📁' : '🔖' }} {{ child.title }}
+            <Folder v-if="child.type === 'folder'" :size="12" />
+            <Bookmark v-else :size="12" />
+            <span class="bm-label">{{ child.title }}</span>
           </button>
         </template>
       </template>
       <span v-if="rootChildren.length === 0" class="bm-empty">书签栏为空(双击标签栏新建标签)</span>
       <span class="bm-right">
         <button class="tool-btn small" title="管理书签" @click="showManager = true">管理…</button>
-        <button class="tool-btn small" title="恢复刚刚关闭的标签 (Ctrl+Shift+T)" @click="restoreTab">↩</button>
+        <button class="tool-btn small" title="恢复刚刚关闭的标签 (Ctrl+Shift+T)" @click="restoreTab">
+          <Undo2 :size="14" />
+        </button>
       </span>
     </div>
   </div>
@@ -392,7 +452,7 @@ function openBookmarkUrl(url: string): void {
       <div class="modal panel-bms">
         <div class="modal-head">
           <span>书签管理</span>
-          <button class="win-btn" @click="showManager = false">×</button>
+          <button class="win-btn" title="关闭" @click="showManager = false"><X :size="13" /></button>
         </div>
         <div class="pbm-tools">
           <label class="pbm-target">
@@ -402,13 +462,16 @@ function openBookmarkUrl(url: string): void {
               <option v-for="f in allFolders" :key="f.id" :value="f.id">{{ f.path }}</option>
             </select>
           </label>
-          <button class="btn" @click="addBookmarkManually">＋ 新建书签</button>
-          <button class="btn" @click="addFolderManually">＋ 新建文件夹</button>
+          <button class="btn" @click="addBookmarkManually"><Plus :size="13" /> 新建书签</button>
+          <button class="btn" @click="addFolderManually"><Plus :size="13" /> 新建文件夹</button>
         </div>
         <div class="pbm-tools hint">当前添加目标:{{ nameOf(newBmFolder) }}</div>
         <div class="pbm-list">
           <div v-for="row in managerRows" :key="row.node.id" class="pbm-row" :style="{ paddingLeft: 12 + row.depth * 22 + 'px' }">
-            <span class="pbm-icon">{{ row.node.type === 'folder' ? '📁' : '🔖' }}</span>
+            <span class="pbm-icon">
+              <Folder v-if="row.node.type === 'folder'" :size="13" />
+              <Bookmark v-else :size="13" />
+            </span>
             <template v-if="editing === row.node.id">
               <input v-model="editTitle" class="pbm-input" placeholder="名称" />
               <input v-if="row.node.type === 'bookmark'" v-model="editUrl" class="pbm-input" placeholder="URL" />
@@ -447,7 +510,7 @@ function openBookmarkUrl(url: string): void {
       <div class="modal panel-settings">
         <div class="modal-head">
           <span>设置</span>
-          <button class="win-btn" @click="showSettings = false">×</button>
+          <button class="win-btn" title="关闭" @click="showSettings = false"><X :size="13" /></button>
         </div>
         <div class="set-row">
           <span class="set-label">默认搜索引擎</span>

@@ -121,6 +121,10 @@ select:focus {
   color: var(--danger);
 }
 
+.tab.crashed .tab-letter {
+  color: var(--danger);
+}
+
 .tab-letter {
   flex: none;
   width: 18px;
@@ -164,9 +168,23 @@ select:focus {
   width: 18px;
   height: 18px;
   border-radius: 4px;
-  font-size: 14px;
-  line-height: 1;
   color: var(--fg-dim);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tab-close svg,
+.tab-new svg,
+.tool-btn svg,
+.win-btn svg,
+.star svg,
+.pbm-icon svg,
+.btn svg,
+.bm-item svg,
+.bm-folder svg {
+  display: block;
+  flex: none;
 }
 
 .tab-close:hover {
@@ -182,6 +200,9 @@ select:focus {
   color: var(--fg-dim);
   font-size: 16px;
   margin-bottom: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .tab-new:hover {
@@ -200,6 +221,9 @@ select:focus {
   align-self: flex-start;
   font-size: 14px;
   color: var(--fg-dim);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .win-btn:hover {
@@ -284,8 +308,10 @@ select:focus {
   width: 26px;
   height: 26px;
   border-radius: 50%;
-  font-size: 15px;
   color: var(--fg-dim);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .star:hover {
@@ -318,8 +344,21 @@ select:focus {
   color: var(--fg);
   font-size: 12px;
   overflow: hidden;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.bm-label {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.bm-chevron {
+  opacity: 0.65;
+  margin-left: -1px;
 }
 
 .bm-item:hover,
@@ -425,6 +464,9 @@ select:focus {
 
 .pbm-icon {
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  color: var(--fg-dim);
 }
 
 .pbm-title {
@@ -467,6 +509,9 @@ select:focus {
   background: var(--bg3);
   border: 1px solid var(--border);
   font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .btn:hover {
