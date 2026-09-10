@@ -10,18 +10,23 @@ import {
   removeNode,
   updateNode
 } from '@shared/bookmarkTree'
-import type { Settings, TabInfo } from '@shared/types'
+import type { ModalKind, Settings, TabInfo } from '@shared/types'
 import type { TabManager } from './tabManager'
+import type { OverlayManager } from './overlay'
 import { getBookmarksStore, getSettingsStore } from './stores'
 import { log } from './logger'
 
-export function registerIpc(tabs: TabManager, mainWindow: BrowserWindow): void {
+export function registerIpc(tabs: TabManager, mainWindow: BrowserWindow, overlay: OverlayManager): void {
   const sendTabsList = (): void => {
     mainWindow.webContents.send('tab:list-changed', tabs.listTabs())
   }
-  const sendBookmarks = (): void => {
-    mainWindow.webContents.send('bookmarks:changed', getBookmarksStore().get())
+  /** 同时通知 chrome 与 overlay 两个页面(书签/设置变更) */
+  const broadcast = (channel: string, payload: unknown): void => {
+    if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)
+    overlay.send(channel, payload)
   }
+  const sendBookmarks = (): void => broadcast('bookmarks:changed', getBookmarksStore().get())
+  const sendSettings = (settings: Settings): void => broadcast('settings:changed', settings)
 
   tabs.on('tab-updated', (tab) => {
     if (!mainWindow.isDestroyed()) mainWindow.webContents.send('tab:updated', tab)
@@ -116,8 +121,27 @@ export function registerIpc(tabs: TabManager, mainWindow: BrowserWindow): void {
   ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
     const store = getSettingsStore()
     const settings = store.set(patch)
-    mainWindow.webContents.send('settings:changed', settings)
+    sendSettings(settings)
     return settings
+  })
+
+  // 顶层弹层开关
+  ipcMain.handle('ui:modal', (_e, kind: ModalKind | null) => {
+    if (kind == null) overlay.close()
+    else overlay.open(kind)
+    return true
+  })
+
+  // chrome UI 的 DevTools 固定以独立窗口打开(标签页内保持 docked,由默认菜单角色处理)
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    const hotkey =
+      input.type === 'keyDown' &&
+      (input.key === 'F12' || ((input.control || input.meta) && input.shift && input.key.toLowerCase() === 'i'))
+    if (!hotkey) return
+    event.preventDefault()
+    const wc = mainWindow.webContents
+    if (wc.isDevToolsOpened()) wc.closeDevTools()
+    else wc.openDevTools({ mode: 'detach' })
   })
 
   // 窗口控制

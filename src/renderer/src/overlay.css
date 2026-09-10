@@ -1,0 +1,6 @@
+/* Overlay 页面专用:让整页透明,露出下方标签页做遮罩层 */
+html,
+body,
+#app {
+  background: transparent !important;
+}

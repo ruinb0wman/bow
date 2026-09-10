@@ -1,6 +1,7 @@
 import { app, BrowserWindow, shell } from 'electron'
 import { join } from 'node:path'
 import { TabManager } from './tabManager'
+import { OverlayManager } from './overlay'
 import { registerIpc } from './ipc'
 import { initStores, getSettingsStore } from './stores'
 import { startMcpServer } from './mcp'
@@ -37,6 +38,7 @@ function createWindow(): BrowserWindow {
 }
 
 let tabs: TabManager
+let overlay: OverlayManager
 
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
 
@@ -62,6 +64,10 @@ app.whenReady().then(() => {
 
   const mainWindow = createWindow()
   tabs = new TabManager(mainWindow)
+  overlay = new OverlayManager(mainWindow, tabs)
+
+  // 新建/关闭标签后把弹层重新置顶,防止新视图盖住已打开的弹层
+  tabs.on('tabs-changed', () => overlay.raise())
 
   mainWindow.webContents.on('did-finish-load', () => {
     // 首个标签加载主页
@@ -76,7 +82,7 @@ app.whenReady().then(() => {
     e.preventDefault()
   })
 
-  registerIpc(tabs, mainWindow)
+  registerIpc(tabs, mainWindow, overlay)
 
   if (IS_MCP) {
     startMcpServer({ tabs })

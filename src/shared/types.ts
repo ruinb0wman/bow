@@ -19,6 +19,9 @@ export type BookmarkTree = BookmarkNode[]
 
 export type SearchEngineId = 'google' | 'duckduckgo' | 'bing' | 'baidu'
 
+/** 顶层 Overlay 弹层类型(chrome UI 通过 ui:modal 开关) */
+export type ModalKind = 'bookmarks' | 'settings'
+
 export interface Settings {
   searchEngine: SearchEngineId
   homepage: string

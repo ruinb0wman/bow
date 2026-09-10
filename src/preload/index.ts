@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcRendererEvent } from 'electron'
-import type { BookmarkTree, BookmarkNode, FlatBookmark, Settings, TabInfo } from '../shared/types'
+import type { BookmarkTree, BookmarkNode, FlatBookmark, ModalKind, Settings, TabInfo } from '../shared/types'
 
 export interface BrowserAPI {
   // 标签页
@@ -33,12 +33,17 @@ export interface BrowserAPI {
   maximize: () => Promise<void>
   closeWindow: () => Promise<void>
   reportChromeHeight: (height: number) => Promise<boolean>
+  // 顶层弹层(书签管理/设置)
+  openModal: (kind: ModalKind | null) => Promise<boolean>
   // 事件订阅(返回取消订阅函数)
   onTabUpdated: (cb: (tab: TabInfo) => void) => () => void
   onTabsChanged: (cb: (tabs: TabInfo[]) => void) => () => void
   onTabActivated: (cb: (id: number) => void) => () => void
   onBookmarksChanged: (cb: (tree: BookmarkTree) => void) => () => void
   onSettingsChanged: (cb: (settings: Settings) => void) => () => void
+  // 以下仅 overlay 页面使用
+  onOverlayOpen: (cb: (kind: ModalKind) => void) => () => void
+  onOverlayClose: (cb: () => void) => () => void
 }
 
 const subscribe = <T>(channel: string, cb: (payload: T) => void): (() => void) => {
@@ -75,11 +80,14 @@ const api: BrowserAPI = {
   maximize: () => ipcRenderer.invoke('window:maximize'),
   closeWindow: () => ipcRenderer.invoke('window:close'),
   reportChromeHeight: (height) => ipcRenderer.invoke('ui:chrome-height', height),
+  openModal: (kind) => ipcRenderer.invoke('ui:modal', kind),
   onTabUpdated: (cb) => subscribe('tab:updated', cb),
   onTabsChanged: (cb) => subscribe('tab:list-changed', cb),
   onTabActivated: (cb) => subscribe('tab:activated', cb),
   onBookmarksChanged: (cb) => subscribe('bookmarks:changed', cb),
-  onSettingsChanged: (cb) => subscribe('settings:changed', cb)
+  onSettingsChanged: (cb) => subscribe('settings:changed', cb),
+  onOverlayOpen: (cb) => subscribe('overlay:open', cb),
+  onOverlayClose: (cb) => subscribe('overlay:close', cb)
 }
 
 contextBridge.exposeInMainWorld('browserAPI', api)

@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue'
-import type { BookmarkNode, BookmarkTree, Settings, TabInfo } from '@shared/types'
-import { childrenOf, findNode, flatten } from '@shared/bookmarkTree'
-import { SEARCH_ENGINES } from '@shared/url'
+import type { BookmarkNode, BookmarkTree, TabInfo } from '@shared/types'
+import { childrenOf, flatten } from '@shared/bookmarkTree'
 import {
   ArrowLeft,
   ArrowRight,
@@ -27,7 +26,6 @@ const api = window.browserAPI
 // ---------- 状态 ----------
 const tabs = ref<TabInfo[]>([])
 const bookmarks = ref<BookmarkTree>([])
-const settings = ref<Settings>({ searchEngine: 'google', homepage: 'https://www.google.com' })
 const address = ref('')
 const addressEditing = ref(false)
 
@@ -49,10 +47,7 @@ watch(
   { immediate: true }
 )
 
-const showManager = ref(false)
-const showSettings = ref(false)
 const expandedFolders = ref<Set<string>>(new Set())
-
 // ---------- 事件订阅 ----------
 const unsubs: Array<() => void> = []
 
@@ -69,7 +64,6 @@ const addressInput = ref<HTMLInputElement | null>(null)
 onMounted(async () => {
   tabs.value = await api.listTabs()
   bookmarks.value = await api.listBookmarks()
-  settings.value = await api.getSettings()
   syncAddress()
 
   unsubs.push(
@@ -92,9 +86,6 @@ onMounted(async () => {
       for (const id of [...expandedFolders.value]) {
         if (!valid.has(id)) expandedFolders.value.delete(id)
       }
-    }),
-    api.onSettingsChanged((s) => {
-      settings.value = s
     })
   )
 
@@ -160,23 +151,8 @@ async function stopLoading(): Promise<void> {
   await api.stop()
 }
 
-// ---------- 书签 ----------
+// ---------- 书签(管理弹层已迁移到 Overlay 页面 components/BookmarksModal.vue) ----------
 const rootChildren = computed(() => childrenOf(bookmarks.value, null))
-const flatList = computed(() => flatten(bookmarks.value))
-const allFolders = computed(() => flatList.value.filter((b) => b.type === 'folder'))
-
-const managerRows = computed(() => {
-  const out: Array<{ node: BookmarkNode; depth: number; path: string }> = []
-  const walk = (list: BookmarkTree, depth: number, prefix: string): void => {
-    for (const node of list) {
-      const path = prefix ? `${prefix}/${node.title}` : node.title
-      out.push({ node, depth, path })
-      if (node.type === 'folder') walk(node.children, depth + 1, path)
-    }
-  }
-  walk(bookmarks.value, 0, '')
-  return out
-})
 
 function isFolderOpen(id: string): boolean {
   return expandedFolders.value.has(id)
@@ -193,12 +169,6 @@ function folderChildren(id: string): BookmarkNode[] {
   return childrenOf(bookmarks.value, id)
 }
 
-function nameOf(id: string | null): string {
-  if (!id) return '根目录'
-  const node = findNode(bookmarks.value, id)
-  return node?.title ?? '根目录'
-}
-
 async function toggleStar(): Promise<void> {
   const url = currentUrl.value
   if (!url || url === 'about:blank') return
@@ -210,63 +180,6 @@ async function toggleStar(): Promise<void> {
   }
   await api.addBookmark({ title: activeTab.value?.title ?? url, url })
   bookmarked.value = true
-}
-
-async function addBookmarkManually(): Promise<void> {
-  const title = window.prompt('书签名')
-  const url = window.prompt('书签地址')
-  if (!url) return
-  await api.addBookmark({ title: title ?? url, url, folderId: newBmFolder.value || null })
-}
-
-const newBmFolder = ref<string | null>(null)
-
-async function addFolderManually(): Promise<void> {
-  const title = window.prompt('文件夹名称')
-  if (!title) return
-  await api.addFolder({ title, parentId: newBmFolder.value || null })
-}
-
-// 编辑状态
-const editing = ref<string | null>(null)
-const editTitle = ref('')
-const editUrl = ref('')
-const moving = ref<string | null>(null)
-
-function startEdit(node: BookmarkNode): void {
-  editing.value = node.id
-  editTitle.value = node.title
-  editUrl.value = node.type === 'bookmark' ? node.url : ''
-}
-
-async function saveEdit(node: BookmarkNode): Promise<void> {
-  const patch: { title?: string; url?: string } = { title: editTitle.value }
-  if (node.type === 'bookmark') patch.url = editUrl.value
-  await api.updateBookmark(node.id, patch)
-  editing.value = null
-}
-
-async function removeNodeById(id: string): Promise<void> {
-  await api.removeBookmark(id)
-}
-
-async function moveTo(node: BookmarkNode, target: string): Promise<void> {
-  await api.moveBookmark(node.id, target === '__root__' ? null : target)
-  moving.value = null
-}
-
-// ---------- 设置 ----------
-const settingsDraft = ref<Settings>({ searchEngine: 'google', homepage: '' })
-
-function openSettings(): void {
-  settingsDraft.value = { ...settings.value }
-  showSettings.value = true
-}
-
-async function saveSettings(): Promise<void> {
-  const h = settingsDraft.value.homepage.trim()
-  await api.setSettings({ searchEngine: settingsDraft.value.searchEngine, homepage: h || 'https://www.google.com' })
-  showSettings.value = false
 }
 
 // ---------- 窗口 ----------
@@ -391,10 +304,10 @@ function openBookmarkUrl(url: string): void {
           <Star :size="15" :fill="bookmarked ? 'currentColor' : 'none'" />
         </button>
       </div>
-      <button class="tool-btn no-drag" title="管理书签" @click="showManager = true">
+      <button class="tool-btn no-drag" title="管理书签" @click="api.openModal('bookmarks')">
         <BookMarked :size="16" />
       </button>
-      <button class="tool-btn no-drag" title="设置" @click="openSettings">
+      <button class="tool-btn no-drag" title="设置" @click="api.openModal('settings')">
         <SettingsIcon :size="16" />
       </button>
     </div>
@@ -438,98 +351,11 @@ function openBookmarkUrl(url: string): void {
       </template>
       <span v-if="rootChildren.length === 0" class="bm-empty">书签栏为空(双击标签栏新建标签)</span>
       <span class="bm-right">
-        <button class="tool-btn small" title="管理书签" @click="showManager = true">管理…</button>
+        <button class="tool-btn small" title="管理书签" @click="api.openModal('bookmarks')">管理…</button>
         <button class="tool-btn small" title="恢复刚刚关闭的标签 (Ctrl+Shift+T)" @click="restoreTab">
           <Undo2 :size="14" />
         </button>
       </span>
     </div>
   </div>
-
-  <!-- 书签管理弹层 -->
-  <Teleport to="body">
-    <div v-if="showManager" class="modal-mask" @click.self="showManager = false">
-      <div class="modal panel-bms">
-        <div class="modal-head">
-          <span>书签管理</span>
-          <button class="win-btn" title="关闭" @click="showManager = false"><X :size="13" /></button>
-        </div>
-        <div class="pbm-tools">
-          <label class="pbm-target">
-            添加到文件夹:
-            <select v-model="newBmFolder">
-              <option :value="null">根目录</option>
-              <option v-for="f in allFolders" :key="f.id" :value="f.id">{{ f.path }}</option>
-            </select>
-          </label>
-          <button class="btn" @click="addBookmarkManually"><Plus :size="13" /> 新建书签</button>
-          <button class="btn" @click="addFolderManually"><Plus :size="13" /> 新建文件夹</button>
-        </div>
-        <div class="pbm-tools hint">当前添加目标:{{ nameOf(newBmFolder) }}</div>
-        <div class="pbm-list">
-          <div v-for="row in managerRows" :key="row.node.id" class="pbm-row" :style="{ paddingLeft: 12 + row.depth * 22 + 'px' }">
-            <span class="pbm-icon">
-              <Folder v-if="row.node.type === 'folder'" :size="13" />
-              <Bookmark v-else :size="13" />
-            </span>
-            <template v-if="editing === row.node.id">
-              <input v-model="editTitle" class="pbm-input" placeholder="名称" />
-              <input v-if="row.node.type === 'bookmark'" v-model="editUrl" class="pbm-input" placeholder="URL" />
-              <button class="btn primary" @click="saveEdit(row.node)">保存</button>
-              <button class="btn" @click="editing = null">取消</button>
-            </template>
-            <template v-else>
-              <span class="pbm-title">{{ row.node.title }}</span>
-              <span v-if="row.node.type === 'bookmark'" class="pbm-url">{{ row.node.url }}</span>
-              <select
-                v-if="moving === row.node.id"
-                class="pbm-input"
-                @change="(e) => moveTo(row.node, (e.target as HTMLSelectElement).value)"
-              >
-                <option value="__root__">根目录</option>
-                <option v-for="f in allFolders.filter((x) => x.id !== row.node.id)" :key="f.id" :value="f.id">{{ f.path }}</option>
-              </select>
-            </template>
-            <span class="pbm-actions">
-              <button class="btn" @click="moving = moving === row.node.id ? null : row.node.id">
-                {{ moving === row.node.id ? '取消移动' : '移动' }}
-              </button>
-              <button class="btn" @click="startEdit(row.node)">编辑</button>
-              <button class="btn danger" @click="removeNodeById(row.node.id)">删除</button>
-            </span>
-          </div>
-          <div v-if="managerRows.length === 0" class="bm-empty">暂无书签</div>
-        </div>
-      </div>
-    </div>
-  </Teleport>
-
-  <!-- 设置弹层 -->
-  <Teleport to="body">
-    <div v-if="showSettings" class="modal-mask" @click.self="showSettings = false">
-      <div class="modal panel-settings">
-        <div class="modal-head">
-          <span>设置</span>
-          <button class="win-btn" title="关闭" @click="showSettings = false"><X :size="13" /></button>
-        </div>
-        <div class="set-row">
-          <span class="set-label">默认搜索引擎</span>
-          <div class="set-engines">
-            <label v-for="(v, key) in SEARCH_ENGINES" :key="key" class="set-engine">
-              <input v-model="settingsDraft.searchEngine" type="radio" :value="key" />
-              {{ v.label }}
-            </label>
-          </div>
-        </div>
-        <div class="set-row">
-          <span class="set-label">主页</span>
-          <input v-model="settingsDraft.homepage" class="pbm-input wide" placeholder="https://www.google.com" />
-        </div>
-        <div class="set-actions">
-          <button class="btn primary" @click="saveSettings">保存</button>
-          <button class="btn" @click="showSettings = false">取消</button>
-        </div>
-      </div>
-    </div>
-  </Teleport>
 </template>
