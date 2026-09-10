@@ -29,7 +29,6 @@ module.exports = {
   // 以目标目录为根，支持 glob 模式
   keepTarget: [
     'node_modules/',
-    'package-lock.json'
   ],
 
   // 同步选项
