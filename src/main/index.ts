@@ -1,0 +1,94 @@
+import { app, BrowserWindow, shell } from 'electron'
+import { join } from 'node:path'
+import { TabManager } from './tabManager'
+import { registerIpc } from './ipc'
+import { initStores, getSettingsStore } from './stores'
+import { startMcpServer } from './mcp'
+import { IS_MCP, log, logError } from './logger'
+
+const isDev = !!process.env['ELECTRON_RENDERER_URL']
+
+function createWindow(): BrowserWindow {
+  const win = new BrowserWindow({
+    width: 1280,
+    height: 820,
+    minWidth: 720,
+    minHeight: 480,
+    frame: false,
+    show: false,
+    backgroundColor: '#1e1f24',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
+  })
+
+  win.once('ready-to-show', () => win.show())
+  win.on('resize', () => tabs.layout())
+
+  if (isDev && process.env['ELECTRON_RENDERER_URL']) {
+    win.loadURL(process.env['ELECTRON_RENDERER_URL'])
+  } else {
+    win.loadFile(join(__dirname, '../renderer/index.html'))
+  }
+  return win
+}
+
+let tabs: TabManager
+
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
+
+if (IS_MCP) {
+  // MCP 模式下禁止 Chromium 往 stdout 打日志,避免破坏协议帧
+  app.commandLine.appendSwitch('disable-logging')
+}
+
+app.whenReady().then(() => {
+  initStores()
+
+  // 外链默认走系统浏览器,页面内 target=_blank 由 TabManager 接管为新标签
+  app.on('web-contents-created', (_e, contents) => {
+    contents.setWindowOpenHandler(({ url }) => {
+      if (/^https?:/i.test(url)) {
+        tabs.create(url)
+        return { action: 'deny' }
+      }
+      shell.openExternal(url)
+      return { action: 'deny' }
+    })
+  })
+
+  const mainWindow = createWindow()
+  tabs = new TabManager(mainWindow)
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    // 首个标签加载主页
+    if (tabs.listTabs().length === 0) {
+      const homepage = getSettingsStore().get().homepage
+      tabs.create(homepage)
+    }
+  })
+
+  mainWindow.webContents.on('will-navigate', (e) => {
+    // 防止 chrome UI 自身被导航走
+    e.preventDefault()
+  })
+
+  registerIpc(tabs, mainWindow)
+
+  if (IS_MCP) {
+    startMcpServer({ tabs })
+  }
+
+  log('应用已启动', { mcp: IS_MCP, version: app.getVersion() })
+})
+
+app.on('window-all-closed', () => {
+  app.quit()
+})
+
+process.on('uncaughtException', (e) => {
+  logError('未捕获异常', e)
+})

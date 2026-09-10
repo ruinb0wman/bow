@@ -1,0 +1,139 @@
+/** 渲染层(Vue UI)与主进程的 IPC 桥:所有 chrome 交互走这里 */
+
+import { BrowserWindow, ipcMain } from 'electron'
+import { parseInput } from '@shared/url'
+import {
+  addBookmark,
+  addFolder,
+  findByUrl,
+  moveNode,
+  removeNode,
+  updateNode
+} from '@shared/bookmarkTree'
+import type { Settings, TabInfo } from '@shared/types'
+import type { TabManager } from './tabManager'
+import { getBookmarksStore, getSettingsStore } from './stores'
+import { log } from './logger'
+
+export function registerIpc(tabs: TabManager, mainWindow: BrowserWindow): void {
+  const sendTabsList = (): void => {
+    mainWindow.webContents.send('tab:list-changed', tabs.listTabs())
+  }
+  const sendBookmarks = (): void => {
+    mainWindow.webContents.send('bookmarks:changed', getBookmarksStore().get())
+  }
+
+  tabs.on('tab-updated', (tab) => {
+    if (!mainWindow.isDestroyed()) mainWindow.webContents.send('tab:updated', tab)
+  })
+  tabs.on('tabs-changed', sendTabsList)
+
+  ipcMain.handle('tab:create', (_e, url?: string, activate = true): TabInfo => tabs.create(url, activate))
+  ipcMain.handle('tab:close', (_e, id: number) => tabs.close(id))
+  ipcMain.handle('tab:restore', () => tabs.restoreLastClosed())
+  ipcMain.handle('tab:activate', (_e, id: number) => {
+    tabs.activate(id)
+    return tabs.getActiveTabInfo()
+  })
+  ipcMain.handle('tab:list', () => tabs.listTabs())
+  ipcMain.handle('tab:active', () => tabs.getActiveTabInfo())
+
+  ipcMain.handle('nav:go', (_e, input: string) => {
+    const parsed = parseInput(input)
+    const tab = tabs.ensureActive()
+    if (!parsed) return { parsed: null, tabId: tab.id, url: tab.url }
+    const url = parsed.kind === 'url' ? parsed.url : ''
+    const finalUrl = parsed.kind === 'url' ? parsed.url : undefined
+    tabs.navigate(tab.id, finalUrl ?? '')
+    return { parsed: parsed.kind, query: parsed.kind === 'search' ? parsed.query : undefined, url, tabId: tab.id }
+  })
+
+  ipcMain.handle('nav:url', (_e, url: string) => {
+    const tab = tabs.ensureActive()
+    tabs.navigate(tab.id, url)
+    return { tabId: tab.id }
+  })
+  ipcMain.handle('nav:back', () => tabs.back(tabs.ensureActive().id))
+  ipcMain.handle('nav:forward', () => tabs.forward(tabs.ensureActive().id))
+  ipcMain.handle('nav:reload', () => {
+    const tab = tabs.ensureActive()
+    tabs.reload(tab.id)
+  })
+  ipcMain.handle('nav:stop', () => {
+    const tab = tabs.ensureActive()
+    tabs.stop(tab.id)
+  })
+
+  // 书签
+  ipcMain.handle('bookmarks:list', () => getBookmarksStore().get())
+  ipcMain.handle('bookmarks:add', (_e, input: { title?: string; url: string; folderId?: string | null }) => {
+    const store = getBookmarksStore()
+    const added = addBookmark(store.get(), { title: input.title ?? '', url: input.url, folderId: input.folderId ?? null })
+    store.setRaw(added.tree)
+    sendBookmarks()
+    return added.node
+  })
+  ipcMain.handle('bookmarks:add-folder', (_e, input: { title?: string; parentId?: string | null }) => {
+    const store = getBookmarksStore()
+    const added = addFolder(store.get(), { title: input.title ?? '', parentId: input.parentId ?? null })
+    store.setRaw(added.tree)
+    sendBookmarks()
+    return added.node
+  })
+  ipcMain.handle('bookmarks:update', (_e, id: string, patch: { title?: string; url?: string }) => {
+    const store = getBookmarksStore()
+    const tree = updateNode(store.get(), id, patch)
+    if (tree) {
+      store.setRaw(tree)
+      sendBookmarks()
+      return { ok: true }
+    }
+    return { ok: false, error: '书签不存在' }
+  })
+  ipcMain.handle('bookmarks:remove', (_e, id: string) => {
+    const store = getBookmarksStore()
+    const res = removeNode(store.get(), id)
+    if (res.removed) {
+      store.setRaw(res.tree)
+      sendBookmarks()
+    }
+    return res
+  })
+  ipcMain.handle('bookmarks:move', (_e, id: string, targetFolderId: string | null) => {
+    const store = getBookmarksStore()
+    const tree = moveNode(store.get(), id, targetFolderId)
+    if (tree) {
+      store.setRaw(tree)
+      sendBookmarks()
+      return { ok: true }
+    }
+    return { ok: false, error: '移动失败(目标文件夹不存在或形成循环)' }
+  })
+  ipcMain.handle('bookmarks:find-by-url', (_e, url: string) => findByUrl(getBookmarksStore().get(), url))
+
+  // 设置
+  ipcMain.handle('settings:get', () => getSettingsStore().get())
+  ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
+    const store = getSettingsStore()
+    const settings = store.set(patch)
+    mainWindow.webContents.send('settings:changed', settings)
+    return settings
+  })
+
+  // 窗口控制
+  ipcMain.handle('window:minimize', () => mainWindow.minimize())
+  ipcMain.handle('window:maximize', () => {
+    if (mainWindow.isMaximized()) mainWindow.unmaximize()
+    else mainWindow.maximize()
+  })
+  ipcMain.handle('window:close', () => mainWindow.close())
+
+  // chrome 高度(渲染层实测)
+  ipcMain.handle('ui:chrome-height', (_e, height: number) => {
+    log('chrome 高度上报', height)
+    tabs.setChromeHeight(Math.max(0, Math.round(height)))
+    return true
+  })
+
+  log('IPC 注册完成')
+}
