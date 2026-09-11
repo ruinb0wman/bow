@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { TabManager } from './tabManager'
 import { OverlayManager } from './overlay'
 import { registerIpc } from './ipc'
+import { setupCorsBypass } from './cors'
 import { initStores, getSettingsStore } from './stores'
 import { setupDevTools } from './devtools'
 import { startMcpServer } from './mcp'
@@ -50,7 +51,9 @@ if (IS_MCP) {
 
 app.whenReady().then(() => {
   initStores()
-  // 先于任何窗口/视图创建,保证 DevTools 快捷键监听覆盖全部 webContents
+  // 先于任何窗口/视图创建:保证 DevTools 快捷键监听覆盖全部 webContents
+  // CORS 白名单注入同样需在 webContents 创建前挂到 defaultSession
+  setupCorsBypass()
   setupDevTools()
 
   // 外链默认走系统浏览器,页面内 target=_blank 由 TabManager 接管为新标签

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>CORS 探测页</title>
+    <style>
+      body { font-family: sans-serif; max-width: 640px; margin: 40px auto; line-height: 1.6; }
+      code { background: #eee; padding: 2px 6px; border-radius: 4px; }
+      button { padding: 8px 16px; }
+      pre { background: #f6f6f6; border: 1px solid #ddd; padding: 12px; border-radius: 6px; min-height: 40px; }
+    </style>
+  </head>
+  <body>
+    <h1>CORS 探测页</h1>
+    <p>
+      本页来源为本地服务器(<code>http://127.0.0.1:5174</code>),目标
+      <code>__TARGET__</code> 的响应<strong>不带任何 CORS 头</strong>。
+      页面加载后自动发起跨域 fetch,结果见下方。
+    </p>
+    <p><button id="go">重新请求</button></p>
+    <pre id="out">请求中…</pre>
+    <script>
+      const out = document.getElementById('out')
+      const TARGET = '__TARGET__'
+      async function probe() {
+        out.textContent = '请求中…'
+        try {
+          const r = await fetch(TARGET, { headers: { 'X-Probe': '1' } })
+          out.textContent = '成功(status ' + r.status + '): ' + JSON.stringify(await r.json())
+        } catch (e) {
+          out.textContent = '失败(CORS 拦截或网络错误): ' + e.message
+        }
+      }
+      document.getElementById('go').addEventListener('click', probe)
+      probe()
+    </script>
+  </body>
+</html>

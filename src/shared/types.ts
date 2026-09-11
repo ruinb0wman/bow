@@ -25,6 +25,10 @@ export type ModalKind = 'bookmarks' | 'settings'
 export interface Settings {
   searchEngine: SearchEngineId
   homepage: string
+  /** 总开关:开启时对白名单主机的响应注入 CORS 放行头 */
+  corsBypassEnabled: boolean
+  /** CORS 放行白名单:域名 / IP / host:端口 / *.子域,匹配规则见 @shared/cors */
+  corsWhitelist: string[]
 }
 
 export interface FlatBookmark {

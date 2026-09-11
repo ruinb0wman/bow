@@ -1,3 +1,4 @@
+import { CORS_DEFAULT_LIST } from './cors'
 import type { SearchEngineId } from './types'
 
 export const SEARCH_ENGINES: Record<SearchEngineId, { label: string; template: string }> = {
@@ -9,7 +10,9 @@ export const SEARCH_ENGINES: Record<SearchEngineId, { label: string; template: s
 
 export const DEFAULT_SETTINGS = {
   searchEngine: 'google' as SearchEngineId,
-  homepage: 'https://www.google.com'
+  homepage: 'https://www.google.com',
+  corsBypassEnabled: true,
+  corsWhitelist: CORS_DEFAULT_LIST
 }
 
 /** 完整 scheme:// 前缀 */
