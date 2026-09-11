@@ -132,17 +132,7 @@ export function registerIpc(tabs: TabManager, mainWindow: BrowserWindow, overlay
     return true
   })
 
-  // chrome UI 的 DevTools 固定以独立窗口打开(标签页内保持 docked,由默认菜单角色处理)
-  mainWindow.webContents.on('before-input-event', (event, input) => {
-    const hotkey =
-      input.type === 'keyDown' &&
-      (input.key === 'F12' || ((input.control || input.meta) && input.shift && input.key.toLowerCase() === 'i'))
-    if (!hotkey) return
-    event.preventDefault()
-    const wc = mainWindow.webContents
-    if (wc.isDevToolsOpened()) wc.closeDevTools()
-    else wc.openDevTools({ mode: 'detach' })
-  })
+  // 注:DevTools 快捷键统一由 setupDevTools() 全局处理(独立窗口),此处不再注册
 
   // 窗口控制
   ipcMain.handle('window:minimize', () => mainWindow.minimize())

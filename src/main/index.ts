@@ -4,6 +4,7 @@ import { TabManager } from './tabManager'
 import { OverlayManager } from './overlay'
 import { registerIpc } from './ipc'
 import { initStores, getSettingsStore } from './stores'
+import { setupDevTools } from './devtools'
 import { startMcpServer } from './mcp'
 import { IS_MCP, log, logError } from './logger'
 
@@ -49,6 +50,8 @@ if (IS_MCP) {
 
 app.whenReady().then(() => {
   initStores()
+  // 先于任何窗口/视图创建,保证 DevTools 快捷键监听覆盖全部 webContents
+  setupDevTools()
 
   // 外链默认走系统浏览器,页面内 target=_blank 由 TabManager 接管为新标签
   app.on('web-contents-created', (_e, contents) => {

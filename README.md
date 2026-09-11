@@ -68,6 +68,9 @@ MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到
 - `Ctrl+T` 新标签、`Ctrl+W` 关闭、`Ctrl+Shift+T` 恢复
 - `Ctrl+L` 聚焦地址栏、`Ctrl+R` 刷新
 - `Ctrl+D` 收藏当前页
+- `Ctrl+Shift+I` / `F12`:为**当前聚焦的视图**(页面 / 浏览器 UI)打开或关闭 DevTools。
+  DevTools 固定以**独立窗口**打开(不会停靠、也不会被标签页遮挡);焦点在 DevTools 窗口内时,
+  按同一快捷键可关闭它。
 
 ## 数据存储
 

@@ -45,6 +45,8 @@ export class OverlayManager {
     if (this.kind == null) return
     this.kind = null
     if (this.view) {
+      // 视图只是隐藏、并不销毁,需顺手关掉它的 DevTools 窗口,避免留下孤立窗口
+      if (!this.view.webContents.isDestroyed()) this.view.webContents.closeDevTools()
       this.view.setVisible(false)
       this.send('overlay:close')
     }
