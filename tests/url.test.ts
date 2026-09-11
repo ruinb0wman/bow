@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseInput, isHttpUrl, searchUrl } from '../src/shared/url'
+import { parseInput, isHttpUrl, searchUrl, resolveNavigation } from '../src/shared/url'
 
 describe('parseInput 地址栏输入解析', () => {
   it('空输入返回 null', () => {
@@ -56,5 +56,50 @@ describe('searchUrl', () => {
     expect(searchUrl('baidu', '你好')).toBe('https://www.baidu.com/s?wd=%E4%BD%A0%E5%A5%BD')
     expect(searchUrl('bing', 'a&b')).toBe('https://www.bing.com/search?q=a%26b')
     expect(searchUrl('duckduckgo', 'x')).toBe('https://duckduckgo.com/?q=x')
+  })
+})
+
+describe('resolveNavigation 地址栏输入 → 导航 URL', () => {
+  it('空输入返回 null', () => {
+    expect(resolveNavigation('', 'google')).toBeNull()
+    expect(resolveNavigation('   ', 'google')).toBeNull()
+  })
+
+  it('URL 输入原样返回(不触发搜索)', () => {
+    expect(resolveNavigation('https://example.com/x', 'google')).toEqual({
+      parsed: 'url',
+      url: 'https://example.com/x'
+    })
+    expect(resolveNavigation('example.com', 'google')).toEqual({
+      parsed: 'url',
+      url: 'https://example.com'
+    })
+    expect(resolveNavigation('localhost:3000', 'google')).toEqual({
+      parsed: 'url',
+      url: 'http://localhost:3000'
+    })
+  })
+
+  it('搜索词按指定引擎拼 URL 并带回显 query', () => {
+    expect(resolveNavigation('hello world', 'google')).toEqual({
+      parsed: 'search',
+      query: 'hello world',
+      url: 'https://www.google.com/search?q=hello%20world'
+    })
+    expect(resolveNavigation('你好', 'baidu')).toEqual({
+      parsed: 'search',
+      query: '你好',
+      url: 'https://www.baidu.com/s?wd=%E4%BD%A0%E5%A5%BD'
+    })
+    expect(resolveNavigation('electron mcp', 'bing')).toEqual({
+      parsed: 'search',
+      query: 'electron mcp',
+      url: 'https://www.bing.com/search?q=electron%20mcp'
+    })
+    expect(resolveNavigation('x', 'duckduckgo')).toEqual({
+      parsed: 'search',
+      query: 'x',
+      url: 'https://duckduckgo.com/?q=x'
+    })
   })
 })

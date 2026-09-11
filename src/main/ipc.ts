@@ -1,7 +1,7 @@
 /** 渲染层(Vue UI)与主进程的 IPC 桥:所有 chrome 交互走这里 */
 
 import { BrowserWindow, ipcMain } from 'electron'
-import { parseInput } from '@shared/url'
+import { resolveNavigation } from '@shared/url'
 import {
   addBookmark,
   addFolder,
@@ -44,13 +44,16 @@ export function registerIpc(tabs: TabManager, mainWindow: BrowserWindow, overlay
   ipcMain.handle('tab:active', () => tabs.getActiveTabInfo())
 
   ipcMain.handle('nav:go', (_e, input: string) => {
-    const parsed = parseInput(input)
     const tab = tabs.ensureActive()
-    if (!parsed) return { parsed: null, tabId: tab.id, url: tab.url }
-    const url = parsed.kind === 'url' ? parsed.url : ''
-    const finalUrl = parsed.kind === 'url' ? parsed.url : undefined
-    tabs.navigate(tab.id, finalUrl ?? '')
-    return { parsed: parsed.kind, query: parsed.kind === 'search' ? parsed.query : undefined, url, tabId: tab.id }
+    const res = resolveNavigation(input, getSettingsStore().get().searchEngine)
+    if (!res) return { parsed: null, tabId: tab.id, url: tab.url }
+    tabs.navigate(tab.id, res.url)
+    return {
+      parsed: res.parsed,
+      query: res.parsed === 'search' ? res.query : undefined,
+      url: res.url,
+      tabId: tab.id
+    }
   })
 
   ipcMain.handle('nav:url', (_e, url: string) => {

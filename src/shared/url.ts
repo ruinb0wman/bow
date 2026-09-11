@@ -49,6 +49,24 @@ export function searchUrl(engine: SearchEngineId, query: string): string {
   return tpl.replace('{q}', encodeURIComponent(query))
 }
 
+export type ResolveNavigationResult =
+  | { parsed: 'url'; url: string; query?: undefined }
+  | { parsed: 'search'; url: string; query: string }
+  | null
+
+/**
+ * 地址栏输入 → 最终导航 URL:
+ * - 空输入 → null
+ * - URL → 原样返回
+ * - 搜索词 → 按指定引擎拼出搜索 URL
+ */
+export function resolveNavigation(input: string, engine: SearchEngineId): ResolveNavigationResult {
+  const parsed = parseInput(input)
+  if (!parsed) return null
+  if (parsed.kind === 'url') return { parsed: 'url', url: parsed.url }
+  return { parsed: 'search', url: searchUrl(engine, parsed.query), query: parsed.query }
+}
+
 export function displayUrl(url: string): string {
   if (!url || url === 'about:blank') return ''
   return url
