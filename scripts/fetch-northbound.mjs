@@ -144,16 +144,20 @@ function buildRecord(b, granularity, latestDate) {
     asof: b.periodEnd,
     is_partial: b.key === bucketKey(latestDate, granularity),
     trading_days: b.dates.size,
-    // 北向:成交总额(亿元)
+    // 北向:成交总额(亿元)——至今仍披露,为真实值
     north_sh_turnover: get('001', 'deal'),
     north_sz_turnover: get('003', 'deal'),
     north_total_turnover: get('005', 'deal'),
-    // 南向:成交总额 + 净买入(亿元)
+    // 北向:净买入——交易所自 2024-08-19 起停止披露,统一显式 null(不是 0!)
+    // 语义:null=该字段根本不存在官方数据;0=仅南向可能出现真实零值。
+    north_sh_netbuy: null,
+    north_sz_netbuy: null,
+    north_total_netbuy: null,
+    // 南向:成交总额 + 净买入(亿元)——至今仍披露
     south_total_turnover: get('006', 'deal'),
     south_total_netbuy: get('006', 'net'),
     south_sh_netbuy: get('002', 'net'),
     south_sz_netbuy: get('004', 'net'),
-    // 说明:north_*_netbuy 字段自 2024-08-19 起交易所不再披露,表格中一律省略
   }
   return rec
 }
@@ -166,6 +170,19 @@ async function main() {
     since: SINCE,
     unit: '亿元',
     note: '北向(沪深股通)自2024-08-19起不再披露净买入/买卖盘,此处仅有成交总额;南向(港股通)仍披露净买入。',
+    null_semantics: '本输出中所有 north_*_netbuy 恒为 null:null=交易所不披露该数据(而非真实零值)。只有南向 south_*_netbuy 的 0 才是真实零值。AI 使用时禁止把 null 当作 0 或“当日无净流入”解读。',
+    field_notes: {
+      north_sh_turnover: '沪股通(北向)成交总额(亿元),=买入+卖出',
+      north_sz_turnover: '深股通(北向)成交总额(亿元),=买入+卖出',
+      north_total_turnover: '北向合计成交总额(亿元),=沪+深',
+      north_sh_netbuy: '沪股通净买入,2024-08-19起不披露,恒为 null',
+      north_sz_netbuy: '深股通净买入,2024-08-19起不披露,恒为 null',
+      north_total_netbuy: '北向合计净买入,2024-08-19起不披露,恒为 null',
+      south_total_turnover: '南向(港股通)合计成交总额(亿元)',
+      south_total_netbuy: '南向(港股通)合计净买入(亿元),仍披露',
+      south_sh_netbuy: '港股通(沪)净买入(亿元)',
+      south_sz_netbuy: '港股通(深)净买入(亿元)',
+    },
     data: [],
   }
   const byGran = {}
