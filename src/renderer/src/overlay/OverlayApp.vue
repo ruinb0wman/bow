@@ -1,38 +1,48 @@
 <script setup lang="ts">
-/** Overlay 根组件:根据主进程下发的 kind 渲染对应弹层 */
-import { onBeforeUnmount, onMounted, ref } from 'vue'
-import type { ModalKind } from '@shared/types'
+/**
+ * Overlay 通用宿主:根据主进程下发的内容 id 渲染注册表组件,并回传泛型事件。
+ * 新增浮层 = 扩展 shared/types 的 OverlayContentId + 在这里注册组件,宿主代码零改动。
+ */
+import { markRaw, onBeforeUnmount, onMounted, ref } from 'vue'
+import type { Component } from 'vue'
+import type { OverlayContentId, OverlayShowMessage } from '@shared/types'
 import BookmarksModal from '../components/BookmarksModal.vue'
 import SettingsModal from '../components/SettingsModal.vue'
+import SuggestPanel from '../components/SuggestPanel.vue'
 
 const api = window.browserAPI
 
-const kind = ref<ModalKind | null>(null)
+const REGISTRY: Record<OverlayContentId, Component> = {
+  'modal:bookmarks': markRaw(BookmarksModal),
+  'modal:settings': markRaw(SettingsModal),
+  suggest: markRaw(SuggestPanel)
+}
+
+const content = ref<OverlayShowMessage | null>(null)
 const unsubs: Array<() => void> = []
 
-function onKey(e: KeyboardEvent): void {
-  if (e.key === 'Escape') void api.openModal(null)
+function emitEvent(event: string, args?: unknown): void {
+  if (content.value) void api.overlayEmit(content.value.id, event, args)
 }
 
 onMounted(() => {
   unsubs.push(
-    api.onOverlayOpen((k) => {
-      kind.value = k
-    }),
-    api.onOverlayClose(() => {
-      kind.value = null
+    api.onOverlayShow((msg) => {
+      content.value = msg
     })
   )
-  window.addEventListener('keydown', onKey)
 })
 
 onBeforeUnmount(() => {
   unsubs.forEach((u) => u())
-  window.removeEventListener('keydown', onKey)
 })
 </script>
 
 <template>
-  <BookmarksModal v-if="kind === 'bookmarks'" @close="api.openModal(null)" />
-  <SettingsModal v-if="kind === 'settings'" @close="api.openModal(null)" />
+  <component
+    :is="content ? REGISTRY[content.id] : null"
+    :payload="content?.payload"
+    :band-top="content?.meta.bandTop ?? 0"
+    @overlay-event="emitEvent"
+  />
 </template>

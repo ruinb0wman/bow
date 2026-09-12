@@ -11,7 +11,7 @@ import {
   removeNode,
   updateNode
 } from '@shared/bookmarkTree'
-import type { ModalKind, Settings, TabInfo } from '@shared/types'
+import type { OverlayContent, OverlayEvent, Settings, TabInfo } from '@shared/types'
 import type { TabManager } from './tabManager'
 import type { OverlayManager } from './overlay'
 import { getBookmarksStore, getSettingsStore, getHistoryStore } from './stores'
@@ -153,10 +153,14 @@ export function registerIpc(tabs: TabManager, mainWindow: BrowserWindow, overlay
     return settings
   })
 
-  // 顶层弹层开关
-  ipcMain.handle('ui:modal', (_e, kind: ModalKind | null) => {
-    if (kind == null) overlay.close()
-    else overlay.open(kind)
+  // 通用顶层浮层开关(chrome 侧下发内容描述;overlay 页面按 id 渲染注册表组件)
+  ipcMain.handle('ui:overlay', (_e, content: OverlayContent | null) => {
+    overlay.show(content)
+    return true
+  })
+  // overlay 页面 → chrome 的泛型事件(如建议下拉的 pick/hover/cancel、弹层的 close-request)
+  ipcMain.handle('ui:overlay-event', (_e, ev: OverlayEvent) => {
+    if (!mainWindow.isDestroyed()) mainWindow.webContents.send('overlay-event', ev)
     return true
   })
 
@@ -170,10 +174,11 @@ export function registerIpc(tabs: TabManager, mainWindow: BrowserWindow, overlay
   })
   ipcMain.handle('window:close', () => mainWindow.close())
 
-  // chrome 高度(渲染层实测)
+  // chrome 高度(渲染层实测)→ 页面视图布局 + overlay 条带定位
   ipcMain.handle('ui:chrome-height', (_e, height: number) => {
     log('chrome 高度上报', height)
     tabs.setChromeHeight(Math.max(0, Math.round(height)))
+    overlay.layout()
     return true
   })
 

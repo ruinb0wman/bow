@@ -1,6 +1,6 @@
 /** 地址栏模糊匹配与建议纯逻辑(可单测):子序列匹配 + 历史/书签合并建议 */
 
-import type { FlatBookmark, HistoryEntry, Suggestion } from './types'
+import type { FlatBookmark, HistoryEntry, Suggestion, SuggestRow } from './types'
 
 /** 是否为词边界(行首或前一个字符非字母数字):命中边界加分,让 "git" 优先命中 "GitHub" 而非 "digit" */
 function isBoundary(text: string, i: number): boolean {
@@ -155,4 +155,48 @@ export function buildSuggestions(
   })
   out.push(...ranked.slice(0, Math.max(0, limit - 1)).map((r) => r.s))
   return out
+}
+
+/** 标题高亮分段:match 到的字符用 .hl 包裹 */
+function titleSegments(s: Suggestion, query: string): SuggestRow['segments'] {
+  const text = s.title
+  const q = query.trim()
+  if (!q || s.kind === 'search') return [{ text, hl: false }]
+  const segs: Array<{ text: string; hl: boolean }> = []
+  let cur = 0
+  for (const [st, en] of highlightRanges(q, text)) {
+    if (st > cur) segs.push({ text: text.slice(cur, st), hl: false })
+    segs.push({ text: text.slice(st, en), hl: true })
+    cur = en
+  }
+  if (cur < text.length) segs.push({ text: text.slice(cur), hl: false })
+  return segs
+}
+
+/** 副标题(展示用):搜索行显示引擎 label,其他行显示书签路径或 URL */
+function subText(s: Suggestion, searchLabel?: string): string {
+  if (s.kind === 'search') return `使用 ${searchLabel ?? '搜索引擎'} 搜索`
+  if (s.kind === 'bookmark') return s.path ?? s.url ?? ''
+  return s.url ?? ''
+}
+
+export interface BuildSuggestRowsOptions {
+  /** 搜索建议行副标题里的引擎名(如 'Google'),缺省显示“搜索引擎” */
+  searchLabel?: string
+}
+
+/**
+ * 由建议列表生成面板渲染行模型(buildSuggestions 的输出 → SuggestRow[]),
+ * chrome 与 suggest 面板共用;纯函数可单测。
+ */
+export function buildSuggestRows(
+  items: Suggestion[],
+  query: string,
+  opts: BuildSuggestRowsOptions = {}
+): SuggestRow[] {
+  return items.map((s) => ({
+    kind: s.kind,
+    segments: titleSegments(s, query),
+    sub: subText(s, opts.searchLabel)
+  }))
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { buildSuggestions, fuzzyMatch, fuzzyScore, highlightRanges } from '../src/shared/suggest'
-import type { FlatBookmark, HistoryEntry } from '../src/shared/types'
+import { buildSuggestions, buildSuggestRows, fuzzyMatch, fuzzyScore, highlightRanges } from '../src/shared/suggest'
+import type { FlatBookmark, HistoryEntry, Suggestion } from '../src/shared/types'
 
 const history: HistoryEntry[] = [
   { id: 'h1', title: 'GitHub', url: 'https://github.com', kind: 'page', visitedAt: 3000 },
@@ -123,5 +123,60 @@ describe('buildSuggestions', () => {
     const out = buildSuggestions('', big, [])
     expect(out).toHaveLength(9)
     expect(out[0].id).toBe('x0') // 最近的在最前
+  })
+})
+
+describe('buildSuggestRows(建议 → 面板渲染行模型)', () => {
+  const items: Suggestion[] = [
+    { kind: 'search', id: '__s__', title: 'github', query: 'github' },
+    { kind: 'history', id: 'h1', title: 'GitHub', url: 'https://github.com' },
+    { kind: 'bookmark', id: 'b1', title: 'MDN Web Docs', url: 'https://developer.mozilla.org', path: '开发/MDN Web Docs' }
+  ]
+
+  it('行序与输入平行,kind 透传', () => {
+    const rows = buildSuggestRows(items, 'git')
+    expect(rows.map((r) => r.kind)).toEqual(['search', 'history', 'bookmark'])
+  })
+
+  it('高亮分段:命中字符标记 hl,未命中不标记', () => {
+    const rows = buildSuggestRows(items, 'git')
+    const history = rows[1]
+    expect(history.segments).toEqual([
+      { text: 'Git', hl: true },
+      { text: 'Hub', hl: false }
+    ])
+  })
+
+  it('搜索行不参与高亮(整行无高亮)', () => {
+    const rows = buildSuggestRows(items, 'git')
+    expect(rows[0].segments).toEqual([{ text: 'github', hl: false }])
+  })
+
+  it('空 query:全部无高亮', () => {
+    const rows = buildSuggestRows(items, '')
+    for (const r of rows) expect(r.segments.every((s) => !s.hl)).toBe(true)
+  })
+
+  it('中文逐字高亮', () => {
+    const rows = buildSuggestRows(
+      [{ kind: 'history', id: 'h', title: '谷歌地图', url: 'x' }],
+      '地图'
+    )
+    expect(rows[0].segments).toEqual([
+      { text: '谷歌', hl: false },
+      { text: '地图', hl: true }
+    ])
+  })
+
+  it('副标题:搜索行显示引擎 label;书签显示路径;历史显示 URL', () => {
+    const rows = buildSuggestRows(items, 'git', { searchLabel: 'Google' })
+    expect(rows[0].sub).toBe('使用 Google 搜索')
+    expect(rows[1].sub).toBe('https://github.com')
+    expect(rows[2].sub).toBe('开发/MDN Web Docs')
+  })
+
+  it('未提供引擎 label 时搜索行显示“搜索引擎”', () => {
+    const rows = buildSuggestRows([items[0]], 'git')
+    expect(rows[0].sub).toBe('使用 搜索引擎 搜索')
   })
 })

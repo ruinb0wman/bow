@@ -5,9 +5,19 @@ import type { Settings } from '@shared/types'
 import { SEARCH_ENGINES } from '@shared/url'
 import { normalizeCorsEntry } from '@shared/cors'
 import { Eraser, Plus, Trash2, X } from 'lucide-vue-next'
+import ModalShell from './ModalShell.vue'
+
+defineOptions({ inheritAttrs: false })
 
 const api = window.browserAPI
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ 'overlay-event': [event: string, args?: unknown] }>()
+
+function requestClose(): void {
+  emit('overlay-event', 'close-request')
+}
+function onShellEvent(event: string, args?: unknown): void {
+  emit('overlay-event', event, args)
+}
 
 const settingsDraft = ref<Settings>({
   searchEngine: 'google',
@@ -56,16 +66,16 @@ async function saveSettings(): Promise<void> {
     corsBypassEnabled: settingsDraft.value.corsBypassEnabled,
     corsWhitelist: [...settingsDraft.value.corsWhitelist]
   })
-  emit('close')
+  requestClose()
 }
 </script>
 
 <template>
-  <div class="modal-mask" @click.self="emit('close')">
-    <div class="modal panel-settings">
+  <ModalShell @overlay-event="onShellEvent">
+    <div class="panel-settings">
       <div class="modal-head">
         <span>设置</span>
-        <button class="win-btn" title="关闭" @click="emit('close')"><X :size="13" /></button>
+        <button class="win-btn" title="关闭" @click="requestClose"><X :size="13" /></button>
       </div>
       <div class="set-row">
         <span class="set-label">默认搜索引擎</span>
@@ -118,8 +128,8 @@ async function saveSettings(): Promise<void> {
       </div>
       <div class="set-actions">
         <button class="btn primary" @click="saveSettings">保存</button>
-        <button class="btn" @click="emit('close')">取消</button>
+        <button class="btn" @click="requestClose">取消</button>
       </div>
     </div>
-  </div>
+  </ModalShell>
 </template>

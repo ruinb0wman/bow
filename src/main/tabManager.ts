@@ -38,6 +38,11 @@ export class TabManager extends EventEmitter {
     this.layout()
   }
 
+  /** 当前 chrome UI 实测高度(页面视图的顶部偏移量,Overlay 条带也据此定位) */
+  getChromeHeight(): number {
+    return this.chromeHeight
+  }
+
   private makeInfo(id: number, wc: WebContents, active: boolean): TabInfo {
     const hist = wc.navigationHistory
     return {

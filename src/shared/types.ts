@@ -19,7 +19,7 @@ export type BookmarkTree = BookmarkNode[]
 
 export type SearchEngineId = 'google' | 'duckduckgo' | 'bing' | 'baidu'
 
-/** 顶层 Overlay 弹层类型(chrome UI 通过 ui:modal 开关) */
+/** 顶层 Overlay 弹层类型(chrome UI 通过通用 ui:overlay 开关) */
 export type ModalKind = 'bookmarks' | 'settings'
 
 /** 浏览历史条目:kind 为 search 时记录原始搜索词(query)便于展示与匹配 */
@@ -38,6 +38,60 @@ export type HistoryList = HistoryEntry[]
 
 /** 地址栏下拉建议行 */
 export type SuggestionKind = 'search' | 'history' | 'bookmark'
+
+// ---------- 通用 Overlay 浮层框架(复用契约) ----------
+/** 浮层布局位:full=全窗遮罩(modal);below-chrome=页面区条带(不遮工具栏/标签栏) */
+export type OverlayPlacement = 'full' | 'below-chrome'
+
+/**
+ * Overlay 内容标识(渲染层组件注册表的 key,新增浮层只需扩展此联合类型 + 注册组件)。
+ * 约定:`modal:` 前缀 = 全窗弹层,`suggest` = 地址栏建议下拉。
+ */
+export type OverlayContentId = 'modal:bookmarks' | 'modal:settings' | 'suggest'
+
+/** 按内容 id 类型化的 payload(数据一律需 IPC 可序列化) */
+export interface OverlayContentMap {
+  'modal:bookmarks': undefined
+  'modal:settings': undefined
+  suggest: SuggestPayload
+}
+
+export type OverlayPayload<K extends OverlayContentId> = OverlayContentMap[K]
+
+/** chrome 侧打开/更新浮层时下发的内容描述 */
+export interface OverlayContent<K extends OverlayContentId = OverlayContentId> {
+  id: K
+  payload: OverlayPayload<K>
+  placement: OverlayPlacement
+}
+
+/** 主进程转发给 overlay 页面的展示消息(meta 由主进程注入) */
+export interface OverlayShowMessage<K extends OverlayContentId = OverlayContentId> extends OverlayContent<K> {
+  meta: { bandTop: number }
+}
+
+/** overlay 页面 → chrome 的泛型事件(name 由各内容组件自定) */
+export interface OverlayEvent {
+  id: OverlayContentId
+  event: string
+  args?: unknown
+}
+
+/** 建议面板的渲染行模型(与 Suggestion 平行,chrome 侧按索引还原执行动作) */
+export interface SuggestRow {
+  kind: SuggestionKind
+  segments: Array<{ text: string; hl: boolean }>
+  sub: string
+}
+
+export interface SuggestPayload {
+  rows: SuggestRow[]
+  /** 与 rows 平行的原始建议列表,chrome 侧 pick 时按索引还原 */
+  suggestions: Suggestion[]
+  activeIdx: number
+  /** 地址栏在窗口内的实测矩形(用于面板定位) */
+  rect: { x: number; y: number; width: number; height: number }
+}
 
 export interface Suggestion {
   kind: SuggestionKind

@@ -101,11 +101,15 @@ npm run test:mcp   # 拉起 MCP 模式浏览器并自动跑关键流程(新标�
 ```
 src/
   main/          主进程:窗口、TabManager(每标签 WebContentsView)、
+                 通用 Overlay 浮层宿主(OverlayManager + overlay 页面注册表)、
                  MCP 服务器、注入式页面操作执行器、JSON 存储、IPC
   preload/       contextBridge 暴露 window.browserAPI
-  renderer/      Vue 3 chrome UI(标签栏/地址栏/书签栏/管理/设置弹层)
+  renderer/      Vue 3 chrome UI(标签栏/地址栏/书签/设置弹层/建议下拉浮现层)
   shared/        三端共享:类型、URL 解析、书签树/历史/模糊匹配纯逻辑
+                 (含 buildSuggestRows 建议渲染行模型)
 tests/           vitest 单元测试(url 解析、书签树、历史、模糊建议)
 ```
 
-WebContentsView 的布局顶部偏移量由 chrome UI 实测高度通过 `ui:chrome-height` IPC 上报,标签栏/书签栏高度变化时自动跟随。
+WebContentsView 的布局顶部偏移量由 chrome UI 实测高度通过 `ui:chrome-height` IPC 上报,标签栏/工具栏高度变化时自动跟随。
+
+**通用 Overlay 浮层框架**:页面(WebContentsView)永远绘制在 chrome UI 之上,所以任何需要浮在页面上方的 UI(书签/设置弹层、地址栏建议下拉)都交由常驻的透明顶层视图承载——`OverlayManager` 按 `placement` 布局:`full` 全窗弹层;`below-chrome` 页面区条带(不遮工具栏)。渲染层 `OverlayApp.vue` 是注册表宿主,新增浮层只需扩展 `OverlayContentId` + 注册一个组件(组件契约:`payload` prop + `overlay-event` 回传,`close-request` 为通用请求关闭事件)。建议下拉由此浮在页面上方(Chrome 同款交互:展开时点页面先收起、第一击不穿透),**页面高度不再随搜索栏高度变化而重排**。

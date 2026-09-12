@@ -1,20 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue'
-import type { FlatBookmark, SearchEngineId, Suggestion, TabInfo } from '@shared/types'
+import type { FlatBookmark, ModalKind, SearchEngineId, Suggestion, SuggestPayload, TabInfo } from '@shared/types'
 import { flatten } from '@shared/bookmarkTree'
-import { buildSuggestions, highlightRanges } from '@shared/suggest'
+import { buildSuggestions, buildSuggestRows } from '@shared/suggest'
 import { SEARCH_ENGINES } from '@shared/url'
 import { faviconLetter } from './lib/avatar'
 import {
   ArrowLeft,
   ArrowRight,
   BookMarked,
-  Bookmark as BookmarkIcon,
-  History as HistoryIcon,
   Minus,
   Plus,
   RotateCw,
-  Search,
   Settings as SettingsIcon,
   Square,
   Star,
@@ -68,6 +65,7 @@ function syncAddress(): void {
 
 const chromeRoot = ref<HTMLElement | null>(null)
 const addressInput = ref<HTMLInputElement | null>(null)
+const addressBarEl = ref<HTMLElement | null>(null)
 
 onMounted(async () => {
   tabs.value = await api.listTabs()
@@ -96,6 +94,22 @@ onMounted(async () => {
     }),
     api.onSettingsChanged((s) => {
       searchEngine.value = s.searchEngine
+    }),
+    // overlay → chrome 泛型事件:按内容 id 分发
+    api.onOverlayEvent((ev) => {
+      if (ev.id === 'suggest') {
+        if (ev.event === 'pick' && typeof ev.args === 'number') {
+          const s = suggestions.value[ev.args]
+          if (s) openSuggestion(s)
+        } else if (ev.event === 'hover' && typeof ev.args === 'number') {
+          activeIdx.value = ev.args
+        } else if (ev.event === 'cancel') {
+          hideSuggest()
+          focusAddress()
+        }
+      } else if (ev.event === 'close-request') {
+        void api.showOverlay(null)
+      }
     })
   )
 
@@ -106,11 +120,15 @@ onMounted(async () => {
   report()
   const ro = new ResizeObserver(report)
   if (chromeRoot.value) ro.observe(chromeRoot.value)
-  window.addEventListener('resize', report)
+  const onResize = (): void => {
+    report()
+    if (showSuggest.value) pushSuggest() // 地址栏位置变化后重新对齐面板
+  }
+  window.addEventListener('resize', onResize)
   setTimeout(report, 300)
   unsubs.push(() => {
     ro.disconnect()
-    window.removeEventListener('resize', report)
+    window.removeEventListener('resize', onResize)
   })
 })
 
@@ -166,17 +184,40 @@ async function refreshBookmarks(): Promise<void> {
   bookmarkCache.value = flatten(await api.listBookmarks()).filter((b) => b.type === 'bookmark')
 }
 
+/** 把当前建议列表推给顶层 Overlay 面板(带地址栏实测矩形,用于对齐定位);无建议/不可见则关闭浮层 */
+function pushSuggest(): void {
+  const el = addressBarEl.value
+  const list = suggestions.value
+  if (!showSuggest.value || list.length === 0 || !el) {
+    void api.showOverlay(null)
+    return
+  }
+  const rect = el.getBoundingClientRect()
+  const payload: SuggestPayload = {
+    rows: buildSuggestRows(list, address.value, {
+      searchLabel: SEARCH_ENGINES[searchEngine.value]?.label
+    }),
+    // IPC 走结构化克隆,不能传 Vue 响应式代理 → 摊平成普通对象
+    suggestions: list.map((s) => ({ ...s })),
+    activeIdx: activeIdx.value,
+    rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+  }
+  void api.showOverlay({ id: 'suggest', payload, placement: 'below-chrome' })
+}
+
 async function refreshSuggestions(input: string): Promise<void> {
   const history = await api.listHistory()
   suggestions.value = buildSuggestions(input, history, bookmarkCache.value)
   activeIdx.value = 0
   showSuggest.value = suggestions.value.length > 0
+  pushSuggest()
 }
 
 function hideSuggest(): void {
   showSuggest.value = false
   suggestions.value = []
   activeIdx.value = 0
+  void api.showOverlay(null)
 }
 
 function onAddressFocus(e: FocusEvent): void {
@@ -240,33 +281,6 @@ function openSuggestion(s: Suggestion): void {
   }
 }
 
-interface TitleSeg {
-  text: string
-  hl: boolean
-}
-
-/** 标题高亮分段:match 到的字符用 .hl 包裹 */
-function titleSegments(s: Suggestion): TitleSeg[] {
-  const text = s.title
-  const q = address.value.trim()
-  if (!q || s.kind === 'search') return [{ text, hl: false }]
-  const segs: TitleSeg[] = []
-  let cur = 0
-  for (const [st, en] of highlightRanges(q, text)) {
-    if (st > cur) segs.push({ text: text.slice(cur, st), hl: false })
-    segs.push({ text: text.slice(st, en), hl: true })
-    cur = en
-  }
-  if (cur < text.length) segs.push({ text: text.slice(cur), hl: false })
-  return segs
-}
-
-function subText(s: Suggestion): string {
-  if (s.kind === 'search') return `使用 ${SEARCH_ENGINES[searchEngine.value]?.label ?? 'Google'} 搜索`
-  if (s.kind === 'bookmark') return s.path ?? s.url ?? ''
-  return s.url ?? ''
-}
-
 // ---------- 书签(管理/打开统一由 Overlay 面板 BookmarksModal 承担) ----------
 async function toggleStar(): Promise<void> {
   const url = currentUrl.value
@@ -285,6 +299,17 @@ async function toggleStar(): Promise<void> {
 const minimize = (): void => void api.minimize()
 const maximize = (): void => void api.maximize()
 const closeWindow = (): void => void api.closeWindow()
+
+// ---------- Overlay 浮层 ----------
+/** 打开/关闭全窗弹层(书签管理/设置) */
+function openModal(kind: ModalKind | null): void {
+  void api.showOverlay(kind ? { id: `modal:${kind}`, placement: 'full' } : null)
+}
+
+// activeIdx 由方向键 / overlay 悬停驱动:同步回显到面板
+watch(activeIdx, () => {
+  if (showSuggest.value) pushSuggest()
+})
 
 // ---------- 快捷键 ----------
 function focusAddress(): void {
@@ -358,7 +383,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 工具栏 -->
-    <div class="toolbar" :class="{ 'suggest-open': showSuggest && suggestions.length > 0 }">
+    <div class="toolbar">
       <button class="tool-btn no-drag" title="后退" :disabled="!activeTab?.canGoBack" @click="back">
         <ArrowLeft :size="16" />
       </button>
@@ -373,7 +398,7 @@ onBeforeUnmount(() => {
         <X v-if="loading" :size="16" />
         <RotateCw v-else :size="16" />
       </button>
-      <div class="addressbar no-drag" :class="{ 'suggest-open': showSuggest && suggestions.length > 0 }">
+      <div ref="addressBarEl" class="addressbar no-drag">
         <div class="addressbar-row">
           <input
             ref="addressInput"
@@ -395,39 +420,14 @@ onBeforeUnmount(() => {
             <Star :size="15" :fill="bookmarked ? 'currentColor' : 'none'" />
           </button>
         </div>
-        <div v-if="showSuggest && suggestions.length > 0" class="suggest" @mousedown.prevent>
-          <div
-            v-for="(s, i) in suggestions"
-            :key="s.id"
-            class="suggest-row"
-            :class="{ active: i === activeIdx }"
-            @mouseenter="activeIdx = i"
-            @click="openSuggestion(s)"
-          >
-            <span class="s-icon">
-              <Search v-if="s.kind === 'search'" :size="14" />
-              <HistoryIcon v-else-if="s.kind === 'history'" :size="14" />
-              <BookmarkIcon v-else :size="14" />
-            </span>
-            <span class="s-main">
-              <span class="s-title">
-                <template v-for="(seg, si) in titleSegments(s)" :key="si">
-                  <span v-if="seg.hl" class="hl">{{ seg.text }}</span>
-                  <template v-else>{{ seg.text }}</template>
-                </template>
-              </span>
-              <span class="s-sub">{{ subText(s) }}</span>
-            </span>
-          </div>
-        </div>
       </div>
-      <button class="tool-btn no-drag" title="管理书签" @click="api.openModal('bookmarks')">
+      <button class="tool-btn no-drag" title="管理书签" @click="openModal('bookmarks')">
         <BookMarked :size="16" />
       </button>
       <button class="tool-btn no-drag" title="恢复刚刚关闭的标签 (Ctrl+Shift+T)" @click="restoreTab">
         <Undo2 :size="14" />
       </button>
-      <button class="tool-btn no-drag" title="设置" @click="api.openModal('settings')">
+      <button class="tool-btn no-drag" title="设置" @click="openModal('settings')">
         <SettingsIcon :size="16" />
       </button>
     </div>

@@ -6,9 +6,19 @@ import { childrenOf } from '@shared/bookmarkTree'
 import { ArrowLeft, ArrowRightLeft, Folder, Pencil, Plus, Search, Trash2, X } from 'lucide-vue-next'
 import { domainHue, faviconLetter } from '../lib/avatar'
 import { openAllInFolder, openBookmarkBackground } from '../lib/openFolder'
+import ModalShell from './ModalShell.vue'
+
+defineOptions({ inheritAttrs: false })
 
 const api = window.browserAPI
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ 'overlay-event': [event: string, args?: unknown] }>()
+
+function requestClose(): void {
+  emit('overlay-event', 'close-request')
+}
+function onShellEvent(event: string, args?: unknown): void {
+  emit('overlay-event', event, args)
+}
 
 const bookmarks = ref<BookmarkTree>([])
 const search = ref('')
@@ -71,7 +81,7 @@ function openBookmark(node: BookmarkNode, e: MouseEvent): void {
     return
   }
   void api.goUrl(node.url)
-  emit('close')
+  requestClose()
 }
 
 function onFolderClick(node: BookmarkNode, e: MouseEvent): void {
@@ -211,8 +221,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="modal-mask" @click.self="emit('close')">
-    <div class="modal panel-launch">
+  <ModalShell @overlay-event="onShellEvent">
+    <div class="panel-launch">
       <!-- 头部:标题 + 搜索 -->
       <div class="la-head">
         <span class="la-title">收藏</span>
@@ -226,7 +236,7 @@ onBeforeUnmount(() => {
             spellcheck="false"
           />
         </div>
-        <button class="win-btn" title="关闭" @click="emit('close')"><X :size="13" /></button>
+        <button class="win-btn" title="关闭" @click="requestClose"><X :size="13" /></button>
       </div>
 
       <!-- 目录视图返回条 -->
@@ -327,5 +337,5 @@ onBeforeUnmount(() => {
         <span v-if="notice" class="la-notice">{{ notice }}</span>
       </div>
     </div>
-  </div>
+  </ModalShell>
 </template>
