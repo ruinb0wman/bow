@@ -179,10 +179,7 @@ select:focus {
 .tool-btn svg,
 .win-btn svg,
 .star svg,
-.pbm-icon svg,
-.btn svg,
-.bm-item svg,
-.bm-folder svg {
+.btn svg {
   display: block;
   flex: none;
 }
@@ -322,67 +319,227 @@ select:focus {
   color: #f6c344;
 }
 
-/* ---------- 书签栏 ---------- */
-.bmbar {
+/* ---------- 收藏 Launchpad 面板 ---------- */
+.panel-launch {
+  width: 720px;
+  max-width: 92vw;
+  height: min(620px, 84vh);
+}
+
+.la-head {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
-  background: var(--bg);
+  gap: 10px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--border);
-  min-height: 28px;
-  overflow-x: auto;
-  white-space: nowrap;
 }
 
-.bm-item,
-.bm-folder {
+.la-title {
   flex: none;
-  max-width: 160px;
-  padding: 3px 8px;
-  border-radius: var(--radius);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.la-search {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 0 10px;
+  height: 28px;
+}
+
+.la-search:focus-within {
+  border-color: var(--accent);
+}
+
+.la-search-icon {
+  flex: none;
+  color: var(--fg-dim);
+}
+
+.la-search-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 13px;
   color: var(--fg);
-  font-size: 12px;
-  overflow: hidden;
-  white-space: nowrap;
+}
+
+.la-search-input:focus {
+  border-color: transparent;
+}
+
+.la-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px 0;
+}
+
+.la-nav-title {
+  font-weight: 600;
+}
+
+.la-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px;
+}
+
+.la-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 10px;
+}
+
+.la-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 6px 8px;
+  border-radius: 14px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  text-align: center;
+  transition: transform 0.12s ease, background 0.12s ease;
+}
+
+.la-tile:hover {
+  background: var(--bg3);
+  border-color: var(--border);
+  transform: translateY(-2px);
+}
+
+.la-avatar {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  background: var(--bg3);
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  justify-content: center;
+  font-size: 20px;
+  font-weight: 700;
+  color: #fff;
+  flex: none;
 }
 
-.bm-label {
+.la-tile.folder .la-avatar {
+  background: rgba(74, 142, 247, 0.18);
+  color: var(--accent);
+}
+
+.la-name {
+  max-width: 100%;
+  font-size: 12px;
+  color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.bm-chevron {
-  opacity: 0.65;
-  margin-left: -1px;
+.la-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
 }
 
-.bm-item:hover,
-.bm-folder:hover,
-.bm-folder.open {
-  background: var(--bg3);
+.la-actions {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: none;
+  gap: 2px;
 }
 
-.bm-item.sub {
-  margin-left: 8px;
-  color: var(--fg-dim);
+.la-tile:hover .la-actions {
+  display: inline-flex;
+}
+
+.la-act {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--bg2);
   border: 1px solid var(--border);
+  color: var(--fg);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.bm-empty {
+.la-act:hover {
+  background: var(--bg);
+}
+
+.la-act.danger:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+.la-empty {
+  color: var(--fg-dim);
+  font-size: 13px;
+  text-align: center;
+  padding: 44px 0;
+}
+
+.la-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 16px 10px;
+  padding: 10px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  flex-wrap: wrap;
+}
+
+.la-move-title {
   color: var(--fg-dim);
   font-size: 12px;
+  flex: none;
 }
 
-.bm-right {
-  margin-left: auto;
-  flex: none;
+.la-foot {
   display: flex;
-  gap: 2px;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.la-hint {
+  margin-left: auto;
+  color: var(--fg-dim);
+  font-size: 11px;
+  flex: none;
+}
+
+.la-notice {
+  flex: none;
+  color: var(--accent);
+  font-size: 12px;
 }
 
 /* ---------- 弹层 ---------- */
@@ -416,11 +573,6 @@ select:focus {
   font-weight: 600;
 }
 
-.panel-bms {
-  width: 640px;
-  max-width: 90vw;
-}
-
 .panel-settings {
   width: 460px;
   max-width: 90vw;
@@ -445,48 +597,6 @@ select:focus {
   font-size: 12px;
 }
 
-.pbm-list {
-  overflow-y: auto;
-  padding: 4px 8px 10px;
-}
-
-.pbm-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 6px;
-  border-radius: var(--radius);
-}
-
-.pbm-row:hover {
-  background: var(--bg3);
-}
-
-.pbm-icon {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  color: var(--fg-dim);
-}
-
-.pbm-title {
-  flex: none;
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pbm-url {
-  flex: 1;
-  min-width: 0;
-  color: var(--fg-dim);
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .pbm-input {
   flex: 1;
   min-width: 0;
@@ -494,12 +604,6 @@ select:focus {
 
 .pbm-input.wide {
   flex: 1;
-}
-
-.pbm-actions {
-  display: flex;
-  gap: 4px;
-  flex: none;
 }
 
 .btn {

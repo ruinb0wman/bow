@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   addBookmark,
   addFolder,
+  flattenToSingleLevel,
   updateNode,
   removeNode,
   moveNode,
@@ -106,5 +107,92 @@ describe('书签树操作', () => {
     const { tree } = addBookmark(fresh(), { title: 'G', url: 'https://github.com' })
     expect(findByUrl(tree, 'https://github.com')).toHaveLength(1)
     expect(findByUrl(tree, 'https://other.com')).toHaveLength(0)
+  })
+})
+
+describe('一级目录迁移 flattenToSingleLevel', () => {
+  it('深层书签并入最近根级目录,嵌套目录删除', () => {
+    const tree: BookmarkTree = [
+      {
+        id: 'f1',
+        type: 'folder',
+        title: 'A',
+        children: [
+          { id: 'b1', type: 'bookmark', title: 'B1', url: 'https://b1.com' },
+          {
+            id: 'f2',
+            type: 'folder',
+            title: 'A1',
+            children: [
+              { id: 'b2', type: 'bookmark', title: 'B2', url: 'https://b2.com' },
+              {
+                id: 'f3',
+                type: 'folder',
+                title: 'A1a',
+                children: [{ id: 'b3', type: 'bookmark', title: 'B3', url: 'https://b3.com' }]
+              }
+            ]
+          }
+        ]
+      },
+      { id: 'b0', type: 'bookmark', title: 'B0', url: 'https://b0.com' }
+    ]
+    expect(flattenToSingleLevel(tree)).toEqual([
+      {
+        id: 'f1',
+        type: 'folder',
+        title: 'A',
+        children: [
+          { id: 'b1', type: 'bookmark', title: 'B1', url: 'https://b1.com' },
+          { id: 'b2', type: 'bookmark', title: 'B2', url: 'https://b2.com' },
+          { id: 'b3', type: 'bookmark', title: 'B3', url: 'https://b3.com' }
+        ]
+      },
+      { id: 'b0', type: 'bookmark', title: 'B0', url: 'https://b0.com' }
+    ])
+  })
+
+  it('空嵌套目录删除,空根级目录保留', () => {
+    const tree: BookmarkTree = [
+      {
+        id: 'f1',
+        type: 'folder',
+        title: 'A',
+        children: [{ id: 'f2', type: 'folder', title: 'B', children: [] }]
+      },
+      { id: 'f3', type: 'folder', title: 'Empty', children: [] }
+    ]
+    expect(flattenToSingleLevel(tree)).toEqual([
+      { id: 'f1', type: 'folder', title: 'A', children: [] },
+      { id: 'f3', type: 'folder', title: 'Empty', children: [] }
+    ])
+  })
+
+  it('已是一级的树原样返回(幂等)', () => {
+    const tree: BookmarkTree = [
+      {
+        id: 'f1',
+        type: 'folder',
+        title: 'A',
+        children: [{ id: 'b1', type: 'bookmark', title: 'B1', url: 'https://b1.com' }]
+      },
+      { id: 'b0', type: 'bookmark', title: 'B0', url: 'https://b0.com' }
+    ]
+    expect(flattenToSingleLevel(tree)).toEqual(tree)
+    expect(flattenToSingleLevel(flattenToSingleLevel(tree))).toEqual(tree)
+  })
+
+  it('纯目录链无书签时仅剩空根目录', () => {
+    const tree: BookmarkTree = [
+      {
+        id: 'f1',
+        type: 'folder',
+        title: 'A',
+        children: [
+          { id: 'f2', type: 'folder', title: 'B', children: [{ id: 'f3', type: 'folder', title: 'C', children: [] }] }
+        ]
+      }
+    ]
+    expect(flattenToSingleLevel(tree)).toEqual([{ id: 'f1', type: 'folder', title: 'A', children: [] }])
   })
 })

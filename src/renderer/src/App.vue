@@ -1,15 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue'
-import type { BookmarkNode, BookmarkTree, TabInfo } from '@shared/types'
-import { childrenOf, flatten } from '@shared/bookmarkTree'
+import type { TabInfo } from '@shared/types'
+import { faviconLetter } from './lib/avatar'
 import {
   ArrowLeft,
   ArrowRight,
   BookMarked,
-  Bookmark,
-  ChevronDown,
-  ChevronRight,
-  Folder,
   Minus,
   Plus,
   RotateCw,
@@ -25,7 +21,6 @@ const api = window.browserAPI
 
 // ---------- 状态 ----------
 const tabs = ref<TabInfo[]>([])
-const bookmarks = ref<BookmarkTree>([])
 const address = ref('')
 const addressEditing = ref(false)
 
@@ -47,7 +42,6 @@ watch(
   { immediate: true }
 )
 
-const expandedFolders = ref<Set<string>>(new Set())
 // ---------- 事件订阅 ----------
 const unsubs: Array<() => void> = []
 
@@ -63,7 +57,6 @@ const addressInput = ref<HTMLInputElement | null>(null)
 
 onMounted(async () => {
   tabs.value = await api.listTabs()
-  bookmarks.value = await api.listBookmarks()
   syncAddress()
 
   unsubs.push(
@@ -79,13 +72,6 @@ onMounted(async () => {
     }),
     api.onTabActivated(() => {
       syncAddress()
-    }),
-    api.onBookmarksChanged((tree) => {
-      bookmarks.value = tree
-      const valid = new Set(flatten(tree).map((b) => b.id))
-      for (const id of [...expandedFolders.value]) {
-        if (!valid.has(id)) expandedFolders.value.delete(id)
-      }
     })
   )
 
@@ -151,24 +137,7 @@ async function stopLoading(): Promise<void> {
   await api.stop()
 }
 
-// ---------- 书签(管理弹层已迁移到 Overlay 页面 components/BookmarksModal.vue) ----------
-const rootChildren = computed(() => childrenOf(bookmarks.value, null))
-
-function isFolderOpen(id: string): boolean {
-  return expandedFolders.value.has(id)
-}
-
-function toggleFolder(id: string | null): void {
-  if (!id) return
-  const set = expandedFolders.value
-  if (set.has(id)) set.delete(id)
-  else set.add(id)
-}
-
-function folderChildren(id: string): BookmarkNode[] {
-  return childrenOf(bookmarks.value, id)
-}
-
+// ---------- 书签(管理/打开统一由 Overlay 面板 BookmarksModal 承担) ----------
 async function toggleStar(): Promise<void> {
   const url = currentUrl.value
   if (!url || url === 'about:blank') return
@@ -222,15 +191,6 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
 })
-
-function faviconLetter(t: TabInfo): string {
-  const title = t.title?.trim() ?? ''
-  return title ? title[0].toUpperCase() : '·'
-}
-
-function openBookmarkUrl(url: string): void {
-  void api.goUrl(url)
-}
 </script>
 
 <template>
@@ -248,7 +208,7 @@ function openBookmarkUrl(url: string): void {
         >
           <span class="tab-letter">
             <TriangleAlert v-if="t.crashed" :size="13" />
-            <template v-else>{{ faviconLetter(t) }}</template>
+            <template v-else>{{ faviconLetter(t.title) }}</template>
           </span>
           <span class="tab-title">{{ t.crashed ? '页面崩溃' : t.title }}</span>
           <span v-if="t.loading" class="tab-spinner"></span>
@@ -307,55 +267,12 @@ function openBookmarkUrl(url: string): void {
       <button class="tool-btn no-drag" title="管理书签" @click="api.openModal('bookmarks')">
         <BookMarked :size="16" />
       </button>
+      <button class="tool-btn no-drag" title="恢复刚刚关闭的标签 (Ctrl+Shift+T)" @click="restoreTab">
+        <Undo2 :size="14" />
+      </button>
       <button class="tool-btn no-drag" title="设置" @click="api.openModal('settings')">
         <SettingsIcon :size="16" />
       </button>
-    </div>
-
-    <!-- 书签栏 -->
-    <div class="bmbar no-drag">
-      <template v-for="node in rootChildren" :key="node.id">
-        <button
-          v-if="node.type === 'folder'"
-          class="bm-folder"
-          :class="{ open: isFolderOpen(node.id) }"
-          :title="'文件夹: ' + node.title"
-          @click="toggleFolder(node.id)"
-        >
-          <Folder :size="13" />
-          <span class="bm-label">{{ node.title }}</span>
-          <ChevronDown v-if="isFolderOpen(node.id)" :size="12" class="bm-chevron" />
-          <ChevronRight v-else :size="12" class="bm-chevron" />
-        </button>
-        <button v-else class="bm-item" :title="node.url" @click="openBookmarkUrl(node.url)">
-          <Bookmark :size="13" />
-          <span class="bm-label">{{ node.title }}</span>
-        </button>
-      </template>
-      <!-- 展开的文件夹子项 -->
-      <template v-for="node in rootChildren" :key="'c' + node.id">
-        <template v-if="node.type === 'folder' && isFolderOpen(node.id)">
-          <button
-            v-for="child in folderChildren(node.id)"
-            :key="child.id"
-            class="bm-item sub"
-            :class="{ folder: child.type === 'folder' }"
-            :title="child.type === 'folder' ? child.title : child.url"
-            @click="child.type === 'folder' ? toggleFolder(child.id) : openBookmarkUrl(child.url)"
-          >
-            <Folder v-if="child.type === 'folder'" :size="12" />
-            <Bookmark v-else :size="12" />
-            <span class="bm-label">{{ child.title }}</span>
-          </button>
-        </template>
-      </template>
-      <span v-if="rootChildren.length === 0" class="bm-empty">书签栏为空(双击标签栏新建标签)</span>
-      <span class="bm-right">
-        <button class="tool-btn small" title="管理书签" @click="api.openModal('bookmarks')">管理…</button>
-        <button class="tool-btn small" title="恢复刚刚关闭的标签 (Ctrl+Shift+T)" @click="restoreTab">
-          <Undo2 :size="14" />
-        </button>
-      </span>
     </div>
   </div>
 </template>

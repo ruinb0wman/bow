@@ -5,6 +5,7 @@ import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import type { BookmarkTree, Settings } from '@shared/types'
 import { DEFAULT_SETTINGS } from '@shared/url'
+import { flattenToSingleLevel } from '@shared/bookmarkTree'
 import { log, logError } from './logger'
 
 export class JsonStore<T> {
@@ -69,6 +70,13 @@ export function initStores(): void {
   if (bookmarksStore || settingsStore) return
   bookmarksStore = new JsonStore<BookmarkTree>('bookmarks.json', [])
   settingsStore = new JsonStore<Settings>('settings.json', DEFAULT_SETTINGS)
+  // 一级目录迁移:启动时展平历史深层嵌套(幂等,已是一级时无写入)
+  const raw = bookmarksStore.get()
+  const flat = flattenToSingleLevel(raw)
+  if (JSON.stringify(flat) !== JSON.stringify(raw)) {
+    bookmarksStore.setRaw(flat)
+    log('书签数据已迁移为一级目录')
+  }
   log('stores 初始化完成')
 }
 

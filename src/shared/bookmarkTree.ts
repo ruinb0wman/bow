@@ -147,3 +147,31 @@ export function childrenOf(tree: BookmarkTree, folderId: string | null): Bookmar
   const hit = findIn(tree, folderId)
   return hit && hit.node.type === 'folder' ? hit.node.children : []
 }
+
+/**
+ * 一级目录迁移:目录层级只保留一级。
+ * - 所有深度 ≥2 的书签并入其深度 1 的祖先目录(例如 A/B/bm 与 A/B/C/bm 都并入 A);
+ * - 删除全部非根目录(其书签已上移);
+ * - 保留根级目录(含空目录,用户可能有意创建待整理);
+ * - 已是一级的树原样返回(幂等)。
+ */
+export function flattenToSingleLevel(tree: BookmarkTree): BookmarkTree {
+  const next: BookmarkTree = []
+  for (const node of tree) {
+    if (node.type === 'bookmark') {
+      next.push({ ...node })
+      continue
+    }
+    // 根级目录:深度优先收集其全部子孙书签,嵌套目录本身删除
+    const flatChildren: BookmarkNode[] = []
+    const walk = (list: BookmarkTree): void => {
+      for (const c of list) {
+        if (c.type === 'bookmark') flatChildren.push({ ...c })
+        else walk(c.children)
+      }
+    }
+    walk(node.children)
+    next.push({ ...node, children: flatChildren })
+  }
+  return next
+}

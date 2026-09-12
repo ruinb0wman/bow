@@ -6,6 +6,7 @@ import {
   addBookmark,
   addFolder,
   findByUrl,
+  findNode,
   moveNode,
   removeNode,
   updateNode
@@ -83,7 +84,8 @@ export function registerIpc(tabs: TabManager, mainWindow: BrowserWindow, overlay
   })
   ipcMain.handle('bookmarks:add-folder', (_e, input: { title?: string; parentId?: string | null }) => {
     const store = getBookmarksStore()
-    const added = addFolder(store.get(), { title: input.title ?? '', parentId: input.parentId ?? null })
+    // 一级目录结构:文件夹始终创建在根目录,忽略调用方传入的 parentId
+    const added = addFolder(store.get(), { title: input.title ?? '', parentId: null })
     store.setRaw(added.tree)
     sendBookmarks()
     return added.node
@@ -109,13 +111,24 @@ export function registerIpc(tabs: TabManager, mainWindow: BrowserWindow, overlay
   })
   ipcMain.handle('bookmarks:move', (_e, id: string, targetFolderId: string | null) => {
     const store = getBookmarksStore()
-    const tree = moveNode(store.get(), id, targetFolderId)
-    if (tree) {
-      store.setRaw(tree)
-      sendBookmarks()
-      return { ok: true }
+    const tree = store.get()
+    const node = findNode(tree, id)
+    if (!node) return { ok: false, error: '书签不存在' }
+    // 一级目录不变量:目录恒在根;书签目标仅限根或根级目录
+    const rootFolderIds = new Set<string>()
+    for (const n of tree) if (n.type === 'folder') rootFolderIds.add(n.id)
+    if (node.type === 'folder') {
+      if (targetFolderId !== null) return { ok: false, error: '目录只能位于根目录' }
+      return { ok: true } // 已在根,无需操作
     }
-    return { ok: false, error: '移动失败(目标文件夹不存在或形成循环)' }
+    if (targetFolderId !== null && !rootFolderIds.has(targetFolderId)) {
+      return { ok: false, error: '目标必须是根级目录' }
+    }
+    const moved = moveNode(tree, id, targetFolderId)
+    if (!moved) return { ok: false, error: '移动失败(目标文件夹不存在或形成循环)' }
+    store.setRaw(moved)
+    sendBookmarks()
+    return { ok: true }
   })
   ipcMain.handle('bookmarks:find-by-url', (_e, url: string) => findByUrl(getBookmarksStore().get(), url))
 
