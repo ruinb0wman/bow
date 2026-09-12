@@ -4,7 +4,7 @@ import { onMounted, ref } from 'vue'
 import type { Settings } from '@shared/types'
 import { SEARCH_ENGINES } from '@shared/url'
 import { normalizeCorsEntry } from '@shared/cors'
-import { Plus, Trash2, X } from 'lucide-vue-next'
+import { Eraser, Plus, Trash2, X } from 'lucide-vue-next'
 
 const api = window.browserAPI
 const emit = defineEmits<{ close: [] }>()
@@ -17,10 +17,17 @@ const settingsDraft = ref<Settings>({
 })
 const newEntry = ref('')
 const entryError = ref('')
+const historyCount = ref(0)
 
 onMounted(async () => {
   settingsDraft.value = { ...(await api.getSettings()) }
+  historyCount.value = (await api.listHistory()).length
 })
+
+async function clearHistory(): Promise<void> {
+  await api.clearHistory()
+  historyCount.value = 0
+}
 
 function addEntry(): void {
   const norm = normalizeCorsEntry(newEntry.value)
@@ -72,6 +79,11 @@ async function saveSettings(): Promise<void> {
       <div class="set-row">
         <span class="set-label">主页</span>
         <input v-model="settingsDraft.homepage" class="pbm-input wide" placeholder="https://www.google.com" />
+      </div>
+      <div class="set-row">
+        <span class="set-label">浏览历史</span>
+        <span class="set-hcount">{{ historyCount }} 条记录</span>
+        <button class="btn danger" title="删除全部浏览历史记录" @click="clearHistory"><Eraser :size="13" />清除浏览历史</button>
       </div>
       <div class="set-row">
         <span class="set-label">CORS 放行</span>

@@ -1,6 +1,6 @@
 # MCP Browser — AI 可操纵的简易 Electron 浏览器
 
-多标签页浏览器:地址栏搜索、书签(文件夹分组)、设置;内置 **MCP 服务器(stdio)**,AI 编码工具(pi / Claude Code / Cursor 等)可以实时操纵这个浏览器:导航、搜索、点击、输入、滚动、切换标签、截图、读取页面快照。
+多标签页浏览器:地址栏搜索(输历史/书签实时模糊建议)、浏览历史、书签(文件夹分组)、设置;内置 **MCP 服务器(stdio)**,AI 编码工具(pi / Claude Code / Cursor 等)可以实时操纵这个浏览器:导航、搜索、点击、输入、滚动、切换标签、截图、读取页面快照。
 
 ## 技术栈
 
@@ -75,6 +75,7 @@ MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到
 ## 数据存储
 
 - 书签:`<userData>/bookmarks.json`
+- 浏览历史(最近 5000 条,按 URL 去重):`<userData>/history.json`
 - 设置(默认搜索引擎/主页):`<userData>/settings.json`
 - MCP 模式下日志:`<userData>/browser.log`
 
@@ -103,8 +104,8 @@ src/
                  MCP 服务器、注入式页面操作执行器、JSON 存储、IPC
   preload/       contextBridge 暴露 window.browserAPI
   renderer/      Vue 3 chrome UI(标签栏/地址栏/书签栏/管理/设置弹层)
-  shared/        三端共享:类型、URL 解析、书签树纯逻辑
-tests/           vitest 单元测试(url 解析、书签树)
+  shared/        三端共享:类型、URL 解析、书签树/历史/模糊匹配纯逻辑
+tests/           vitest 单元测试(url 解析、书签树、历史、模糊建议)
 ```
 
 WebContentsView 的布局顶部偏移量由 chrome UI 实测高度通过 `ui:chrome-height` IPC 上报,标签栏/书签栏高度变化时自动跟随。

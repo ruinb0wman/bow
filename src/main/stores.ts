@@ -3,7 +3,7 @@
 import { app } from 'electron'
 import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
-import type { BookmarkTree, Settings } from '@shared/types'
+import type { BookmarkTree, HistoryList, Settings } from '@shared/types'
 import { DEFAULT_SETTINGS } from '@shared/url'
 import { flattenToSingleLevel } from '@shared/bookmarkTree'
 import { log, logError } from './logger'
@@ -65,11 +65,13 @@ export class JsonStore<T> {
 
 let bookmarksStore: JsonStore<BookmarkTree> | null = null
 let settingsStore: JsonStore<Settings> | null = null
+let historyStore: JsonStore<HistoryList> | null = null
 
 export function initStores(): void {
   if (bookmarksStore || settingsStore) return
   bookmarksStore = new JsonStore<BookmarkTree>('bookmarks.json', [])
   settingsStore = new JsonStore<Settings>('settings.json', DEFAULT_SETTINGS)
+  historyStore = new JsonStore<HistoryList>('history.json', [])
   // 一级目录迁移:启动时展平历史深层嵌套(幂等,已是一级时无写入)
   const raw = bookmarksStore.get()
   const flat = flattenToSingleLevel(raw)
@@ -88,4 +90,9 @@ export function getBookmarksStore(): JsonStore<BookmarkTree> {
 export function getSettingsStore(): JsonStore<Settings> {
   if (!settingsStore) initStores()
   return settingsStore!
+}
+
+export function getHistoryStore(): JsonStore<HistoryList> {
+  if (!historyStore) initStores()
+  return historyStore!
 }

@@ -5,6 +5,7 @@ import type { WebContents } from 'electron'
 import { EventEmitter } from 'node:events'
 import type { TabInfo } from '@shared/types'
 import { log, logError } from './logger'
+import { recordVisit } from './history'
 
 export interface TabEvents {
   'tab-updated': (tab: TabInfo) => void
@@ -117,7 +118,11 @@ export class TabManager extends EventEmitter {
       info.canGoForward = hist.canGoForward()
       this.publish(id)
     }
-    wc.on('did-navigate', onNavigate)
+    // 主框架导航 → 记入浏览历史;SPA 内 hash 变化(did-navigate-in-page)不记录
+    wc.on('did-navigate', (_e, url) => {
+      recordVisit({ title: wc.getTitle() || url, url })
+      onNavigate()
+    })
     wc.on('did-navigate-in-page', onNavigate)
     wc.on('render-process-gone', (_e, details) => {
       info.crashed = true

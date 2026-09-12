@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcRendererEvent } from 'electron'
-import type { BookmarkTree, BookmarkNode, FlatBookmark, ModalKind, Settings, TabInfo } from '../shared/types'
+import type { BookmarkTree, BookmarkNode, FlatBookmark, HistoryEntry, ModalKind, Settings, TabInfo } from '../shared/types'
 
 export interface BrowserAPI {
   // 标签页
@@ -25,6 +25,9 @@ export interface BrowserAPI {
   removeBookmark: (id: string) => Promise<{ tree: BookmarkTree; removed: boolean }>
   moveBookmark: (id: string, targetFolderId: string | null) => Promise<{ ok: boolean; error?: string }>
   findBookmarksByUrl: (url: string) => Promise<FlatBookmark[]>
+  // 浏览历史
+  listHistory: () => Promise<HistoryEntry[]>
+  clearHistory: () => Promise<boolean>
   // 设置
   getSettings: () => Promise<Settings>
   setSettings: (patch: Partial<Settings>) => Promise<Settings>
@@ -74,6 +77,8 @@ const api: BrowserAPI = {
   removeBookmark: (id) => ipcRenderer.invoke('bookmarks:remove', id),
   moveBookmark: (id, targetFolderId) => ipcRenderer.invoke('bookmarks:move', id, targetFolderId),
   findBookmarksByUrl: (url) => ipcRenderer.invoke('bookmarks:find-by-url', url),
+  listHistory: () => ipcRenderer.invoke('history:list'),
+  clearHistory: () => ipcRenderer.invoke('history:clear'),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
   minimize: () => ipcRenderer.invoke('window:minimize'),

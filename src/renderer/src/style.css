@@ -244,6 +244,12 @@ select:focus {
   height: 40px;
 }
 
+/* 下拉展开时工具栏随内容增高(chrome 高度上报 → 页面视口下移) */
+.toolbar.suggest-open {
+  height: auto;
+  align-items: flex-start;
+}
+
 .tool-btn {
   flex: none;
   width: 30px;
@@ -273,8 +279,9 @@ select:focus {
 
 .addressbar {
   flex: 1;
+  min-width: 0;
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 4px;
   background: var(--bg3);
   border: 1px solid var(--border);
@@ -285,6 +292,21 @@ select:focus {
 
 .addressbar:focus-within {
   border-color: var(--accent);
+}
+
+/* 下拉展开:取消胶囊外型,容器自动增高 */
+.addressbar.suggest-open {
+  height: auto;
+  border-radius: 10px;
+  padding-bottom: 8px;
+}
+
+.addressbar-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  flex: none;
 }
 
 .address-input {
@@ -317,6 +339,71 @@ select:focus {
 
 .star.on {
   color: #f6c344;
+}
+
+/* ---------- 地址栏下拉建议面板 ---------- */
+.suggest {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 300px;
+  overflow-y: auto;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.suggest-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.suggest-row.active,
+.suggest-row:hover {
+  background: var(--bg2);
+}
+
+.s-icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-dim);
+}
+
+.s-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.s-title {
+  font-size: 13px;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.s-sub {
+  font-size: 11px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 命中字符高亮 */
+.hl {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 /* ---------- 收藏 Launchpad 面板 ---------- */
@@ -664,6 +751,13 @@ select:focus {
   gap: 6px;
   cursor: pointer;
   font-size: 13px;
+}
+
+.set-hcount {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg-dim);
+  font-size: 12px;
 }
 
 .set-col {

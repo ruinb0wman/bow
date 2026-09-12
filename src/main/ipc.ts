@@ -14,7 +14,8 @@ import {
 import type { ModalKind, Settings, TabInfo } from '@shared/types'
 import type { TabManager } from './tabManager'
 import type { OverlayManager } from './overlay'
-import { getBookmarksStore, getSettingsStore } from './stores'
+import { getBookmarksStore, getSettingsStore, getHistoryStore } from './stores'
+import { recordVisit, clearHistory } from './history'
 import { log } from './logger'
 
 export function registerIpc(tabs: TabManager, mainWindow: BrowserWindow, overlay: OverlayManager): void {
@@ -49,6 +50,10 @@ export function registerIpc(tabs: TabManager, mainWindow: BrowserWindow, overlay
     const res = resolveNavigation(input, getSettingsStore().get().searchEngine)
     if (!res) return { parsed: null, tabId: tab.id, url: tab.url }
     tabs.navigate(tab.id, res.url)
+    if (res.parsed === 'search') {
+      // 搜索词富化:记 search 条目,与 tabManager did-navigate 的 plain 记录按 URL 去重合并
+      recordVisit({ title: res.query, url: res.url, kind: 'search', query: res.query })
+    }
     return {
       parsed: res.parsed,
       query: res.parsed === 'search' ? res.query : undefined,
@@ -131,6 +136,13 @@ export function registerIpc(tabs: TabManager, mainWindow: BrowserWindow, overlay
     return { ok: true }
   })
   ipcMain.handle('bookmarks:find-by-url', (_e, url: string) => findByUrl(getBookmarksStore().get(), url))
+
+  // 浏览历史
+  ipcMain.handle('history:list', () => getHistoryStore().get())
+  ipcMain.handle('history:clear', () => {
+    clearHistory()
+    return true
+  })
 
   // 设置
   ipcMain.handle('settings:get', () => getSettingsStore().get())

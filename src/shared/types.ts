@@ -22,6 +22,33 @@ export type SearchEngineId = 'google' | 'duckduckgo' | 'bing' | 'baidu'
 /** 顶层 Overlay 弹层类型(chrome UI 通过 ui:modal 开关) */
 export type ModalKind = 'bookmarks' | 'settings'
 
+/** 浏览历史条目:kind 为 search 时记录原始搜索词(query)便于展示与匹配 */
+export type HistoryKind = 'search' | 'page'
+
+export interface HistoryEntry {
+  id: string
+  title: string
+  url: string
+  kind: HistoryKind
+  query?: string
+  visitedAt: number // epoch ms
+}
+
+export type HistoryList = HistoryEntry[]
+
+/** 地址栏下拉建议行 */
+export type SuggestionKind = 'search' | 'history' | 'bookmark'
+
+export interface Suggestion {
+  kind: SuggestionKind
+  id: string
+  title: string
+  url?: string
+  query?: string
+  path?: string // 书签路径(文件夹/书名)
+  visitedAt?: number
+}
+
 export interface Settings {
   searchEngine: SearchEngineId
   homepage: string

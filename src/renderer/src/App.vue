@@ -1,14 +1,20 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue'
-import type { TabInfo } from '@shared/types'
+import type { FlatBookmark, SearchEngineId, Suggestion, TabInfo } from '@shared/types'
+import { flatten } from '@shared/bookmarkTree'
+import { buildSuggestions, highlightRanges } from '@shared/suggest'
+import { SEARCH_ENGINES } from '@shared/url'
 import { faviconLetter } from './lib/avatar'
 import {
   ArrowLeft,
   ArrowRight,
   BookMarked,
+  Bookmark as BookmarkIcon,
+  History as HistoryIcon,
   Minus,
   Plus,
   RotateCw,
+  Search,
   Settings as SettingsIcon,
   Square,
   Star,
@@ -23,6 +29,14 @@ const api = window.browserAPI
 const tabs = ref<TabInfo[]>([])
 const address = ref('')
 const addressEditing = ref(false)
+
+// ---------- 地址栏建议(历史 / 书签模糊匹配) ----------
+const suggestions = ref<Suggestion[]>([])
+const activeIdx = ref(0)
+const showSuggest = ref(false)
+const bookmarkCache = ref<FlatBookmark[]>([])
+const searchEngine = ref<SearchEngineId>('google')
+let suggestTimer: ReturnType<typeof setTimeout> | null = null
 
 const activeTab = computed(() => tabs.value.find((t) => t.active) ?? null)
 const currentUrl = computed(() => activeTab.value?.url ?? '')
@@ -59,6 +73,10 @@ onMounted(async () => {
   tabs.value = await api.listTabs()
   syncAddress()
 
+  const settings = await api.getSettings()
+  searchEngine.value = settings.searchEngine
+  await refreshBookmarks()
+
   unsubs.push(
     api.onTabUpdated((tab) => {
       const idx = tabs.value.findIndex((t) => t.id === tab.id)
@@ -72,6 +90,12 @@ onMounted(async () => {
     }),
     api.onTabActivated(() => {
       syncAddress()
+    }),
+    api.onBookmarksChanged(() => {
+      void refreshBookmarks()
+    }),
+    api.onSettingsChanged((s) => {
+      searchEngine.value = s.searchEngine
     })
   )
 
@@ -135,6 +159,112 @@ async function reload(): Promise<void> {
 }
 async function stopLoading(): Promise<void> {
   await api.stop()
+}
+
+// ---------- 地址栏建议(历史 / 书签模糊匹配) ----------
+async function refreshBookmarks(): Promise<void> {
+  bookmarkCache.value = flatten(await api.listBookmarks()).filter((b) => b.type === 'bookmark')
+}
+
+async function refreshSuggestions(input: string): Promise<void> {
+  const history = await api.listHistory()
+  suggestions.value = buildSuggestions(input, history, bookmarkCache.value)
+  activeIdx.value = 0
+  showSuggest.value = suggestions.value.length > 0
+}
+
+function hideSuggest(): void {
+  showSuggest.value = false
+  suggestions.value = []
+  activeIdx.value = 0
+}
+
+function onAddressFocus(e: FocusEvent): void {
+  addressEditing.value = true
+  ;(e.target as HTMLInputElement).select()
+  void refreshSuggestions(address.value)
+}
+
+function onAddressInput(): void {
+  if (suggestTimer) clearTimeout(suggestTimer)
+  suggestTimer = setTimeout(() => void refreshSuggestions(address.value), 100)
+}
+
+function onAddressBlur(): void {
+  addressEditing.value = false
+  setTimeout(() => {
+    if (document.activeElement !== addressInput.value) hideSuggest()
+  }, 120)
+}
+
+function onAddressKeydown(e: KeyboardEvent): void {
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    if (showSuggest.value) hideSuggest()
+    else syncAddress()
+    return
+  }
+  const open = showSuggest.value && suggestions.value.length > 0
+  if (e.key === 'Enter') {
+    if (open) {
+      e.preventDefault()
+      openSuggestion(suggestions.value[activeIdx.value] ?? suggestions.value[0])
+    } else {
+      void go(address.value)
+    }
+    return
+  }
+  if (!open) return
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    activeIdx.value = (activeIdx.value + 1) % suggestions.value.length
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    activeIdx.value = (activeIdx.value - 1 + suggestions.value.length) % suggestions.value.length
+  } else if (e.key === 'Tab') {
+    e.preventDefault()
+    openSuggestion(suggestions.value[activeIdx.value] ?? suggestions.value[0])
+  }
+}
+
+function openSuggestion(s: Suggestion): void {
+  hideSuggest()
+  if (s.kind === 'search' && s.query) {
+    void go(s.query)
+    return
+  }
+  if (s.url) {
+    void api.goUrl(s.url)
+    address.value = s.url
+    addressEditing.value = false
+  }
+}
+
+interface TitleSeg {
+  text: string
+  hl: boolean
+}
+
+/** 标题高亮分段:match 到的字符用 .hl 包裹 */
+function titleSegments(s: Suggestion): TitleSeg[] {
+  const text = s.title
+  const q = address.value.trim()
+  if (!q || s.kind === 'search') return [{ text, hl: false }]
+  const segs: TitleSeg[] = []
+  let cur = 0
+  for (const [st, en] of highlightRanges(q, text)) {
+    if (st > cur) segs.push({ text: text.slice(cur, st), hl: false })
+    segs.push({ text: text.slice(st, en), hl: true })
+    cur = en
+  }
+  if (cur < text.length) segs.push({ text: text.slice(cur), hl: false })
+  return segs
+}
+
+function subText(s: Suggestion): string {
+  if (s.kind === 'search') return `使用 ${SEARCH_ENGINES[searchEngine.value]?.label ?? 'Google'} 搜索`
+  if (s.kind === 'bookmark') return s.path ?? s.url ?? ''
+  return s.url ?? ''
 }
 
 // ---------- 书签(管理/打开统一由 Overlay 面板 BookmarksModal 承担) ----------
@@ -228,7 +358,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 工具栏 -->
-    <div class="toolbar">
+    <div class="toolbar" :class="{ 'suggest-open': showSuggest && suggestions.length > 0 }">
       <button class="tool-btn no-drag" title="后退" :disabled="!activeTab?.canGoBack" @click="back">
         <ArrowLeft :size="16" />
       </button>
@@ -243,26 +373,53 @@ onBeforeUnmount(() => {
         <X v-if="loading" :size="16" />
         <RotateCw v-else :size="16" />
       </button>
-      <div class="addressbar no-drag">
-        <input
-          ref="addressInput"
-          v-model="address"
-          class="address-input"
-          spellcheck="false"
-          placeholder="输入网址或搜索内容…"
-          @focus="addressEditing = true; $event.target.select()"
-          @blur="addressEditing = false"
-          @keydown.enter="go(address)"
-          @keydown.esc="syncAddress"
-        />
-        <button
-          class="star no-drag"
-          :class="{ on: bookmarked }"
-          :title="bookmarked ? '取消收藏' : '收藏当前页 (Ctrl+D)'"
-          @click="toggleStar"
-        >
-          <Star :size="15" :fill="bookmarked ? 'currentColor' : 'none'" />
-        </button>
+      <div class="addressbar no-drag" :class="{ 'suggest-open': showSuggest && suggestions.length > 0 }">
+        <div class="addressbar-row">
+          <input
+            ref="addressInput"
+            v-model="address"
+            class="address-input"
+            spellcheck="false"
+            placeholder="输入网址或搜索内容…"
+            @focus="onAddressFocus"
+            @blur="onAddressBlur"
+            @input="onAddressInput"
+            @keydown="onAddressKeydown"
+          />
+          <button
+            class="star no-drag"
+            :class="{ on: bookmarked }"
+            :title="bookmarked ? '取消收藏' : '收藏当前页 (Ctrl+D)'"
+            @click="toggleStar"
+          >
+            <Star :size="15" :fill="bookmarked ? 'currentColor' : 'none'" />
+          </button>
+        </div>
+        <div v-if="showSuggest && suggestions.length > 0" class="suggest" @mousedown.prevent>
+          <div
+            v-for="(s, i) in suggestions"
+            :key="s.id"
+            class="suggest-row"
+            :class="{ active: i === activeIdx }"
+            @mouseenter="activeIdx = i"
+            @click="openSuggestion(s)"
+          >
+            <span class="s-icon">
+              <Search v-if="s.kind === 'search'" :size="14" />
+              <HistoryIcon v-else-if="s.kind === 'history'" :size="14" />
+              <BookmarkIcon v-else :size="14" />
+            </span>
+            <span class="s-main">
+              <span class="s-title">
+                <template v-for="(seg, si) in titleSegments(s)" :key="si">
+                  <span v-if="seg.hl" class="hl">{{ seg.text }}</span>
+                  <template v-else>{{ seg.text }}</template>
+                </template>
+              </span>
+              <span class="s-sub">{{ subText(s) }}</span>
+            </span>
+          </div>
+        </div>
       </div>
       <button class="tool-btn no-drag" title="管理书签" @click="api.openModal('bookmarks')">
         <BookMarked :size="16" />
