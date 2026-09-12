@@ -17,6 +17,12 @@ const editing = ref<BookmarkNode | null>(null)
 const editTitle = ref('')
 const editUrl = ref('')
 const moving = ref<BookmarkNode | null>(null)
+// 新建表单(Electron 渲染进程不支持 window.prompt,只能用内联输入)
+const adding = ref<'bookmark' | 'folder' | null>(null)
+const addTitle = ref('')
+const addUrl = ref('')
+const addTitleInput = ref<HTMLInputElement | null>(null)
+const addUrlInput = ref<HTMLInputElement | null>(null)
 const notice = ref('')
 let noticeTimer: number | undefined
 const searchInput = ref<HTMLInputElement | null>(null)
@@ -86,20 +92,75 @@ function back(): void {
 }
 
 // ---------- 管理 ----------
-async function addBookmarkManual(): Promise<void> {
-  const title = window.prompt('书签名')
-  const url = window.prompt('书签地址')
-  if (!url) return
-  await api.addBookmark({ title: title ?? url, url, folderId: viewFolderId.value ?? null })
+async function startAddBookmark(): Promise<void> {
+  editing.value = null
+  moving.value = null
+  adding.value = 'bookmark'
+  addTitle.value = ''
+  addUrl.value = ''
+  // 预填当前页(仅 http/https;about:blank、devtools: 等不预填)
+  const tab = await api.getActiveTab()
+  if (adding.value !== 'bookmark') return // 等待期间用户已取消/切到新建文件夹
+  const url = tab?.url ?? ''
+  if (/^https?:/i.test(url)) {
+    addUrl.value = url
+    addTitle.value = tab?.title ?? ''
+  }
+  await nextTick()
+  if (adding.value !== 'bookmark') return
+  // 聚焦第一个空字段:已有标题就跳到地址,否则先填名称
+  const target = addTitle.value ? addUrlInput.value : addTitleInput.value
+  target?.focus()
+  target?.select()
 }
 
-async function addFolderManual(): Promise<void> {
-  const title = window.prompt('文件夹名称')
-  if (!title) return
-  await api.addFolder({ title }) // 一级结构:目录始终在根(IPC 已强制)
+function startAddFolder(): void {
+  editing.value = null
+  moving.value = null
+  adding.value = 'folder'
+  addTitle.value = ''
+  addUrl.value = ''
+  void nextTick(() => {
+    addTitleInput.value?.focus()
+    addTitleInput.value?.select()
+  })
+}
+
+function cancelAdd(): void {
+  adding.value = null
+  addTitle.value = ''
+  addUrl.value = ''
+}
+
+async function confirmAdd(): Promise<void> {
+  const title = addTitle.value.trim()
+  if (adding.value === 'bookmark') {
+    const url = addUrl.value.trim()
+    if (!url) {
+      showNotice('请填写书签地址')
+      return
+    }
+    await api.addBookmark({ title: title || url, url, folderId: viewFolderId.value ?? null })
+    showNotice(viewFolderId.value === null ? '已添加书签' : `已添加到「${viewTitle.value}」`)
+  } else if (adding.value === 'folder') {
+    if (!title) {
+      showNotice('请填写文件夹名称')
+      return
+    }
+    const inFolderView = viewFolderId.value !== null
+    await api.addFolder({ title }) // 一级结构:目录始终在根(IPC 已强制)
+    if (inFolderView) {
+      // 新目录建在根,退回根视图才能看到结果
+      viewFolderId.value = null
+      search.value = ''
+    }
+    showNotice(inFolderView ? '已在根目录新建文件夹' : '已新建文件夹')
+  }
+  cancelAdd()
 }
 
 function startEdit(node: BookmarkNode): void {
+  adding.value = null
   editing.value = node
   editTitle.value = node.title
   editUrl.value = node.type === 'bookmark' ? node.url : ''
@@ -220,6 +281,29 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
+      <!-- 新建小表单 -->
+      <div v-if="adding" class="la-bar" @click.stop @keydown.esc.stop="cancelAdd">
+        <input
+          ref="addTitleInput"
+          v-model="addTitle"
+          class="pbm-input"
+          :placeholder="adding === 'bookmark' ? '书签名' : '文件夹名称'"
+          spellcheck="false"
+          @keyup.enter="confirmAdd"
+        />
+        <input
+          v-if="adding === 'bookmark'"
+          ref="addUrlInput"
+          v-model="addUrl"
+          class="pbm-input wide"
+          placeholder="https://example.com"
+          spellcheck="false"
+          @keyup.enter="confirmAdd"
+        />
+        <button class="btn primary" @click="confirmAdd">添加</button>
+        <button class="btn" @click="cancelAdd">取消</button>
+      </div>
+
       <!-- 编辑小表单 -->
       <div v-if="editing" class="la-bar" @click.stop>
         <input v-model="editTitle" class="pbm-input" placeholder="名称" />
@@ -237,8 +321,8 @@ onBeforeUnmount(() => {
 
       <!-- 底部工具条 -->
       <div class="la-foot">
-        <button class="btn" @click="addBookmarkManual"><Plus :size="13" /> 新建书签</button>
-        <button class="btn" @click="addFolderManual"><Plus :size="13" /> 新建文件夹</button>
+        <button class="btn" @click="startAddBookmark"><Plus :size="13" /> 新建书签</button>
+        <button class="btn" @click="startAddFolder"><Plus :size="13" /> 新建文件夹</button>
         <span class="la-hint">单击目录进入; Ctrl+点击目录后台打开全部页面</span>
         <span v-if="notice" class="la-notice">{{ notice }}</span>
       </div>
