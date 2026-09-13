@@ -83,6 +83,18 @@ app.whenReady().then(async () => {
   const mainWindow = createWindow()
   tabs = new TabManager(mainWindow)
   overlay = new OverlayManager(mainWindow, tabs)
+
+  // 窗口重新获得 OS 焦点:把键盘焦点交还活动标签页,避免 Electron 默认恢复到 chrome webContents(地址栏)
+  const focusActivePage = (): void => {
+    if (overlay.currentId?.startsWith('modal:')) return // 全窗弹层打开时不抢焦点
+    const active = tabs.getActiveView()
+    if (active && !active.view.webContents.isDestroyed()) active.view.webContents.focus()
+  }
+  mainWindow.on('focus', focusActivePage)
+  // 窗口失焦:让 chrome 侧地址栏主动释放焦点,消除 Electron 焦点恢复落到地址栏的路径
+  mainWindow.on('blur', () => {
+    if (!mainWindow.isDestroyed()) mainWindow.webContents.send('chrome:window-blur')
+  })
   // 标签页 webContents → 内核内容注入宿主
   tabs.setPageTracker({ track: (wc) => kernel.trackPage(wc) })
 

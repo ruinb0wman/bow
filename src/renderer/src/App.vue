@@ -24,6 +24,9 @@ const api = window.browserAPI
 const tabs = ref<TabInfo[]>([])
 const address = ref('')
 const addressEditing = ref(false)
+// 显式聚焦标记:区分「点击地址栏 / Ctrl+L / Ctrl+T / 新建标签」与「窗口被动恢复聚焦」,后者不全选文本
+let explicitFocus = false
+let selectOnFocus = false
 
 // ---------- 插件:启用状态与 UI 插槽 ----------
 const plugins = ref<PluginInfo[]>([])
@@ -91,6 +94,13 @@ onMounted(async () => {
     // 主进程 Ctrl+T 新建标签后要求聚焦地址栏
     api.onFocusAddressRequest(() => {
       focusAddress()
+    }),
+    // 主进程窗口失焦:主动释放地址栏焦点,避免 Electron 把焦点恢复到地址栏
+    api.onWindowBlur(() => {
+      addressInput.value?.blur()
+      hideSuggest()
+      explicitFocus = false
+      selectOnFocus = false
     }),
     // overlay → chrome 泛型事件:chrome 只处理 suggest 下拉
     api.onOverlayEvent((ev) => {
@@ -218,8 +228,16 @@ function hideSuggest(): void {
 
 function onAddressFocus(e: FocusEvent): void {
   addressEditing.value = true
-  ;(e.target as HTMLInputElement).select()
+  // 仅显式聚焦(点击 / Ctrl+L / 新建标签)才全选;窗口被动恢复聚焦不全选
+  const shouldSelect = explicitFocus || selectOnFocus
+  explicitFocus = false
+  selectOnFocus = false
+  if (shouldSelect) (e.target as HTMLInputElement).select()
   void refreshSuggestions(address.value)
+}
+
+function onAddressMousedown(): void {
+  selectOnFocus = true
 }
 
 function onAddressInput(): void {
@@ -229,6 +247,8 @@ function onAddressInput(): void {
 
 function onAddressBlur(): void {
   addressEditing.value = false
+  explicitFocus = false
+  selectOnFocus = false
   setTimeout(() => {
     if (document.activeElement !== addressInput.value) hideSuggest()
   }, 120)
@@ -297,6 +317,7 @@ watch(activeIdx, () => {
 function focusAddress(): void {
   const el = addressInput.value
   if (!el) return
+  explicitFocus = true
   el.focus()
   el.select()
 }
@@ -381,6 +402,7 @@ onBeforeUnmount(() => {
             class="address-input"
             spellcheck="false"
             placeholder="输入网址或搜索内容…"
+            @mousedown="onAddressMousedown"
             @focus="onAddressFocus"
             @blur="onAddressBlur"
             @input="onAddressInput"

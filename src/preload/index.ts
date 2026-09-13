@@ -47,6 +47,8 @@ export interface BrowserAPI {
   onOverlayEvent: (cb: (ev: OverlayEvent) => void) => () => void
   // 主进程 Ctrl+T 新建标签后要求 chrome 聚焦地址栏
   onFocusAddressRequest: (cb: () => void) => () => void
+  // 主进程窗口失焦:chrome 侧主动释放地址栏焦点
+  onWindowBlur: (cb: () => void) => () => void
   // 以下仅 overlay 页面使用
   onOverlayShow: (cb: (msg: OverlayShowMessage | null) => void) => () => void
   overlayEmit: (id: OverlayContentId, event: string, args?: unknown) => Promise<boolean>
@@ -111,6 +113,7 @@ const api: BrowserAPI = {
   onTabsChanged: (cb) => subscribe('tab:list-changed', cb),
   onTabActivated: (cb) => subscribe('tab:activated', cb),
   onFocusAddressRequest: (cb) => subscribe('chrome:focus-address', cb),
+  onWindowBlur: (cb) => subscribe('chrome:window-blur', cb),
   onSettingsChanged: (cb) => subscribe('settings:changed', cb)
 }
 
