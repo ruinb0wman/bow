@@ -174,6 +174,14 @@ async function stopLoading(): Promise<void> {
 }
 
 // ---------- 地址栏建议 ----------
+/**
+ * 深拷贝成普通对象:IPC 走结构化克隆,不能传 Vue 响应式代理
+ * (rows 由 IPC 返回后存进 ref 即被深度代理,segments 是嵌套数组,必须逐层摊平)。
+ */
+function toPlainRows(rows: SuggestRow[]): SuggestRow[] {
+  return rows.map((r) => ({ ...r, segments: r.segments.map((s) => ({ ...s })) }))
+}
+
 /** 把聚合结果推给顶层 Overlay 面板(带地址栏实测矩形,用于对齐定位);无建议/不可见则关闭浮层 */
 function pushSuggest(): void {
   const el = addressBarEl.value
@@ -183,8 +191,7 @@ function pushSuggest(): void {
   }
   const rect = el.getBoundingClientRect()
   const payload: SuggestPayload = {
-    rows: suggestRows.value,
-    // IPC 走结构化克隆,不能传 Vue 响应式代理 → 摊平成普通对象
+    rows: toPlainRows(suggestRows.value),
     suggestions: suggestions.value.map((s) => ({ ...s })),
     activeIdx: activeIdx.value,
     rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
