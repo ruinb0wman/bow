@@ -1,19 +1,19 @@
-import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
+import { defineConfig } from 'electron-vite'
 import vue from '@vitejs/plugin-vue'
 import { resolve } from 'node:path'
 
+// electron-vite 5:外部化依赖为配置驱动且默认开启(build.externalizeDeps=true),
+// 不再需要 externalizeDepsPlugin 插件
+
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
     resolve: {
       alias: {
         '@shared': resolve('src/shared')
       }
     }
   },
-  preload: {
-    plugins: [externalizeDepsPlugin()]
-  },
+  preload: {}, 
   renderer: {
     plugins: [vue()],
     resolve: {
