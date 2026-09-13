@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isDevToolsHotkey } from '../src/shared/shortcuts'
+import { isDevToolsHotkey, matchTabHotkey, switchIndexForDigit } from '../src/shared/shortcuts'
 import type { KeyInputLike } from '../src/shared/shortcuts'
 
 function input(patch: Partial<KeyInputLike> = {}): KeyInputLike {
@@ -52,5 +52,76 @@ describe('isDevToolsHotkey DevTools 快捷键识别', () => {
     expect(isDevToolsHotkey(input({ type: 'keyUp' }))).toBe(false)
     expect(isDevToolsHotkey(input({ isAutoRepeat: true }))).toBe(false)
     expect(isDevToolsHotkey(input({ isComposing: true }))).toBe(false)
+  })
+})
+
+describe('matchTabHotkey Tab 快捷键识别', () => {
+  it('Ctrl/Cmd+T 新建', () => {
+    expect(matchTabHotkey(input({ key: 't', code: 'KeyT', shift: false }))).toEqual({ action: 'new' })
+    expect(matchTabHotkey(input({ key: 't', code: 'KeyT', shift: false, control: false, meta: true }))).toEqual({ action: 'new' })
+  })
+
+  it('Ctrl/Cmd+Shift+T 恢复', () => {
+    expect(matchTabHotkey(input({ key: 't', code: 'KeyT' }))).toEqual({ action: 'restore' })
+    expect(matchTabHotkey(input({ key: 't', code: 'KeyT', control: false, meta: true }))).toEqual({ action: 'restore' })
+  })
+
+  it('Ctrl/Cmd+W 关闭', () => {
+    expect(matchTabHotkey(input({ key: 'w', code: 'KeyW', shift: false }))).toEqual({ action: 'close' })
+    expect(matchTabHotkey(input({ key: 'w', code: 'KeyW', shift: false, control: false, meta: true }))).toEqual({ action: 'close' })
+  })
+
+  it('Ctrl/Cmd+1..9 切换(code 物理键行优先)', () => {
+    expect(matchTabHotkey(input({ key: '1', code: 'Digit1', shift: false }))).toEqual({ action: 'switch', digit: 1 })
+    expect(matchTabHotkey(input({ key: '1', code: 'Digit1', shift: false, control: false, meta: true }))).toEqual({ action: 'switch', digit: 1 })
+    expect(matchTabHotkey(input({ key: '9', code: 'Digit9', shift: false }))).toEqual({ action: 'switch', digit: 9 })
+  })
+
+  it('非 QWERTY 下 code 仍为 DigitN(key 为符号)不依赖 key', () => {
+    expect(matchTabHotkey(input({ key: '&', code: 'Digit1', shift: false }))).toEqual({ action: 'switch', digit: 1 })
+  })
+
+  it('key 数字回退(code 缺失时)', () => {
+    expect(matchTabHotkey(input({ key: '5', code: '', shift: false }))).toEqual({ action: 'switch', digit: 5 })
+  })
+
+  it('小键盘 / Ctrl+0 / 其它数字外的键不命中', () => {
+    expect(matchTabHotkey(input({ key: '1', code: 'Numpad1', shift: false }))).toBe(null)
+    expect(matchTabHotkey(input({ key: '0', code: 'Digit0', shift: false }))).toBe(null)
+    expect(matchTabHotkey(input({ key: 'a', code: 'KeyA', shift: false }))).toBe(null)
+  })
+
+  it('缺少修饰键 / 带 Alt / 数字带 Shift 不命中', () => {
+    expect(matchTabHotkey(input({ key: 't', code: 'KeyT', shift: false, control: false, meta: false }))).toBe(null)
+    expect(matchTabHotkey(input({ key: 't', code: 'KeyT', shift: false, alt: true }))).toBe(null)
+    expect(matchTabHotkey(input({ key: '1', code: 'Digit1' }))).toBe(null) // Ctrl+Shift+1
+  })
+
+  it('keyUp / 自动重复 / 输入法组合中不命中', () => {
+    expect(matchTabHotkey(input({ type: 'keyUp', key: 't', code: 'KeyT', shift: false }))).toBe(null)
+    expect(matchTabHotkey(input({ isAutoRepeat: true, key: 't', code: 'KeyT', shift: false }))).toBe(null)
+    expect(matchTabHotkey(input({ isComposing: true, key: 't', code: 'KeyT', shift: false }))).toBe(null)
+  })
+})
+
+describe('switchIndexForDigit 数字到标签索引', () => {
+  it('1..8 取第 digit 个', () => {
+    expect(switchIndexForDigit(1, 3)).toBe(0)
+    expect(switchIndexForDigit(2, 10)).toBe(1)
+  })
+
+  it('越界数字返回 null', () => {
+    expect(switchIndexForDigit(8, 3)).toBe(null)
+    expect(switchIndexForDigit(5, 3)).toBe(null)
+  })
+
+  it('9 取最后一个标签', () => {
+    expect(switchIndexForDigit(9, 3)).toBe(2)
+    expect(switchIndexForDigit(9, 1)).toBe(0)
+  })
+
+  it('无标签时返回 null', () => {
+    expect(switchIndexForDigit(9, 0)).toBe(null)
+    expect(switchIndexForDigit(1, 0)).toBe(null)
   })
 })

@@ -23,3 +23,43 @@ export function isDevToolsHotkey(input: KeyInputLike): boolean {
   // code 兼容非 QWERTY 布局;key 兼容大小写
   return input.code === 'KeyI' || input.key.toLowerCase() === 'i'
 }
+
+/** 标签快捷键识别结果 */
+export type TabHotkey =
+  | { action: 'new' }
+  | { action: 'restore' }
+  | { action: 'close' }
+  | { action: 'switch'; digit: number }
+
+/**
+ * 标签快捷键识别:Ctrl/Cmd+T(新建)、Ctrl/Cmd+Shift+T(恢复)、
+ * Ctrl/Cmd+W(关闭)、Ctrl/Cmd+1..9(切换,9=最后一个标签)。
+ * 与 isDevToolsHotkey 同风格:忽略自动重复与输入法组合;alt 修饰不参与。
+ */
+export function matchTabHotkey(input: KeyInputLike): TabHotkey | null {
+  if (input.type !== 'keyDown') return null
+  // 长按自动重复 / 输入法组合中的按键交给页面或 IME
+  if (input.isAutoRepeat || input.isComposing) return null
+  if (!(input.control || input.meta) || input.alt) return null
+  const key = input.key.toLowerCase()
+  if (input.shift) {
+    if (key === 't' || input.code === 'KeyT') return { action: 'restore' }
+    return null // Ctrl+Shift+数字 等不作为标签切换
+  }
+  if (key === 't' || input.code === 'KeyT') return { action: 'new' }
+  if (key === 'w' || input.code === 'KeyW') return { action: 'close' }
+  // 数字优先物理按键行的 code(Digit1..9):AZERTY 等非 QWERTY 布局下 key 可能是符号
+  const codeMatch = /^Digit([1-9])$/.exec(input.code ?? '')
+  if (codeMatch) return { action: 'switch', digit: Number(codeMatch[1]) }
+  if ((input.code ?? '').startsWith('Numpad')) return null // 小键盘不参与
+  if (/^[1-9]$/.test(key)) return { action: 'switch', digit: Number(key) }
+  return null
+}
+
+/** 数字键 → 标签索引:1..8 取第 digit 个;9 取最后一个(Chrome 惯例);越界/无标签返回 null */
+export function switchIndexForDigit(digit: number, tabCount: number): number | null {
+  if (tabCount <= 0) return null
+  if (digit === 9) return tabCount - 1
+  if (digit >= 1 && digit <= 8 && digit - 1 < tabCount) return digit - 1
+  return null
+}

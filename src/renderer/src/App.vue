@@ -95,6 +95,10 @@ onMounted(async () => {
     api.onSettingsChanged((s) => {
       searchEngine.value = s.searchEngine
     }),
+    // 主进程 Ctrl+T 新建标签后要求聚焦地址栏
+    api.onFocusAddressRequest(() => {
+      focusAddress()
+    }),
     // overlay → chrome 泛型事件:按内容 id 分发
     api.onOverlayEvent((ev) => {
       if (ev.id === 'suggest') {
@@ -322,16 +326,9 @@ function focusAddress(): void {
 function onKeydown(e: KeyboardEvent): void {
   const mod = e.ctrlKey || e.metaKey
   const key = e.key.toLowerCase()
-  if (mod && e.shiftKey && key === 't') {
-    e.preventDefault()
-    restoreTab()
-  } else if (mod && !e.shiftKey && key === 't') {
-    e.preventDefault()
-    void newTab()
-  } else if (mod && !e.shiftKey && key === 'w') {
-    e.preventDefault()
-    if (activeTab.value) void closeTab(activeTab.value.id)
-  } else if (mod && !e.shiftKey && key === 'l') {
+  // Ctrl+T / Ctrl+Shift+T / Ctrl+W / Ctrl+数字 已由主进程统一拦截(tabShortcuts.ts),
+  // 此处仅保留 chrome 聚焦时需要渲染层执行的快捷键
+  if (mod && !e.shiftKey && key === 'l') {
     e.preventDefault()
     focusAddress()
   } else if (mod && !e.shiftKey && key === 'r') {
