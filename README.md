@@ -82,7 +82,7 @@ MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到
 ## 数据存储
 
 - 书签(「书签」插件):`<userData>/bookmarks.json`
-- 浏览历史(「浏览历史」插件,最近 5000 条,按 URL 去重):`<userData>/history.json`
+- 浏览历史(「浏览历史」插件,默认保留最近 500 条,可在「设置 → 插件 → 浏览历史」调整,按 URL 去重):`<userData>/history.json`;保留条数配置:`<userData>/history-settings.json`
 - CORS 放行配置(「CORS 放行」插件,首次启动从 `settings.json` 迁移):`<userData>/cors.json`
 - 广告拦截配置与计数(「广告/追踪拦截」插件,含网络规则与元素规则,自动从 v1 主机清单迁移):`<userData>/adblock.json`
 - 插件启停状态(内核):`<userData>/plugins.json`
@@ -105,6 +105,12 @@ MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到
 
 > opencode 的 `x-opencode-session` 会话头由**前端应用自行发送**(OpenCode Go/Zen 的官方要求),
 > 浏览器不再代注入;需要时把 `docs/opencode-session-header.md` 里的提示词交给应用开发者。
+
+### 浏览历史插件
+
+「设置 → 插件 → 浏览历史」提供:按标题 / 网址 / 搜索词的模糊搜索,单条删除、勾选批量删除、
+清空二次确认,以及保留条数配置(默认 500,范围 1–100000,保存后立即按最旧优先裁剪)。
+历史数据按 URL 去重、最近优先,并作为地址栏建议源参与模糊匹配。
 
 ### 广告/追踪拦截插件
 

@@ -1,11 +1,18 @@
 /**
  * 浏览历史插件:记录主框架访问 / 搜索词,并向地址栏建议源贡献历史命中。
- * 数据文件沿用 history.json,格式与旧实现一致(零迁移)。
+ * 数据文件沿用 history.json,格式与旧实现一致(零迁移);
+ * 保留条数配置存于 history-settings.json(默认 500,范围 1–100000)。
  */
 
-import type { HistoryEntry, HistoryKind, HistoryList } from '@shared/types'
+import type { HistoryEntry, HistoryKind, HistoryList, HistorySettings } from '@shared/types'
 import type { SuggestItem } from '@shared/plugins'
-import { addHistoryEntry } from '@shared/history'
+import {
+  HISTORY_CAP,
+  addHistoryEntry,
+  clampHistoryCap,
+  removeHistoryEntries,
+  trimHistory
+} from '@shared/history'
 import { scoreFields } from '@shared/suggest'
 import { isHttpUrl } from '@shared/url'
 import type { PluginContext, PluginMain } from '../../main/plugins/types'
@@ -34,11 +41,21 @@ const plugin: PluginMain = {
 
   activate(ctx: PluginContext): void {
     const store = ctx.storage<HistoryList>({ file: 'history.json', defaults: [] })
+    const settings = ctx.storage<HistorySettings>({
+      file: 'history-settings.json',
+      defaults: { maxEntries: HISTORY_CAP }
+    })
+
+    const cap = (): number => clampHistoryCap(settings.get().maxEntries)
+
+    const emitChanged = (): void => {
+      ctx.ipc.emit('changed', store.get())
+    }
 
     const record = (v: { title: string; url: string; kind?: HistoryKind; query?: string }): void => {
       const url = v.url.trim()
       if (!isHttpUrl(url)) return
-      store.setRaw(addHistoryEntry(store.get(), { ...v, url }))
+      store.setRaw(addHistoryEntry(store.get(), { ...v, url }, cap()))
     }
 
     ctx.events.on('tab:navigated', (p: NavigatedPayload) => {
@@ -87,10 +104,30 @@ const plugin: PluginMain = {
 
     ctx.ipc.handle('list', (): HistoryEntry[] => store.get())
     ctx.ipc.handle('count', (): number => store.get().length)
+    /** 按 id 批量删除(单条删除传单元素数组),返回实际删除条数 */
+    ctx.ipc.handle('remove', (ids: string[]): number => {
+      const list = store.get()
+      const next = removeHistoryEntries(list, Array.isArray(ids) ? ids : [])
+      const removed = list.length - next.length
+      if (removed > 0) {
+        store.setRaw(next)
+        emitChanged()
+      }
+      return removed
+    })
     ctx.ipc.handle('clear', (): boolean => {
       store.setRaw([])
-      ctx.ipc.emit('changed', [])
+      emitChanged()
       return true
+    })
+    ctx.ipc.handle('getSettings', (): HistorySettings => ({ maxEntries: cap() }))
+    ctx.ipc.handle('setSettings', (patch: Partial<HistorySettings>): HistorySettings => {
+      const maxEntries = clampHistoryCap(patch.maxEntries ?? cap())
+      settings.set({ maxEntries })
+      // 立即按最旧优先裁剪,避免保留条数降低后旧数据滞留
+      store.setRaw(trimHistory(store.get(), maxEntries))
+      emitChanged()
+      return { maxEntries }
     })
   }
 }

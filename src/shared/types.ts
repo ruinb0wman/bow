@@ -36,6 +36,11 @@ export interface HistoryEntry {
 
 export type HistoryList = HistoryEntry[]
 
+/** 历史插件配置:保留的条数上限 */
+export interface HistorySettings {
+  maxEntries: number
+}
+
 /** 地址栏下拉建议行 */
 export type SuggestionKind = 'search' | 'history' | 'bookmark'
 
