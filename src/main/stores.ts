@@ -1,11 +1,15 @@
-/** 书签 / 设置 的 JSON 持久化(userData 下),原子写入 */
+/**
+ * JSON 持久化(userData 下,原子写入)与核心设置存储。
+ *
+ * 书签 / 历史 / CORS 等数据已交由对应插件通过插件内核的 storage() 自行管理,
+ * 这里只保留通用的 JsonStore 与核心设置(搜索引擎 / 主页)。
+ */
 
 import { app } from 'electron'
 import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
-import type { BookmarkTree, HistoryList, Settings } from '@shared/types'
+import type { Settings } from '@shared/types'
 import { DEFAULT_SETTINGS } from '@shared/url'
-import { flattenToSingleLevel } from '@shared/bookmarkTree'
 import { log, logError } from './logger'
 
 export class JsonStore<T> {
@@ -22,11 +26,11 @@ export class JsonStore<T> {
       const raw = readFileSync(this.file, 'utf-8')
       const parsed: unknown = JSON.parse(raw)
       if (Array.isArray(defaults)) {
-        // 数组型数据(书签树):整体替换,不接受对象
+        // 数组型数据:整体替换,不接受对象
         return (Array.isArray(parsed) ? parsed : defaults) as T
       }
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        // 对象型数据(设置):浅合并,保证新字段有默认值
+        // 对象型数据:浅合并,保证新字段有默认值
         return { ...(defaults as object), ...(parsed as object) } as T
       }
       return defaults
@@ -63,36 +67,20 @@ export class JsonStore<T> {
   }
 }
 
-let bookmarksStore: JsonStore<BookmarkTree> | null = null
-let settingsStore: JsonStore<Settings> | null = null
-let historyStore: JsonStore<HistoryList> | null = null
-
-export function initStores(): void {
-  if (bookmarksStore || settingsStore) return
-  bookmarksStore = new JsonStore<BookmarkTree>('bookmarks.json', [])
-  settingsStore = new JsonStore<Settings>('settings.json', DEFAULT_SETTINGS)
-  historyStore = new JsonStore<HistoryList>('history.json', [])
-  // 一级目录迁移:启动时展平历史深层嵌套(幂等,已是一级时无写入)
-  const raw = bookmarksStore.get()
-  const flat = flattenToSingleLevel(raw)
-  if (JSON.stringify(flat) !== JSON.stringify(raw)) {
-    bookmarksStore.setRaw(flat)
-    log('书签数据已迁移为一级目录')
-  }
-  log('stores 初始化完成')
+/** 创建任意 userData 下的 JSON 存储(插件内核与核心设置共用) */
+export function createStore<T>(filename: string, defaults: T): JsonStore<T> {
+  return new JsonStore<T>(filename, defaults)
 }
 
-export function getBookmarksStore(): JsonStore<BookmarkTree> {
-  if (!bookmarksStore) initStores()
-  return bookmarksStore!
+let settingsStore: JsonStore<Settings> | null = null
+
+export function initStores(): void {
+  if (settingsStore) return
+  settingsStore = new JsonStore<Settings>('settings.json', DEFAULT_SETTINGS)
+  log('stores 初始化完成')
 }
 
 export function getSettingsStore(): JsonStore<Settings> {
   if (!settingsStore) initStores()
   return settingsStore!
-}
-
-export function getHistoryStore(): JsonStore<HistoryList> {
-  if (!historyStore) initStores()
-  return historyStore!
 }

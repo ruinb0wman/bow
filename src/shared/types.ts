@@ -19,8 +19,8 @@ export type BookmarkTree = BookmarkNode[]
 
 export type SearchEngineId = 'google' | 'duckduckgo' | 'bing' | 'baidu'
 
-/** 顶层 Overlay 弹层类型(chrome UI 通过通用 ui:overlay 开关) */
-export type ModalKind = 'bookmarks' | 'settings'
+/** 核心顶层 Overlay 弹层类型(chrome UI 通过通用 ui:overlay 开关) */
+export type ModalKind = 'settings'
 
 /** 浏览历史条目:kind 为 search 时记录原始搜索词(query)便于展示与匹配 */
 export type HistoryKind = 'search' | 'page'
@@ -44,19 +44,25 @@ export type SuggestionKind = 'search' | 'history' | 'bookmark'
 export type OverlayPlacement = 'full' | 'below-chrome'
 
 /**
- * Overlay 内容标识(渲染层组件注册表的 key,新增浮层只需扩展此联合类型 + 注册组件)。
+ * 核心 Overlay 内容标识(渲染层组件注册表的 key)。
  * 约定:`modal:` 前缀 = 全窗弹层,`suggest` = 地址栏建议下拉。
  */
-export type OverlayContentId = 'modal:bookmarks' | 'modal:settings' | 'suggest'
+export type CoreOverlayContentId = 'modal:settings' | 'suggest'
 
-/** 按内容 id 类型化的 payload(数据一律需 IPC 可序列化) */
+/** 插件浮层 id 约定:`plugin:<pluginId>:<panelId>` */
+export type PluginOverlayContentId = `plugin:${string}`
+
+export type OverlayContentId = CoreOverlayContentId | PluginOverlayContentId
+
+/** 核心内容 id 的类型化 payload;插件浮层 payload 由插件自定义(unknown) */
 export interface OverlayContentMap {
-  'modal:bookmarks': undefined
   'modal:settings': undefined
   suggest: SuggestPayload
 }
 
-export type OverlayPayload<K extends OverlayContentId> = OverlayContentMap[K]
+export type OverlayPayload<K extends OverlayContentId> = K extends keyof OverlayContentMap
+  ? OverlayContentMap[K]
+  : unknown
 
 /** chrome 侧打开/更新浮层时下发的内容描述 */
 export interface OverlayContent<K extends OverlayContentId = OverlayContentId> {

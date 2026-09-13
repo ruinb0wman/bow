@@ -6,26 +6,41 @@ import { z } from 'zod'
 import type { SearchEngineId } from '@shared/types'
 import { isHttpUrl, searchUrl } from '@shared/url'
 import type { TabManager } from './tabManager'
-import { getBookmarksStore, getSettingsStore } from './stores'
+import { getSettingsStore } from './stores'
+import type { PluginKernel } from './plugins/kernel'
+import { imageContent, textContent } from './plugins/mcpResult'
 import { pageClick, pageSnapshot, pageScreenshot, pageScroll, pageType, pressKey } from './actions'
 import { log, logError } from './logger'
-import { addBookmark, flatten } from '@shared/bookmarkTree'
 
-export type MCPDeps = { tabs: TabManager }
+export type MCPDeps = { tabs: TabManager; kernel: PluginKernel }
+
+/** 核心工具名:预留给内核做插件重名校验 */
+export const CORE_MCP_TOOL_NAMES = [
+  'browser_navigate',
+  'browser_search',
+  'browser_eval',
+  'browser_snapshot',
+  'browser_click',
+  'browser_type',
+  'browser_press_key',
+  'browser_scroll',
+  'browser_back',
+  'browser_forward',
+  'browser_reload',
+  'browser_stop',
+  'browser_new_tab',
+  'browser_close_tab',
+  'browser_switch_tab',
+  'browser_list_tabs',
+  'browser_screenshot',
+  'browser_get_info'
+]
 
 const EngineSchema = z.enum(['google', 'duckduckgo', 'bing', 'baidu'])
 const DirectionSchema = z.enum(['up', 'down', 'top', 'bottom'])
 
-function textContent(obj: unknown): { content: { type: 'text'; text: string }[] } {
-  return { content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] }
-}
-
-function imageContent(pngBase64: string): { content: { type: 'image'; data: string; mimeType: string }[] } {
-  return { content: [{ type: 'image', data: pngBase64, mimeType: 'image/png' }] }
-}
-
 export function startMcpServer(deps: MCPDeps): void {
-  const { tabs } = deps
+  const { tabs, kernel } = deps
   const server = new McpServer({ name: 'mcp-browser', version: '0.1.0' })
 
   // 当前操作目标视图:可指定 tabId,默认活动标签;没有活动标签时自动新建空白标签
@@ -244,23 +259,11 @@ export function startMcpServer(deps: MCPDeps): void {
     return textContent({ ok: true, info: view.info })
   })
 
-  server.tool(
-    'browser_add_bookmark',
-    { title: z.string().optional(), url: z.string(), folderId: z.string().optional() },
-    async ({ title, url, folderId }) => {
-      if (!isHttpUrl(url)) return textContent({ ok: false, error: '书签地址必须是 http/https' })
-      const store = getBookmarksStore()
-      const added = addBookmark(store.get(), { title: title ?? '', url, folderId: folderId ?? null })
-      store.setRaw(added.tree)
-      const urlText = added.node.type === 'bookmark' ? added.node.url : url
-      return textContent({ ok: true, id: added.node.id, title: added.node.title, url: urlText })
-    }
+  // 插件工具:内核已缓冲全部声明(MCP 模式启动前插件已激活),此处统一注册并回交句柄
+  kernel.mcp.attach((spec) =>
+    // 插件侧 config.inputSchema 为 zod raw shape;SDK 的重载推导在此处无收益,直接放宽
+    (server.registerTool as any)(spec.name, spec.config, spec.handler)
   )
-
-  server.tool('browser_list_bookmarks', {}, async () => {
-    const list = flatten(getBookmarksStore().get())
-    return textContent({ ok: true, bookmarks: list })
-  })
 
   const transport = new StdioServerTransport()
   server

@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { buildSuggestions, buildSuggestRows, fuzzyMatch, fuzzyScore, highlightRanges } from '../src/shared/suggest'
+import {
+  buildSuggestions,
+  buildSuggestRows,
+  fuzzyMatch,
+  fuzzyScore,
+  highlightRanges,
+  mergeSuggestions,
+  scoreFields
+} from '../src/shared/suggest'
 import type { FlatBookmark, HistoryEntry, Suggestion } from '../src/shared/types'
+import type { SuggestItem } from '../src/shared/plugins'
 
 const history: HistoryEntry[] = [
   { id: 'h1', title: 'GitHub', url: 'https://github.com', kind: 'page', visitedAt: 3000 },
@@ -178,5 +187,97 @@ describe('buildSuggestRows(建议 → 面板渲染行模型)', () => {
   it('未提供引擎 label 时搜索行显示“搜索引擎”', () => {
     const rows = buildSuggestRows([items[0]], 'git')
     expect(rows[0].sub).toBe('使用 搜索引擎 搜索')
+  })
+})
+
+describe('scoreFields', () => {
+  it('标题命中权重 ×2', () => {
+    expect(scoreFields('git', 'GitHub', 'https://example.com')).toBeGreaterThan(0)
+    expect(scoreFields('git', 'GitHub', 'https://example.com')).toBe(
+      scoreFields('git', 'GitHub', 'https://example.com')
+    )
+  })
+
+  it('都不命中返回 0', () => {
+    expect(scoreFields('zzz', 'GitHub', 'https://github.com')).toBe(0)
+  })
+
+  it('空 query 恒为正', () => {
+    expect(scoreFields('', 'anything', 'https://a.com')).toBeGreaterThan(0)
+  })
+})
+
+describe('mergeSuggestions', () => {
+  const hist = (id: string, title: string, url: string, score: number, visitedAt = 0): SuggestItem => ({
+    kind: 'history',
+    id,
+    title,
+    url,
+    score,
+    visitedAt
+  })
+  const bm = (id: string, title: string, url: string, score: number): SuggestItem => ({
+    kind: 'bookmark',
+    id,
+    title,
+    url,
+    score,
+    visitedAt: 0
+  })
+
+  it('非空 query:首行固定搜索行', () => {
+    const out = mergeSuggestions('git', [{ priority: 10, items: [hist('h', 'GitHub', 'https://github.com', 500)] }])
+    expect(out[0].kind).toBe('search')
+    expect(out[1].url).toBe('https://github.com')
+  })
+
+  it('空 query:不插搜索行', () => {
+    const out = mergeSuggestions('', [{ priority: 10, items: [hist('h', 'A', 'https://a.com', 1, 10)] }])
+    expect(out).toHaveLength(1)
+    expect(out[0].kind).toBe('history')
+  })
+
+  it('按 score 降序、同分按 visitedAt 降序', () => {
+    const out = mergeSuggestions('q', [
+      {
+        priority: 10,
+        items: [
+          hist('a', 'A', 'https://a.com', 100, 1),
+          hist('b', 'B', 'https://b.com', 100, 9),
+          hist('c', 'C', 'https://c.com', 300, 1)
+        ]
+      }
+    ], { limit: 9 })
+    expect(out.slice(1).map((s) => s.url)).toEqual(['https://c.com', 'https://b.com', 'https://a.com'])
+  })
+
+  it('同 URL 冲突:优先级高者胜', () => {
+    const out = mergeSuggestions('q', [
+      { priority: 10, items: [hist('h1', '历史标题', 'https://x.com', 900)] },
+      { priority: 20, items: [bm('b1', '书签标题', 'https://x.com', 100)] }
+    ])
+    expect(out).toHaveLength(2)
+    expect(out[1].kind).toBe('bookmark')
+    expect(out[1].title).toBe('书签标题')
+  })
+
+  it('limit 截断(含搜索行)', () => {
+    const items = Array.from({ length: 20 }, (_, i) => hist(`h${i}`, `T${i}`, `https://s${i}.com`, 100 - i))
+    const out = mergeSuggestions('q', [{ priority: 10, items }], { limit: 5 })
+    expect(out).toHaveLength(5)
+    expect(out[0].kind).toBe('search')
+  })
+
+  it('score<=0 的条目不进入结果,并剥掉 score 字段', () => {
+    const out = mergeSuggestions('q', [
+      { priority: 10, items: [hist('a', 'A', 'https://a.com', 0), hist('b', 'B', 'https://b.com', 50)] }
+    ])
+    expect(out).toHaveLength(2)
+    expect(out[1]).not.toHaveProperty('score')
+  })
+
+  it('无任何来源时不产生搜索行以外的结果', () => {
+    expect(mergeSuggestions('q', [])).toHaveLength(1)
+    expect(mergeSuggestions('', [])).toHaveLength(0)
   })
 })

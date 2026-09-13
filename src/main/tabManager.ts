@@ -5,11 +5,20 @@ import type { WebContents } from 'electron'
 import { EventEmitter } from 'node:events'
 import type { TabInfo } from '@shared/types'
 import { log, logError } from './logger'
-import { recordVisit } from './history'
 
 export interface TabEvents {
   'tab-updated': (tab: TabInfo) => void
   'tabs-changed': () => void
+  'tab-created': (tab: TabInfo) => void
+  'tab-closed': (tab: TabInfo) => void
+  'tab-activated': (tab: TabInfo) => void
+  /** 主框架导航完成(http(s) 主文档),供插件记录历史等 */
+  'tab-navigated': (payload: { tabId: number; url: string; title: string }) => void
+}
+
+/** 标签页 webContents 登记口(内容注入用):Electron 44 的 WebContentsView 无法靠 getType 区分 */
+export interface PageTracker {
+  track(wc: WebContents): void
 }
 
 export class TabManager extends EventEmitter {
@@ -19,10 +28,16 @@ export class TabManager extends EventEmitter {
   private nextId = 1
   private chromeHeight = 0
   private closedStack: TabInfo[] = [] // 供 Ctrl+Shift+T 恢复(简单实现最近关闭)
+  private pageTracker: PageTracker | null = null
 
   constructor(window: BrowserWindow) {
     super()
     this.window = window
+  }
+
+  /** 注入标签页登记口(内核内容注入宿主) */
+  setPageTracker(tracker: PageTracker): void {
+    this.pageTracker = tracker
   }
 
   emit<K extends keyof TabEvents>(event: K, ...args: Parameters<TabEvents[K]>): boolean {
@@ -92,6 +107,7 @@ export class TabManager extends EventEmitter {
       }
     })
     const wc = view.webContents
+    this.pageTracker?.track(wc)
     const info: TabInfo = {
       id,
       url: 'about:blank',
@@ -123,9 +139,9 @@ export class TabManager extends EventEmitter {
       info.canGoForward = hist.canGoForward()
       this.publish(id)
     }
-    // 主框架导航 → 记入浏览历史;SPA 内 hash 变化(did-navigate-in-page)不记录
+    // 主框架导航 → 发布 tab-navigated 事件(历史由插件订阅);SPA 内 hash 变化不发布
     wc.on('did-navigate', (_e, url) => {
-      recordVisit({ title: wc.getTitle() || url, url })
+      this.emit('tab-navigated', { tabId: id, url, title: wc.getTitle() || url })
       onNavigate()
     })
     wc.on('did-navigate-in-page', onNavigate)
@@ -150,6 +166,7 @@ export class TabManager extends EventEmitter {
     if (url) this.navigate(id, url)
     this.emit('tabs-changed')
     this.layout()
+    this.emit('tab-created', { ...info, active: activate })
     log('创建标签', id, url ?? '(blank)')
     return { ...info, active: activate }
   }
@@ -177,6 +194,7 @@ export class TabManager extends EventEmitter {
     }
     this.layout()
     this.window.webContents.send('tab:activated', id)
+    this.emit('tab-activated', { ...hit.info, active: true })
     if (!silent) {
       for (const [, v] of this.views) this.publish(v.info.id)
       this.emit('tabs-changed')
@@ -196,6 +214,7 @@ export class TabManager extends EventEmitter {
     if (!hit) return { ok: false }
     this.closedStack.push({ ...hit.info })
     if (this.closedStack.length > 10) this.closedStack.shift()
+    this.emit('tab-closed', { ...hit.info })
     this.emit('tabs-changed')
     this.window.contentView.removeChildView(hit.view)
     hit.view.webContents.close()

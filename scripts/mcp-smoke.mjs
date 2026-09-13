@@ -47,6 +47,9 @@ const { tools } = await client.listTools()
 const names = tools.map((t) => t.name)
 console.log(`✓ 工具数: ${names.length} -> ${names.join(', ')}`)
 assert(names.includes('browser_navigate') && names.includes('browser_screenshot'), '工具清单完整')
+// 插件贡献的工具应随插件激活一并注册(书签插件 / 广告拦截参考插件)
+assert(names.includes('browser_add_bookmark'), '书签插件已贡献 MCP 工具')
+assert(names.includes('adblock_stats'), '广告拦截插件已贡献 MCP 工具')
 
 // 1. 新标签 + 导航
 const nt = await client.callTool({ name: 'browser_new_tab', arguments: { url: 'https://example.com' } })
@@ -75,6 +78,29 @@ assert(/bow\/\d/.test(uaStr), `UA 应含 bow 签名,实际: ${uaStr}`)
 assert(!/Electron/.test(uaStr), `UA 不应含 Electron,实际: ${uaStr}`)
 assert(procType === 'undefined', '页面不应暴露 window.process')
 console.log(`✓ 浏览器签名 UA: ${uaStr}`)
+
+// 2.6 内容注入(广告拦截参考插件,dom-ready 注入标记属性)
+const abMark = await client.callTool({
+  name: 'browser_eval',
+  arguments: { tabId, code: "document.documentElement.getAttribute('data-bow-adblock')" }
+})
+const abMarkVal = JSON.parse(abMark.content[0].text).result
+assert(abMarkVal === '1', `内容注入未生效,data-bow-adblock=${abMarkVal}`)
+console.log('✓ 内容注入标记 data-bow-adblock =', abMarkVal)
+
+// 2.7 网络钩子:向拦截清单域名发一个子资源请求,应被取消并计数
+await client.callTool({
+  name: 'browser_eval',
+  arguments: {
+    tabId,
+    code: "var i=new Image();i.src='https://ad.doubleclick.net/x.png?'+Date.now();document.body.appendChild(i);'sent'"
+  }
+})
+await sleep(900)
+const abHook = await client.callTool({ name: 'adblock_stats', arguments: {} })
+const abHookText = JSON.parse(abHook.content[0].text)
+assert(abHookText.blockedCount >= 1, `网络钩子未拦截,blockedCount=${abHookText.blockedCount}`)
+console.log('✓ 网络钩子已拦截子资源请求,blockedCount =', abHookText.blockedCount)
 
 // 3. 快照
 const snap = await client.callTool({ name: 'browser_snapshot', arguments: { tabId, maxElements: 50 } })
@@ -152,7 +178,13 @@ const lbText = JSON.parse(lb.content[0].text)
 assert(lbText.bookmarks.some((b) => b.url === 'https://example.com'), '书签已持久化')
 console.log(`✓ browser_list_bookmarks: ${lbText.bookmarks.length} 条`)
 
-// 9. 关标签
+// 9. 广告拦截参考插件统计
+const ab = await client.callTool({ name: 'adblock_stats', arguments: {} })
+const abText = JSON.parse(ab.content[0].text)
+assert(typeof abText.blockedCount === 'number' && abText.ruleCount > 0, 'adblock_stats 返回统计')
+console.log(`✓ adblock_stats: 已拦截 ${abText.blockedCount} 次 / ${abText.ruleCount} 条规则(启用=${abText.enabled})`)
+
+// 10. 关标签
 const ct = await client.callTool({ name: 'browser_close_tab', arguments: { tabId } })
 console.log('✓ browser_close_tab →', JSON.parse(ct.content[0].text))
 

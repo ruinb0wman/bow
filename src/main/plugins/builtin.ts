@@ -1,0 +1,9 @@
+/** 内置插件清单(固定顺序:决定网络钩子链与建议源的稳定次序) */
+
+import type { PluginMain } from './types'
+import history from '@plugins/history/main'
+import bookmarks from '@plugins/bookmarks/main'
+import cors from '@plugins/cors/main'
+import adblock from '@plugins/adblock/main'
+
+export const BUILTIN_PLUGINS: PluginMain[] = [history, bookmarks, cors, adblock]

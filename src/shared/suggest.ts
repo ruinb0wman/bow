@@ -1,6 +1,7 @@
 /** 地址栏模糊匹配与建议纯逻辑(可单测):子序列匹配 + 历史/书签合并建议 */
 
 import type { FlatBookmark, HistoryEntry, Suggestion, SuggestRow } from './types'
+import type { SuggestItem } from './plugins'
 
 /** 是否为词边界(行首或前一个字符非字母数字):命中边界加分,让 "git" 优先命中 "GitHub" 而非 "digit" */
 function isBoundary(text: string, i: number): boolean {
@@ -69,8 +70,8 @@ export function highlightRanges(query: string, text: string): Array<[number, num
   return ranges
 }
 
-/** 标题/URL 双字段综合分:标题命中权重 ×2,取两者最高分 */
-function entryScore(query: string, title: string, url: string): number {
+/** 标题/URL 双字段综合分:标题命中权重 ×2,取两者最高分。导出供各插件建议源复用 */
+export function scoreFields(query: string, title: string, url: string): number {
   const ts = fuzzyScore(query, title)
   const us = fuzzyScore(query, url)
   if (ts > 0 && us > 0) return Math.max(ts * 2, us)
@@ -83,11 +84,64 @@ export interface BuildSuggestOptions {
   limit?: number
 }
 
+export interface SuggestProviderInput {
+  /** 同 URL 冲突时的优先级(大者胜) */
+  priority: number
+  items: SuggestItem[]
+}
+
 /**
- * 由输入生成地址栏建议:
+ * 多来源建议合并(插件内核与兼容包装共用):
+ * - 按 URL 去重,同 URL 取「来源优先级高 > score 高」者;
+ * - 全局按 score 降序、visitedAt 降序;同分书签优先由各来源的 priority 在冲突时体现;
+ * - 非空 query 时首行固定搜索建议,总条数截断至 limit;空 query 不插搜索行。
+ */
+export function mergeSuggestions(
+  query: string,
+  providers: SuggestProviderInput[],
+  opts: BuildSuggestOptions = {}
+): Suggestion[] {
+  const limit = opts.limit ?? 9
+  const q = query.trim()
+
+  const byUrl = new Map<string, { s: SuggestItem; priority: number }>()
+  for (const p of providers) {
+    for (const item of p.items) {
+      if (item.score <= 0) continue
+      const key = item.url ?? item.id
+      const prev = byUrl.get(key)
+      if (!prev || p.priority > prev.priority || (p.priority === prev.priority && item.score > prev.s.score)) {
+        byUrl.set(key, { s: item, priority: p.priority })
+      }
+    }
+  }
+
+  const ranked = [...byUrl.values()].sort((a, b) => {
+    if (b.s.score !== a.s.score) return b.s.score - a.s.score
+    return (b.s.visitedAt ?? 0) - (a.s.visitedAt ?? 0)
+  })
+
+  const strip = (s: SuggestItem): Suggestion => {
+    const { score: _score, ...rest } = s
+    return rest
+  }
+
+  if (!q) {
+    return ranked.slice(0, limit).map((r) => strip(r.s))
+  }
+
+  const out: Suggestion[] = [{ kind: 'search', id: '__suggest_search__', title: q, query: q }]
+  out.push(...ranked.slice(0, Math.max(0, limit - 1)).map((r) => strip(r.s)))
+  return out
+}
+
+/**
+ * 由输入生成地址栏建议(历史 + 书签):
  * - 输入为空/纯空白:仅返回最近的 limit 条历史(不合并书签、不发搜索建议);
  * - 非空:首行固定搜索建议,随后按综合分降序合并历史与书签命中(标题命中 > URL 命中),
  *   同分按 visitedAt 降序;URL 冲突时书签行优先;总条数截断至 limit。
+ *
+ * 兼容包装:插件化后内核改走各来源的 SuggestProvider + mergeSuggestions。
  */
 export function buildSuggestions(
   input: string,
@@ -99,62 +153,64 @@ export function buildSuggestions(
   const query = input.trim()
 
   if (!query) {
-    return history.slice(0, limit).map((h): Suggestion => ({
-      kind: 'history',
-      id: h.id,
-      title: h.query ?? h.title,
-      url: h.url,
-      query: h.query,
-      visitedAt: h.visitedAt
-    }))
+    return mergeSuggestions(
+      '',
+      [
+        {
+          priority: 10,
+          items: history.slice(0, limit).map((h): SuggestItem => ({
+            kind: 'history',
+            id: h.id,
+            title: h.query ?? h.title,
+            url: h.url,
+            query: h.query,
+            visitedAt: h.visitedAt,
+            score: 1
+          }))
+        }
+      ],
+      { limit }
+    )
   }
 
-  const out: Suggestion[] = [
-    { kind: 'search', id: '__suggest_search__', title: query, query }
-  ]
-
-  const byUrl = new Map<string, { s: Suggestion; score: number }>()
-  const place = (url: string, s: Suggestion, score: number): void => {
-    const prev = byUrl.get(url)
-    // 书签优先于历史;同优先级取高分者
-    const prevPriority = prev ? (prev.s.kind === 'bookmark' ? 2 : 1) : 0
-    const curPriority = s.kind === 'bookmark' ? 2 : 1
-    if (!prev || curPriority > prevPriority || (curPriority === prevPriority && score > prev.score)) {
-      byUrl.set(url, { s, score })
-    }
-  }
-
+  const historyItems: SuggestItem[] = []
   for (const h of history) {
-    const score = entryScore(query, h.query ?? h.title, h.url)
+    const score = scoreFields(query, h.query ?? h.title, h.url)
     if (score <= 0) continue
-    place(h.url, {
+    historyItems.push({
       kind: 'history',
       id: h.id,
       title: h.query ?? h.title,
       url: h.url,
       query: h.query,
-      visitedAt: h.visitedAt
-    }, score)
+      visitedAt: h.visitedAt,
+      score
+    })
   }
+  const bookmarkItems: SuggestItem[] = []
   for (const b of bookmarks) {
-    const score = entryScore(query, b.title, b.url ?? '')
+    const url = b.url ?? ''
+    const score = scoreFields(query, b.title, url)
     if (score <= 0) continue
-    place(b.url ?? b.id, {
+    bookmarkItems.push({
       kind: 'bookmark',
       id: b.id,
       title: b.title,
       url: b.url,
       path: b.path,
-      visitedAt: 0
-    }, score)
+      visitedAt: 0,
+      score
+    })
   }
 
-  const ranked = [...byUrl.values()].sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score
-    return (b.s.visitedAt ?? 0) - (a.s.visitedAt ?? 0)
-  })
-  out.push(...ranked.slice(0, Math.max(0, limit - 1)).map((r) => r.s))
-  return out
+  return mergeSuggestions(
+    query,
+    [
+      { priority: 10, items: historyItems },
+      { priority: 20, items: bookmarkItems }
+    ],
+    { limit }
+  )
 }
 
 /** 标题高亮分段:match 到的字符用 .hl 包裹 */

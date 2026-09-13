@@ -13,8 +13,18 @@
     "noEmit": false,
     "outDir": "out",
     "paths": {
-      "@shared/*": ["./src/shared/*"]
+      "@shared/*": ["./src/shared/*"],
+      "@plugins/*": ["./src/plugins/*"]
     }
   },
-  "include": ["src/main/**/*", "src/preload/**/*", "src/shared/**/*", "electron.vite.config.ts", "vitest.config.ts"]
+  "include": [
+    "src/main/**/*",
+    "src/preload/**/*",
+    "src/shared/**/*",
+    "src/plugins/*/main.ts",
+    "src/plugins/*/shared.ts",
+    "src/plugins/*/rules.ts",
+    "electron.vite.config.ts",
+    "vitest.config.ts"
+  ]
 }

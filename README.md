@@ -63,7 +63,8 @@ MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到
 | `browser_close_tab {tabId}` / `browser_switch_tab {tabId}` / `browser_list_tabs` | 标签管理 |
 | `browser_screenshot {tabId?}` | 当前页面截图,以 PNG 图片内容返回给 AI |
 | `browser_get_info {tabId?}` | 当前标签标题 / URL / 加载状态 |
-| `browser_add_bookmark {title?, url, folderId?}` / `browser_list_bookmarks` | 书签维护 |
+| `browser_add_bookmark {title?, url, folderId?}` / `browser_list_bookmarks` | 书签维护(由「书签」插件提供) |
+| `adblock_stats` | 广告/追踪拦截统计(由「广告/追踪拦截(参考)」插件提供) |
 
 典型 AI 工作流:`browser_new_tab` → `browser_search` → `browser_snapshot` 找到结果链接的选择器 → `browser_click` → `browser_screenshot` 确认 → `browser_type`/`browser_click` 填表。
 
@@ -78,10 +79,38 @@ MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到
 
 ## 数据存储
 
-- 书签:`<userData>/bookmarks.json`
-- 浏览历史(最近 5000 条,按 URL 去重):`<userData>/history.json`
-- 设置(默认搜索引擎/主页):`<userData>/settings.json`
+- 书签(「书签」插件):`<userData>/bookmarks.json`
+- 浏览历史(「浏览历史」插件,最近 5000 条,按 URL 去重):`<userData>/history.json`
+- CORS 放行配置(「CORS 放行」插件,首次启动从 `settings.json` 迁移):`<userData>/cors.json`
+- 广告拦截配置与计数(「广告/追踪拦截(参考)」插件):`<userData>/adblock.json`
+- 插件启停状态(内核):`<userData>/plugins.json`
+- 核心设置(默认搜索引擎/主页):`<userData>/settings.json`
 - MCP 模式下日志:`<userData>/browser.log`
+
+## 插件体系
+
+书签、历史、CORS 放行都是内置插件;广告/追踪拦截是参考插件。插件是**仓库内编译期模块**(无动态代码执行),
+可在「设置 → 插件」里运行时启停(无需重启),状态持久化到 `plugins.json`;停用时内核自动回收其 IPC、
+建议源、MCP 工具、网络钩子与已注入 CSS。
+
+| 扩展点 | 用途 | 现有用例 |
+| --- | --- | --- |
+| 浏览器 UI | 工具栏按钮 / 地址栏尾部插槽 / Overlay 浮层 / 设置分区 | 书签星标与管理面板、各插件设置分区 |
+| 地址栏建议源 | 贡献模糊匹配建议(同 URL 冲突按优先级决胜) | 历史(10)、书签(20) |
+| 网络钩子 | `onBeforeRequest` / `onBeforeSendHeaders` / `onHeadersReceived` 链式拦截与改写 | CORS 放行、广告拦截 |
+| 内容注入 | 按 URL 匹配在 `dom-ready` / `did-finish-load` 注入 CSS/JS(仅标签页) | 广告位隐藏 |
+| MCP 工具 | 把能力暴露给 AI 工具(随插件启停动态增减) | `browser_add_bookmark`、`adblock_stats` |
+
+### 新增一个插件
+
+1. 新建 `src/plugins/<id>/`:
+   - `main.ts`:默认导出 `PluginMain`(`manifest` + `capabilities` + `activate(ctx)`),
+     通过 `ctx.storage / ipc / events / suggest / mcp / net / content` 注册能力;`deactivate` 只处理自有非内核资源。
+   - `ui.ts` + `ui/*.vue`:默认导出 UI 贡献(`slots` / `overlays` / `settingsSections`),浮层 id 约定 `plugin:<id>:<panelId>`。
+   - `shared.ts` / `rules.ts`(可选):同构纯逻辑,便于单测。
+   - 边界约束:`main.ts` 不得 import `.vue` 或 `@renderer`;`ui.ts` 不得 import `electron`(由 `tests/pluginBoundaries.test.ts` 强制)。
+2. 在 `src/main/plugins/builtin.ts` 的 `BUILTIN_PLUGINS` 登记 main;在 `src/renderer/src/plugins/registry.ts` 的 `PLUGIN_UI` 登记 ui。
+3. 渲染层用 `window.browserAPI.plugins.invoke(id, method, ...args)` 调插件方法,`plugins.onEvent` 订阅插件事件。
 
 ## 环境注意事项
 
@@ -94,7 +123,7 @@ MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到
 ## MCP 冒烟测试
 
 ```bash
-npm run test:mcp   # 拉起 MCP 模式浏览器并自动跑关键流程(新标签→导航→快照→截图→搜索→点击→输入→书签)
+npm run test:mcp   # 拉起 MCP 模式浏览器并自动跑关键流程(新标签→导航→快照→截图→搜索→点击→输入→书签→广告拦截统计)
 ```
 
 需要显示环境;Linux 缺 ALSA 时:`SMOKE_LD_LIBRARY_PATH=<目录> npm run test:mcp`。
@@ -107,11 +136,15 @@ src/
   main/          主进程:窗口、TabManager(每标签 WebContentsView)、
                  通用 Overlay 浮层宿主(OverlayManager + overlay 页面注册表)、
                  MCP 服务器、注入式页面操作执行器、JSON 存储、IPC
-  preload/       contextBridge 暴露 window.browserAPI
-  renderer/      Vue 3 chrome UI(标签栏/地址栏/书签/设置弹层/建议下拉浮现层)
-  shared/        三端共享:类型、URL 解析、书签树/历史/模糊匹配纯逻辑
-                 (含 buildSuggestRows 建议渲染行模型)
-tests/           vitest 单元测试(url 解析、书签树、历史、模糊建议)
+  main/plugins/  插件内核:注册/启停编排、独立存储、IPC 路由、事件总线、建议合并、
+                 网络钩子宿主、内容注入宿主、MCP 工具宿主
+  plugins/<id>/  内置插件(自包含):main.ts(主进程侧)/ ui.ts + ui/*.vue(渲染层侧)
+                 / shared.ts|rules.ts(同构纯逻辑)
+  preload/       contextBridge 暴露 window.browserAPI(含 plugins 调用面)
+  renderer/      Vue 3 chrome UI(标签栏/地址栏/插件插槽/设置弹层/建议下拉浮现层)
+                 plugins/registry.ts = 渲染层插件 UI 注册表
+  shared/        三端共享:类型、URL 解析、书签树/历史/模糊匹配/建议合并/URL 匹配纯逻辑
+tests/           vitest 单元测试(url 解析、书签树、历史、模糊建议、插件注册表/匹配/边界)
 ```
 
 WebContentsView 的布局顶部偏移量由 chrome UI 实测高度通过 `ui:chrome-height` IPC 上报,标签栏/工具栏高度变化时自动跟随。

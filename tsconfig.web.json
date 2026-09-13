@@ -14,8 +14,17 @@
     "outDir": "out",
     "paths": {
       "@renderer/*": ["./src/renderer/src/*"],
-      "@shared/*": ["./src/shared/*"]
+      "@shared/*": ["./src/shared/*"],
+      "@plugins/*": ["./src/plugins/*"]
     }
   },
-  "include": ["src/renderer/src/**/*", "src/renderer/src/**/*.vue", "src/preload/index.d.ts", "src/shared/**/*"]
+  "include": [
+    "src/renderer/src/**/*",
+    "src/renderer/src/**/*.vue",
+    "src/preload/index.d.ts",
+    "src/shared/**/*",
+    "src/plugins/*/ui.ts",
+    "src/plugins/*/shared.ts",
+    "src/plugins/*/ui/**/*.vue"
+  ]
 }

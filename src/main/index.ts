@@ -3,12 +3,13 @@ import { join } from 'node:path'
 import { TabManager } from './tabManager'
 import { OverlayManager } from './overlay'
 import { registerIpc } from './ipc'
-import { setupCorsBypass } from './cors'
 import { initStores, getSettingsStore } from './stores'
 import { setupDevTools } from './devtools'
 import { setupTabShortcuts } from './tabShortcuts'
-import { startMcpServer } from './mcp'
+import { startMcpServer, CORE_MCP_TOOL_NAMES } from './mcp'
 import { applyBrowserIdentity } from './ua'
+import { PluginKernel } from './plugins/kernel'
+import { BUILTIN_PLUGINS } from './plugins/builtin'
 import { IS_MCP, log, logError } from './logger'
 
 const isDev = !!process.env['ELECTRON_RENDERER_URL']
@@ -43,6 +44,7 @@ function createWindow(): BrowserWindow {
 
 let tabs: TabManager
 let overlay: OverlayManager
+let kernel: PluginKernel
 
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
 
@@ -51,15 +53,20 @@ if (IS_MCP) {
   app.commandLine.appendSwitch('disable-logging')
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // 先于一切窗口/视图/存储:显示名 → bow、userData 钉旧路径、UA 全局签名
   applyBrowserIdentity()
   initStores()
   // 先于任何窗口/视图创建:保证 DevTools / Tab 快捷键监听覆盖全部 webContents
-  // CORS 白名单注入同样需在 webContents 创建前挂到 defaultSession
-  setupCorsBypass()
   setupDevTools()
   setupTabShortcuts(() => tabs, () => overlay)
+
+  // 插件内核:网络钩子与内容注入必须在任何窗口/视图创建前安装
+  kernel = new PluginKernel()
+  kernel.reserveMcpToolNames(CORE_MCP_TOOL_NAMES)
+  kernel.registerAll(BUILTIN_PLUGINS)
+  kernel.installHooks()
+  await kernel.activateEnabled()
 
   // 外链默认走系统浏览器,页面内 target=_blank 由 TabManager 接管为新标签
   app.on('web-contents-created', (_e, contents) => {
@@ -76,6 +83,28 @@ app.whenReady().then(() => {
   const mainWindow = createWindow()
   tabs = new TabManager(mainWindow)
   overlay = new OverlayManager(mainWindow, tabs)
+  // 标签页 webContents → 内核内容注入宿主
+  tabs.setPageTracker({ track: (wc) => kernel.trackPage(wc) })
+
+  // 插件内核的运行时依赖(窗口/标签就绪后注入;插件 activate 期间不会触达)
+  kernel.setTabProvider(() => ({
+    list: () => tabs.listTabs(),
+    getActive: () => tabs.getActiveTabInfo()
+  }))
+  kernel.setBroadcaster((channel, payload) => {
+    if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)
+    overlay.send(channel, payload)
+  })
+  kernel.setUiHost({
+    overlayId: () => overlay.currentId,
+    closeOverlay: () => overlay.show(null)
+  })
+
+  // 标签生命周期 → 插件事件总线(历史等插件据此工作)
+  tabs.on('tab-navigated', (p) => kernel.emitEvent('tab:navigated', p))
+  tabs.on('tab-created', (t) => kernel.emitEvent('tab:created', t))
+  tabs.on('tab-closed', (t) => kernel.emitEvent('tab:closed', t))
+  tabs.on('tab-activated', (t) => kernel.emitEvent('tab:activated', t))
 
   // 新建/关闭标签后把弹层重新置顶,防止新视图盖住已打开的弹层
   tabs.on('tabs-changed', () => overlay.raise())
@@ -93,10 +122,10 @@ app.whenReady().then(() => {
     e.preventDefault()
   })
 
-  registerIpc(tabs, mainWindow, overlay)
+  registerIpc(tabs, mainWindow, overlay, kernel)
 
   if (IS_MCP) {
-    startMcpServer({ tabs })
+    startMcpServer({ tabs, kernel })
   }
 
   log('应用已启动', { mcp: IS_MCP, version: app.getVersion() })

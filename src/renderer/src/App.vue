@@ -1,20 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue'
-import type { FlatBookmark, ModalKind, SearchEngineId, Suggestion, SuggestPayload, TabInfo } from '@shared/types'
-import { flatten } from '@shared/bookmarkTree'
-import { buildSuggestions, buildSuggestRows } from '@shared/suggest'
-import { SEARCH_ENGINES } from '@shared/url'
+import type { Component } from 'vue'
+import type { ModalKind, Suggestion, SuggestPayload, SuggestRow, TabInfo } from '@shared/types'
+import type { PluginInfo } from '@shared/plugins'
 import { faviconLetter } from './lib/avatar'
+import { PLUGIN_UI } from './plugins/registry'
 import {
   ArrowLeft,
   ArrowRight,
-  BookMarked,
   Minus,
   Plus,
   RotateCw,
   Settings as SettingsIcon,
   Square,
-  Star,
   TriangleAlert,
   Undo2,
   X
@@ -27,31 +25,32 @@ const tabs = ref<TabInfo[]>([])
 const address = ref('')
 const addressEditing = ref(false)
 
-// ---------- 地址栏建议(历史 / 书签模糊匹配) ----------
+// ---------- 插件:启用状态与 UI 插槽 ----------
+const plugins = ref<PluginInfo[]>([])
+const enabledIds = computed(() => new Set(plugins.value.filter((p) => p.enabled).map((p) => p.id)))
+
+function slotComponents(slot: 'addressbar-trailing' | 'toolbar'): Component[] {
+  const out: Component[] = []
+  for (const ui of PLUGIN_UI) {
+    if (!enabledIds.value.has(ui.id)) continue
+    const list = ui.slots?.[slot]
+    if (list) out.push(...list)
+  }
+  return out
+}
+const addressbarSlots = computed(() => slotComponents('addressbar-trailing'))
+const toolbarSlots = computed(() => slotComponents('toolbar'))
+
+// ---------- 地址栏建议(由插件内核聚合各建议源) ----------
 const suggestions = ref<Suggestion[]>([])
+const suggestRows = ref<SuggestRow[]>([])
 const activeIdx = ref(0)
 const showSuggest = ref(false)
-const bookmarkCache = ref<FlatBookmark[]>([])
-const searchEngine = ref<SearchEngineId>('google')
 let suggestTimer: ReturnType<typeof setTimeout> | null = null
 
 const activeTab = computed(() => tabs.value.find((t) => t.active) ?? null)
 const currentUrl = computed(() => activeTab.value?.url ?? '')
 const loading = computed(() => !!activeTab.value?.loading)
-
-const bookmarked = ref(false)
-watch(
-  currentUrl,
-  async (url) => {
-    if (!url || url === 'about:blank') {
-      bookmarked.value = false
-      return
-    }
-    const hits = await api.findBookmarksByUrl(url)
-    bookmarked.value = hits.length > 0
-  },
-  { immediate: true }
-)
 
 // ---------- 事件订阅 ----------
 const unsubs: Array<() => void> = []
@@ -70,10 +69,7 @@ const addressBarEl = ref<HTMLElement | null>(null)
 onMounted(async () => {
   tabs.value = await api.listTabs()
   syncAddress()
-
-  const settings = await api.getSettings()
-  searchEngine.value = settings.searchEngine
-  await refreshBookmarks()
+  plugins.value = await api.plugins.list()
 
   unsubs.push(
     api.onTabUpdated((tab) => {
@@ -89,30 +85,24 @@ onMounted(async () => {
     api.onTabActivated(() => {
       syncAddress()
     }),
-    api.onBookmarksChanged(() => {
-      void refreshBookmarks()
-    }),
-    api.onSettingsChanged((s) => {
-      searchEngine.value = s.searchEngine
+    api.plugins.onChanged((list) => {
+      plugins.value = list
     }),
     // 主进程 Ctrl+T 新建标签后要求聚焦地址栏
     api.onFocusAddressRequest(() => {
       focusAddress()
     }),
-    // overlay → chrome 泛型事件:按内容 id 分发
+    // overlay → chrome 泛型事件:chrome 只处理 suggest 下拉
     api.onOverlayEvent((ev) => {
-      if (ev.id === 'suggest') {
-        if (ev.event === 'pick' && typeof ev.args === 'number') {
-          const s = suggestions.value[ev.args]
-          if (s) openSuggestion(s)
-        } else if (ev.event === 'hover' && typeof ev.args === 'number') {
-          activeIdx.value = ev.args
-        } else if (ev.event === 'cancel') {
-          hideSuggest()
-          focusAddress()
-        }
-      } else if (ev.event === 'close-request') {
-        void api.showOverlay(null)
+      if (ev.id !== 'suggest') return
+      if (ev.event === 'pick' && typeof ev.args === 'number') {
+        const s = suggestions.value[ev.args]
+        if (s) openSuggestion(s)
+      } else if (ev.event === 'hover' && typeof ev.args === 'number') {
+        activeIdx.value = ev.args
+      } else if (ev.event === 'cancel') {
+        hideSuggest()
+        focusAddress()
       }
     })
   )
@@ -183,26 +173,19 @@ async function stopLoading(): Promise<void> {
   await api.stop()
 }
 
-// ---------- 地址栏建议(历史 / 书签模糊匹配) ----------
-async function refreshBookmarks(): Promise<void> {
-  bookmarkCache.value = flatten(await api.listBookmarks()).filter((b) => b.type === 'bookmark')
-}
-
-/** 把当前建议列表推给顶层 Overlay 面板(带地址栏实测矩形,用于对齐定位);无建议/不可见则关闭浮层 */
+// ---------- 地址栏建议 ----------
+/** 把聚合结果推给顶层 Overlay 面板(带地址栏实测矩形,用于对齐定位);无建议/不可见则关闭浮层 */
 function pushSuggest(): void {
   const el = addressBarEl.value
-  const list = suggestions.value
-  if (!showSuggest.value || list.length === 0 || !el) {
+  if (!showSuggest.value || suggestions.value.length === 0 || !el) {
     void api.showOverlay(null)
     return
   }
   const rect = el.getBoundingClientRect()
   const payload: SuggestPayload = {
-    rows: buildSuggestRows(list, address.value, {
-      searchLabel: SEARCH_ENGINES[searchEngine.value]?.label
-    }),
+    rows: suggestRows.value,
     // IPC 走结构化克隆,不能传 Vue 响应式代理 → 摊平成普通对象
-    suggestions: list.map((s) => ({ ...s })),
+    suggestions: suggestions.value.map((s) => ({ ...s })),
     activeIdx: activeIdx.value,
     rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
   }
@@ -210,8 +193,9 @@ function pushSuggest(): void {
 }
 
 async function refreshSuggestions(input: string): Promise<void> {
-  const history = await api.listHistory()
-  suggestions.value = buildSuggestions(input, history, bookmarkCache.value)
+  const res = await api.plugins.suggest(input)
+  suggestions.value = res.suggestions
+  suggestRows.value = res.rows
   activeIdx.value = 0
   showSuggest.value = suggestions.value.length > 0
   pushSuggest()
@@ -220,6 +204,7 @@ async function refreshSuggestions(input: string): Promise<void> {
 function hideSuggest(): void {
   showSuggest.value = false
   suggestions.value = []
+  suggestRows.value = []
   activeIdx.value = 0
   void api.showOverlay(null)
 }
@@ -285,27 +270,13 @@ function openSuggestion(s: Suggestion): void {
   }
 }
 
-// ---------- 书签(管理/打开统一由 Overlay 面板 BookmarksModal 承担) ----------
-async function toggleStar(): Promise<void> {
-  const url = currentUrl.value
-  if (!url || url === 'about:blank') return
-  if (bookmarked.value) {
-    const hits = await api.findBookmarksByUrl(url)
-    for (const h of hits) await api.removeBookmark(h.id)
-    bookmarked.value = false
-    return
-  }
-  await api.addBookmark({ title: activeTab.value?.title ?? url, url })
-  bookmarked.value = true
-}
-
 // ---------- 窗口 ----------
 const minimize = (): void => void api.minimize()
 const maximize = (): void => void api.maximize()
 const closeWindow = (): void => void api.closeWindow()
 
 // ---------- Overlay 浮层 ----------
-/** 打开/关闭全窗弹层(书签管理/设置) */
+/** 打开/关闭核心全窗弹层(设置) */
 function openModal(kind: ModalKind | null): void {
   void api.showOverlay(kind ? { id: `modal:${kind}`, placement: 'full' } : null)
 }
@@ -408,19 +379,11 @@ onBeforeUnmount(() => {
             @input="onAddressInput"
             @keydown="onAddressKeydown"
           />
-          <button
-            class="star no-drag"
-            :class="{ on: bookmarked }"
-            :title="bookmarked ? '取消收藏' : '收藏当前页 (Ctrl+D)'"
-            @click="toggleStar"
-          >
-            <Star :size="15" :fill="bookmarked ? 'currentColor' : 'none'" />
-          </button>
+          <component v-for="(C, i) in addressbarSlots" :key="`at-${i}`" :is="C" />
         </div>
       </div>
-      <button class="tool-btn no-drag" title="管理书签" @click="openModal('bookmarks')">
-        <BookMarked :size="16" />
-      </button>
+      <!-- 插件工具栏按钮(书签管理等) -->
+      <component v-for="(C, i) in toolbarSlots" :key="`tb-${i}`" :is="C" />
       <button class="tool-btn no-drag" title="恢复刚刚关闭的标签 (Ctrl+Shift+T)" @click="restoreTab">
         <Undo2 :size="14" />
       </button>

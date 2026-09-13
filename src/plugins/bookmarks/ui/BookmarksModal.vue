@@ -1,12 +1,12 @@
 <script setup lang="ts">
-/** 收藏 Launchpad 面板(运行在顶层 Overlay 页面中):搜索 + 磁贴网格 + 管理 */
+/** 收藏 Launchpad 面板(书签插件贡献的 full 浮层):搜索 + 磁贴网格 + 管理 */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { BookmarkNode, BookmarkTree } from '@shared/types'
 import { childrenOf } from '@shared/bookmarkTree'
 import { ArrowLeft, ArrowRightLeft, Folder, Pencil, Plus, Search, Trash2, X } from 'lucide-vue-next'
-import { domainHue, faviconLetter } from '../lib/avatar'
-import { openAllInFolder, openBookmarkBackground } from '../lib/openFolder'
-import ModalShell from './ModalShell.vue'
+import { domainHue, faviconLetter } from '@renderer/lib/avatar'
+import { openAllInFolder, openBookmarkBackground } from '@renderer/lib/openFolder'
+import ModalShell from '@renderer/components/ModalShell.vue'
 
 defineOptions({ inheritAttrs: false })
 
@@ -150,7 +150,7 @@ async function confirmAdd(): Promise<void> {
       showNotice('请填写书签地址')
       return
     }
-    await api.addBookmark({ title: title || url, url, folderId: viewFolderId.value ?? null })
+    await api.plugins.invoke('bookmarks', 'add', { title: title || url, url, folderId: viewFolderId.value ?? null })
     showNotice(viewFolderId.value === null ? '已添加书签' : `已添加到「${viewTitle.value}」`)
   } else if (adding.value === 'folder') {
     if (!title) {
@@ -158,7 +158,7 @@ async function confirmAdd(): Promise<void> {
       return
     }
     const inFolderView = viewFolderId.value !== null
-    await api.addFolder({ title }) // 一级结构:目录始终在根(IPC 已强制)
+    await api.plugins.invoke('bookmarks', 'addFolder', { title }) // 一级结构:目录始终在根(插件已强制)
     if (inFolderView) {
       // 新目录建在根,退回根视图才能看到结果
       viewFolderId.value = null
@@ -184,29 +184,30 @@ async function saveEdit(): Promise<void> {
   if (!editing.value) return
   const patch: { title?: string; url?: string } = { title: editTitle.value }
   if (editing.value.type === 'bookmark') patch.url = editUrl.value
-  await api.updateBookmark(editing.value.id, patch)
+  await api.plugins.invoke('bookmarks', 'update', editing.value.id, patch)
   editing.value = null
 }
 
 async function removeNodeById(id: string): Promise<void> {
-  await api.removeBookmark(id)
+  await api.plugins.invoke('bookmarks', 'remove', id)
 }
 
 async function moveTo(node: BookmarkNode, target: string): Promise<void> {
-  await api.moveBookmark(node.id, target === '__root__' ? null : target)
+  await api.plugins.invoke('bookmarks', 'move', node.id, target === '__root__' ? null : target)
   moving.value = null
 }
 
 // ---------- 生命周期 ----------
 const unsubs: Array<() => void> = []
 onMounted(async () => {
-  bookmarks.value = await api.listBookmarks()
+  bookmarks.value = await api.plugins.invoke<BookmarkTree>('bookmarks', 'list')
   unsubs.push(
-    api.onBookmarksChanged((tree) => {
-      bookmarks.value = tree
+    api.plugins.onEvent((ev) => {
+      if (ev.id !== 'bookmarks' || ev.event !== 'changed') return
+      bookmarks.value = ev.args as BookmarkTree
       // 当前目录被删除时退回根视图
       if (viewFolderId.value !== null) {
-        const stillThere = tree.some((n) => n.id === viewFolderId.value)
+        const stillThere = (ev.args as BookmarkTree).some((n) => n.id === viewFolderId.value)
         if (!stillThere) viewFolderId.value = null
       }
     })
