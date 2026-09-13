@@ -29,7 +29,7 @@ const PORT_B = 5175 // 无 CORS 头的 API
 
 const handler = (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`)
-  // 模拟 opencode.ai 行为:OPTIONS 一律 404,GET 正常
+  // 模拟部分服务器对预检请求的行为:OPTIONS 一律 404,GET 正常
   if (req.method === 'OPTIONS') {
     res.writeHead(404, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ ok: false, error: 'Method Not Allowed' }))

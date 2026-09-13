@@ -101,6 +101,9 @@ MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到
 | 内容注入 | 按 URL 匹配在 `dom-ready` / `did-finish-load` 注入 CSS/JS(仅标签页) | 广告位隐藏 |
 | MCP 工具 | 把能力暴露给 AI 工具(随插件启停动态增减) | `browser_add_bookmark`、`adblock_stats` |
 
+> opencode 的 `x-opencode-session` 会话头由**前端应用自行发送**(OpenCode Go/Zen 的官方要求),
+> 浏览器不再代注入;需要时把 `docs/opencode-session-header.md` 里的提示词交给应用开发者。
+
 ### 新增一个插件
 
 1. 新建 `src/plugins/<id>/`:

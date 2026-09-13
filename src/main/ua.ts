@@ -23,8 +23,3 @@ export function applyBrowserIdentity(): void {
   app.setPath('userData', join(app.getPath('appData'), LEGACY_APP_DIR))
   app.userAgentFallback = bowUserAgent(app.userAgentFallback, legacyName, version)
 }
-
-/** 当前 bow UA 字符串(cors.ts 等需要显式覆盖请求头时复用,与全局签名保持一致) */
-export function getBowUserAgent(): string {
-  return app.userAgentFallback
-}

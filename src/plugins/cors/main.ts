@@ -1,16 +1,13 @@
 /**
  * CORS 放行插件:对白名单主机的响应注入 Access-Control-Allow-* 头,名单外主机零干扰。
- * 同时保留 opencode.ai 的稳定会话头注入(官方要求)。
  *
  * 由核心 cors.ts 迁入:设置从 settings.json 的 corsBypassEnabled / corsWhitelist 一次性迁移到
  * cors.json(JsonStore 以文件内容覆盖默认值,故迁移天然幂等)。
  */
 
-import { randomUUID } from 'node:crypto'
-import { isOpenCodeHost, isPreflightRequest, shouldBypassCors } from '@shared/cors'
+import { isPreflightRequest, shouldBypassCors } from '@shared/cors'
 import type { NetHookContext } from '@shared/plugins'
 import { getSettingsStore } from '../../main/stores'
-import { getBowUserAgent } from '../../main/ua'
 import type { PluginContext, PluginMain } from '../../main/plugins/types'
 
 const ACAO = 'Access-Control-Allow-Origin'
@@ -26,7 +23,7 @@ const plugin: PluginMain = {
   manifest: {
     id: 'cors',
     name: 'CORS 放行',
-    description: '为白名单主机的跨域请求注入放行头,并注入 opencode 会话头',
+    description: '为白名单主机的跨域请求注入放行头',
     version: '1.0.0'
   },
   capabilities: ['ui', 'net'],
@@ -43,34 +40,12 @@ const plugin: PluginMain = {
 
     /** 预检请求 id 记录:onHeadersReceived 阶段读不到请求头,只能靠 onBeforeSendHeaders 识别 */
     const preflightIds = new Set<number>()
-    /** Opencode Go/Zen 要求请求携带每个会话稳定不变的 x-opencode-session */
-    const opencodeSessionIds = new Map<number, string>()
-    const FALLBACK_SESSION = randomUUID()
-
-    const sessionIdFor = (wcId: number | undefined): string => {
-      if (wcId == null) return FALLBACK_SESSION
-      let id = opencodeSessionIds.get(wcId)
-      if (!id) {
-        id = randomUUID()
-        opencodeSessionIds.set(wcId, id)
-        // 惰性清理:残留只占内存;重开标签页会生成新 id(可借此避开坏分片)
-        if (opencodeSessionIds.size > 4096) opencodeSessionIds.clear()
-      }
-      return id
-    }
 
     ctx.net.onBeforeSendHeaders((c: NetHookContext) => {
       if (isPreflightRequest(c.method, c.requestHeaders)) {
         preflightIds.add(c.requestId)
         if (preflightIds.size > 5000) preflightIds.clear()
       }
-      if (!store.get().enabled) return
-      if (!isOpenCodeHost(c.url)) return
-      const headers = c.requestHeaders ?? {}
-      headers['x-opencode-session'] = sessionIdFor(c.webContentsId)
-      // 统一以 bow 签名单向 opencode(与全局 UA 一致)
-      headers['User-Agent'] = getBowUserAgent()
-      c.requestHeaders = headers
     })
 
     ctx.net.onHeadersReceived((c: NetHookContext) => {

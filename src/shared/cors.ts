@@ -165,16 +165,3 @@ export function isPreflightRequest(
   }
   return false
 }
-
-/** opencode 托管 API 主机(zen / go 等入口均在其域名下) */
-export function isOpenCodeHost(url: string): boolean {
-  let u: URL
-  try {
-    u = new URL(url)
-  } catch {
-    return false
-  }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false
-  const h = u.hostname.toLowerCase()
-  return h === 'opencode.ai' || h.endsWith('.opencode.ai')
-}

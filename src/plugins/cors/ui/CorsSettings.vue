@@ -75,7 +75,6 @@ onMounted(async () => {
       <div class="pbm-tools hint">
         支持域名、IP、host:端口、*.子域名(不含主域)。名单内主机的响应自动带 CORS
         放行头;来源为名单内主机(如 localhost 开发页)的页面发起的跨域请求同样放行。
-        开启时,发往 opencode.ai 的请求会自动附加稳定的会话头
       </div>
     </div>
   </div>
