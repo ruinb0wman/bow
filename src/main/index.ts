@@ -8,6 +8,7 @@ import { initStores, getSettingsStore } from './stores'
 import { setupDevTools } from './devtools'
 import { setupTabShortcuts } from './tabShortcuts'
 import { startMcpServer } from './mcp'
+import { applyBrowserIdentity } from './ua'
 import { IS_MCP, log, logError } from './logger'
 
 const isDev = !!process.env['ELECTRON_RENDERER_URL']
@@ -51,6 +52,8 @@ if (IS_MCP) {
 }
 
 app.whenReady().then(() => {
+  // 先于一切窗口/视图/存储:显示名 → bow、userData 钉旧路径、UA 全局签名
+  applyBrowserIdentity()
   initStores()
   // 先于任何窗口/视图创建:保证 DevTools / Tab 快捷键监听覆盖全部 webContents
   // CORS 白名单注入同样需在 webContents 创建前挂到 defaultSession

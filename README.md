@@ -8,6 +8,10 @@
 - Vue 3 + Vite(electron-vite 组织 main / preload / renderer 三端)
 - `@modelcontextprotocol/sdk`(stdio transport)
 
+> 对外签名:网站收到的 User-Agent 为 `bow/<版本>`(无 `Electron/` 与应用名令牌);
+> `Sec-CH-UA` / `navigator.userAgentData` 保持 Chromium 原生(与 Chrome 一致,不做剥离)。
+> 应用显示名为 bow,userData 数据目录仍为 `mcp-browser`,既有书签/历史/设置不受影响。
+
 ## 启动
 
 ```bash

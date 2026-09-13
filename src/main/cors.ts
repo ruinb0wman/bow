@@ -1,10 +1,11 @@
 /** CORS 放行:对白名单主机的响应注入 Access-Control-Allow-* 头,名单外主机零干扰 */
 
 import { randomUUID } from 'node:crypto'
-import { app, session } from 'electron'
+import { session } from 'electron'
 import type { OnBeforeSendHeadersListenerDetails, OnHeadersReceivedListenerDetails } from 'electron'
 import { isOpenCodeHost, isPreflightRequest, shouldBypassCors } from '@shared/cors'
 import { getSettingsStore } from './stores'
+import { getBowUserAgent } from './ua'
 import { log, logError } from './logger'
 
 const ACAO = 'Access-Control-Allow-Origin'
@@ -50,8 +51,8 @@ export function setupCorsBypass(): void {
         const headers = { ...details.requestHeaders }
         if (getSettingsStore().get().corsBypassEnabled && isOpenCodeHost(details.url)) {
           headers['x-opencode-session'] = sessionIdFor(details.webContentsId)
-          // 按官方建议用自定义 UA 标识自身
-          headers['User-Agent'] = `mcp-browser/${app.getVersion()}`
+          // 统一以 bow 签名单向 opencode(与全局 UA 一致)
+          headers['User-Agent'] = getBowUserAgent()
         }
         callback({ requestHeaders: headers })
       } catch (e) {

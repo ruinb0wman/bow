@@ -62,6 +62,20 @@ const infoText = JSON.parse(info.content[0].text)
 console.log('✓ browser_get_info:', infoText.info?.url, '/', infoText.info?.title)
 assert(infoText.info?.url?.startsWith('https://'), '已加载页面')
 
+// 2.5 浏览器签名:页面侧 UA 应为 bow,且无 Electron / window.process 泄漏
+const ua = await client.callTool({
+  name: 'browser_eval',
+  arguments: { tabId, code: 'navigator.userAgent + "|sep|" + (typeof window.process)' }
+})
+const uaJson = JSON.parse(ua.content[0].text)
+const uaParts = String(uaJson.result).split('|sep|')
+const uaStr = uaParts[0] ?? ''
+const procType = uaParts[1] ?? ''
+assert(/bow\/\d/.test(uaStr), `UA 应含 bow 签名,实际: ${uaStr}`)
+assert(!/Electron/.test(uaStr), `UA 不应含 Electron,实际: ${uaStr}`)
+assert(procType === 'undefined', '页面不应暴露 window.process')
+console.log(`✓ 浏览器签名 UA: ${uaStr}`)
+
 // 3. 快照
 const snap = await client.callTool({ name: 'browser_snapshot', arguments: { tabId, maxElements: 50 } })
 const snapText = JSON.parse(snap.content[0].text)
