@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue'
 import type { Component } from 'vue'
-import type { ModalKind, Suggestion, SuggestPayload, SuggestRow, TabInfo } from '@shared/types'
+import type { Suggestion, SuggestPayload, SuggestRow, TabInfo } from '@shared/types'
 import type { PluginInfo } from '@shared/plugins'
+import { SETTINGS_URL } from '@shared/internalPages'
 import { faviconLetter } from './lib/avatar'
 import { PLUGIN_UI } from './plugins/registry'
 import {
@@ -302,10 +303,10 @@ const minimize = (): void => void api.minimize()
 const maximize = (): void => void api.maximize()
 const closeWindow = (): void => void api.closeWindow()
 
-// ---------- Overlay 浮层 ----------
-/** 打开/关闭核心全窗弹层(设置) */
-function openModal(kind: ModalKind | null): void {
-  void api.showOverlay(kind ? { id: `modal:${kind}`, placement: 'full' } : null)
+// ---------- 设置 ----------
+/** 打开设置:内部标签页 bow://settings(已存在则聚焦,否则新建) */
+function openSettings(): void {
+  void api.go(SETTINGS_URL)
 }
 
 // activeIdx 由方向键 / overlay 悬停驱动:同步回显到面板
@@ -416,7 +417,7 @@ onBeforeUnmount(() => {
       <button class="tool-btn no-drag" title="恢复刚刚关闭的标签 (Ctrl+Shift+T)" @click="restoreTab">
         <Undo2 :size="14" />
       </button>
-      <button class="tool-btn no-drag" title="设置" @click="openModal('settings')">
+      <button class="tool-btn no-drag" title="设置 (Ctrl+,)" @click="openSettings">
         <SettingsIcon :size="16" />
       </button>
     </div>

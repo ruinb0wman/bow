@@ -71,6 +71,20 @@ describe('matchTabHotkey Tab 快捷键识别', () => {
     expect(matchTabHotkey(input({ key: 'w', code: 'KeyW', shift: false, control: false, meta: true }))).toEqual({ action: 'close' })
   })
 
+  it('Ctrl/Cmd+, 打开设置', () => {
+    expect(matchTabHotkey(input({ key: ',', code: 'Comma', shift: false }))).toEqual({ action: 'settings' })
+    expect(
+      matchTabHotkey(input({ key: ',', code: 'Comma', shift: false, control: false, meta: true }))
+    ).toEqual({ action: 'settings' })
+    // 非 QWERTY:code 为 Comma 时 key 可能是其它符号
+    expect(matchTabHotkey(input({ key: '?', code: 'Comma', shift: false }))).toEqual({ action: 'settings' })
+  })
+
+  it('Ctrl+Shift+, / 带 Alt 不命中设置快捷键', () => {
+    expect(matchTabHotkey(input({ key: ',', code: 'Comma' }))).toBe(null)
+    expect(matchTabHotkey(input({ key: ',', code: 'Comma', shift: false, alt: true }))).toBe(null)
+  })
+
   it('Ctrl/Cmd+1..9 切换(code 物理键行优先)', () => {
     expect(matchTabHotkey(input({ key: '1', code: 'Digit1', shift: false }))).toEqual({ action: 'switch', digit: 1 })
     expect(matchTabHotkey(input({ key: '1', code: 'Digit1', shift: false, control: false, meta: true }))).toEqual({ action: 'switch', digit: 1 })

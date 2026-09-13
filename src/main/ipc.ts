@@ -18,10 +18,11 @@ export function registerIpc(
   const sendTabsList = (): void => {
     mainWindow.webContents.send('tab:list-changed', tabs.listTabs())
   }
-  /** 同时通知 chrome 与 overlay 两个页面(设置变更) */
+  /** 同时通知 chrome、overlay 与内部页面标签(如设置页,设置变更/插件事件) */
   const broadcast = (channel: string, payload: unknown): void => {
     if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)
     overlay.send(channel, payload)
+    tabs.broadcastToInternal(channel, payload)
   }
   const sendSettings = (settings: Settings): void => broadcast('settings:changed', settings)
 
@@ -39,12 +40,17 @@ export function registerIpc(
   })
   ipcMain.handle('tab:list', () => tabs.listTabs())
   ipcMain.handle('tab:active', () => tabs.getActiveTabInfo())
+  // 激活最近浏览的普通页面标签(设置页的「屏蔽元素」等需要回到真实页面执行)
+  ipcMain.handle('tab:activate-last-browsing', () => tabs.activateLastBrowsing())
 
   ipcMain.handle('nav:go', (_e, input: string) => {
-    const tab = tabs.ensureActive()
     const res = resolveNavigation(input, getSettingsStore().get().searchEngine)
-    if (!res) return { parsed: null, tabId: tab.id, url: tab.url }
-    tabs.navigate(tab.id, res.url)
+    if (!res) {
+      const tab = tabs.ensureActive()
+      return { parsed: null, tabId: tab.id, url: tab.url }
+    }
+    // 内部页面 URL(bow://settings)→ 打开/聚焦内部标签;活动标签为内部页面时另开新标签
+    const tab = tabs.openUrl(res.url)
     if (res.parsed === 'search') {
       // 搜索词富化:发布事件由历史插件记为 search 条目(did-navigate 的 plain 记录按 URL 去重合并)
       kernel.emitEvent('search:performed', { url: res.url, query: res.query, title: res.query })
@@ -58,8 +64,7 @@ export function registerIpc(
   })
 
   ipcMain.handle('nav:url', (_e, url: string) => {
-    const tab = tabs.ensureActive()
-    tabs.navigate(tab.id, url)
+    const tab = tabs.openUrl(url)
     return { tabId: tab.id }
   })
   ipcMain.handle('nav:back', () => tabs.back(tabs.ensureActive().id))

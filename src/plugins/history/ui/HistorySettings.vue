@@ -226,6 +226,8 @@ onBeforeUnmount(() => {
 <style scoped>
 .hs {
   display: flex;
+  flex: 1;
+  min-height: 0;
   flex-direction: column;
   min-width: 0;
 }
@@ -294,8 +296,9 @@ onBeforeUnmount(() => {
 }
 .hs-list {
   display: flex;
+  flex: 1;
+  min-height: 0;
   flex-direction: column;
-  max-height: 320px;
   overflow-y: auto;
   border-top: 1px solid var(--border);
 }

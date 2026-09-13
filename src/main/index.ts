@@ -6,13 +6,12 @@ import { registerIpc } from './ipc'
 import { initStores, getSettingsStore } from './stores'
 import { setupDevTools } from './devtools'
 import { setupTabShortcuts } from './tabShortcuts'
+import { loadRendererEntry } from './rendererEntry'
 import { startMcpServer, CORE_MCP_TOOL_NAMES } from './mcp'
 import { applyBrowserIdentity } from './ua'
 import { PluginKernel } from './plugins/kernel'
 import { BUILTIN_PLUGINS } from './plugins/builtin'
 import { IS_MCP, log, logError } from './logger'
-
-const isDev = !!process.env['ELECTRON_RENDERER_URL']
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
@@ -34,11 +33,7 @@ function createWindow(): BrowserWindow {
   win.once('ready-to-show', () => win.show())
   win.on('resize', () => tabs.layout())
 
-  if (isDev && process.env['ELECTRON_RENDERER_URL']) {
-    win.loadURL(process.env['ELECTRON_RENDERER_URL'])
-  } else {
-    win.loadFile(join(__dirname, '../renderer/index.html'))
-  }
+  loadRendererEntry(win.webContents, 'index')
   return win
 }
 
@@ -86,7 +81,7 @@ app.whenReady().then(async () => {
 
   // 窗口重新获得 OS 焦点:把键盘焦点交还活动标签页,避免 Electron 默认恢复到 chrome webContents(地址栏)
   const focusActivePage = (): void => {
-    if (overlay.currentId?.startsWith('modal:')) return // 全窗弹层打开时不抢焦点
+    if (overlay.isFullOpen) return // 全窗弹层打开时不抢焦点
     const active = tabs.getActiveView()
     if (active && !active.view.webContents.isDestroyed()) active.view.webContents.focus()
   }
@@ -135,6 +130,8 @@ app.whenReady().then(async () => {
   kernel.setBroadcaster((channel, payload) => {
     if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)
     overlay.send(channel, payload)
+    // 设置等内部页面标签也订阅插件事件(plugins:changed / plugin:event)
+    tabs.broadcastToInternal(channel, payload)
   })
   kernel.setUiHost({
     overlayId: () => overlay.currentId,

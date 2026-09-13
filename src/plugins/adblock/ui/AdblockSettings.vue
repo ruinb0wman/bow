@@ -229,7 +229,12 @@ async function onImportFile(ev: Event): Promise<void> {
 }
 
 async function pickElement(): Promise<void> {
-  await api.showOverlay(null)
+  // 设置页是独立标签页:先切回最近浏览的页面标签,框选器才能在真实页面上工作
+  const tab = await api.activateLastBrowsingTab()
+  if (!tab) {
+    flash('没有可用于框选的页面标签', true)
+    return
+  }
   void api.plugins.invoke('adblock', 'pickElement')
 }
 
@@ -416,13 +421,18 @@ onBeforeUnmount(() => {
   border-color: var(--accent);
   color: #fff;
 }
+/* 规则列表占满设置页剩余高度(不再用 vh 上限) */
+.set-row.set-col {
+  flex: 1;
+  min-height: 0;
+}
 .adb-list {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 46vh;
   overflow-y: auto;
 }
 .adb-group {

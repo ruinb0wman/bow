@@ -591,25 +591,6 @@ select:focus {
   font-weight: 600;
 }
 
-.panel-settings {
-  width: 620px;
-  max-width: 92vw;
-  min-height: 0;
-  overflow-y: auto;
-}
-
-.panel-plugin-settings {
-  width: min(520px, 88vw);
-  max-width: 92vw;
-  min-height: 0;
-  overflow-y: auto;
-}
-
-.plugin-settings-body {
-  display: flex;
-  flex-direction: column;
-}
-
 .pbm-tools {
   display: flex;
   align-items: center;

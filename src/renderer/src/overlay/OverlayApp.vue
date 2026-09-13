@@ -1,19 +1,18 @@
 <script setup lang="ts">
 /**
  * Overlay 通用宿主:根据主进程下发的内容 id 渲染注册表组件,并回传泛型事件。
- * 注册表 = 核心浮层(设置 / 建议下拉)+ 已启用插件贡献的浮层。
+ * 注册表 = 核心浮层(地址栏建议下拉)+ 已启用插件贡献的浮层。
+ * (设置等浏览器自有页面已改为内部标签页 bow://settings,不再占用浮层。)
  */
 import { computed, markRaw, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { Component } from 'vue'
 import type { OverlayShowMessage } from '@shared/types'
-import SettingsModal from '@renderer/components/SettingsModal.vue'
 import SuggestPanel from '@renderer/components/SuggestPanel.vue'
 import { PLUGIN_UI } from '../plugins/registry'
 
 const api = window.browserAPI
 
 const CORE: Record<string, Component> = {
-  'modal:settings': markRaw(SettingsModal),
   suggest: markRaw(SuggestPanel)
 }
 

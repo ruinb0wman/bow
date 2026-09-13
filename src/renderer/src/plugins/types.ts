@@ -20,6 +20,6 @@ export interface PluginUiContribution {
     toolbar?: Component[]
   }
   overlays?: PluginOverlayContribution[]
-  /** 渲染在该插件的独立设置弹窗内(宿主提供标题/关闭/滚动外套);为空则不显示“设置”入口 */
+  /** 渲染在设置页(bow://settings)中该插件对应的分区内(宿主管侧栏导航与标题);为空则不显示侧栏入口 */
   settingsSections?: Component[]
 }

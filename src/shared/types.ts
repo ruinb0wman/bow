@@ -9,6 +9,8 @@ export interface TabInfo {
   canGoForward: boolean
   active: boolean
   crashed: boolean
+  /** 内部页面标签(如 bow://settings):只承载浏览器自有页面,不允许就地导航到普通站点 */
+  internal?: boolean
 }
 
 export type BookmarkNode =
@@ -18,9 +20,6 @@ export type BookmarkNode =
 export type BookmarkTree = BookmarkNode[]
 
 export type SearchEngineId = 'google' | 'duckduckgo' | 'bing' | 'baidu'
-
-/** 核心顶层 Overlay 弹层类型(chrome UI 通过通用 ui:overlay 开关) */
-export type ModalKind = 'settings'
 
 /** 浏览历史条目:kind 为 search 时记录原始搜索词(query)便于展示与匹配 */
 export type HistoryKind = 'search' | 'page'
@@ -50,9 +49,10 @@ export type OverlayPlacement = 'full' | 'below-chrome'
 
 /**
  * 核心 Overlay 内容标识(渲染层组件注册表的 key)。
- * 约定:`modal:` 前缀 = 全窗弹层,`suggest` = 地址栏建议下拉。
+ * 约定:`suggest` = 地址栏建议下拉;设置等浏览器自有页面已改为内部标签页(bow://settings),
+ * 不再占用浮层。
  */
-export type CoreOverlayContentId = 'modal:settings' | 'suggest'
+export type CoreOverlayContentId = 'suggest'
 
 /** 插件浮层 id 约定:`plugin:<pluginId>:<panelId>` */
 export type PluginOverlayContentId = `plugin:${string}`
@@ -61,7 +61,6 @@ export type OverlayContentId = CoreOverlayContentId | PluginOverlayContentId
 
 /** 核心内容 id 的类型化 payload;插件浮层 payload 由插件自定义(unknown) */
 export interface OverlayContentMap {
-  'modal:settings': undefined
   suggest: SuggestPayload
 }
 

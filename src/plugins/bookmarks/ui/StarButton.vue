@@ -12,7 +12,8 @@ const unsubs: Array<() => void> = []
 async function refresh(): Promise<void> {
   const tab = await api.getActiveTab()
   const url = tab?.url ?? ''
-  currentUrl = url && url !== 'about:blank' ? url : ''
+  // 仅 http(s) 页面可收藏(内部页面如 bow://settings 不参与书签)
+  currentUrl = /^https?:/i.test(url) ? url : ''
   if (!currentUrl) {
     on.value = false
     return

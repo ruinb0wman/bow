@@ -10,10 +10,9 @@
 import { BrowserWindow, WebContentsView } from 'electron'
 import { join } from 'node:path'
 import type { OverlayContent, OverlayContentId, OverlayPlacement, OverlayShowMessage, SuggestPayload } from '@shared/types'
+import { rendererEntry } from './rendererEntry'
 import { log, logError } from './logger'
 import type { TabManager } from './tabManager'
-
-const isDev = !!process.env['ELECTRON_RENDERER_URL']
 
 export class OverlayManager {
   private view: WebContentsView | null = null
@@ -30,6 +29,11 @@ export class OverlayManager {
   /** 当前是否有任何浮层打开 */
   get isOpen(): boolean {
     return this.current != null
+  }
+
+  /** 是否有全窗浮层(modal)打开:窗口聚焦回落与 Ctrl+T 抢焦点的判断依据 */
+  get isFullOpen(): boolean {
+    return this.current?.placement === 'full'
   }
 
   get currentId(): OverlayContentId | null {
@@ -160,11 +164,9 @@ export class OverlayManager {
       this.recreate()
     })
 
-    if (isDev && process.env['ELECTRON_RENDERER_URL']) {
-      void wc.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/overlay.html`)
-    } else {
-      void wc.loadFile(join(__dirname, '../renderer/overlay.html'))
-    }
+    const entry = rendererEntry('overlay')
+    if (entry.kind === 'url') void wc.loadURL(entry.target)
+    else void wc.loadFile(entry.target)
     this.raise()
   }
 

@@ -26,6 +26,8 @@ export interface BrowserAPI {
   activateTab: (id: number) => Promise<TabInfo | null>
   listTabs: () => Promise<TabInfo[]>
   getActiveTab: () => Promise<TabInfo | null>
+  // 激活最近浏览的普通页面标签(设置页的「屏蔽元素」等需要回到真实页面执行)
+  activateLastBrowsingTab: () => Promise<TabInfo | null>
   // 导航
   go: (input: string) => Promise<{ parsed: string | null; query?: string; url?: string; tabId: number }>
   goUrl: (url: string) => Promise<{ tabId: number }>
@@ -84,6 +86,7 @@ const api: BrowserAPI = {
   activateTab: (id) => ipcRenderer.invoke('tab:activate', id),
   listTabs: () => ipcRenderer.invoke('tab:list'),
   getActiveTab: () => ipcRenderer.invoke('tab:active'),
+  activateLastBrowsingTab: () => ipcRenderer.invoke('tab:activate-last-browsing'),
   go: (input) => ipcRenderer.invoke('nav:go', input),
   goUrl: (url) => ipcRenderer.invoke('nav:url', url),
   back: () => ipcRenderer.invoke('nav:back'),

@@ -43,16 +43,19 @@ export function startMcpServer(deps: MCPDeps): void {
   const { tabs, kernel } = deps
   const server = new McpServer({ name: 'mcp-browser', version: '0.1.0' })
 
-  // 当前操作目标视图:可指定 tabId,默认活动标签;没有活动标签时自动新建空白标签
+  // 当前操作目标视图:可指定 tabId,默认取活动标签(活动标签是内部页面时退到最近浏览的页面标签);
+  // 内部页面标签(如 bow://settings)持有应用 preload,一律不作为页面工具的操作目标。
   const target = (tabId?: number): { view: ReturnType<TabManager['getActiveView']>; fail: string | null } => {
     if (tabId != null) {
       const hit = tabs.getView(tabId)
       if (!hit) return { view: null, fail: `标签 ${tabId} 不存在` }
+      if (hit.info.internal) return { view: null, fail: `标签 ${tabId} 是浏览器内部页面,不支持页面操作` }
       return { view: hit, fail: null }
     }
-    let hit = tabs.getActiveView()
+    let hit = tabs.getActiveBrowsingView()
     if (!hit) {
-      const t = tabs.ensureActive()
+      // 只有内部页面标签(或没有任何标签):新建空白标签作为操作目标
+      const t = tabs.create('about:blank')
       hit = tabs.getView(t.id)
     }
     if (!hit) return { view: null, fail: '没有活动标签' }
@@ -64,10 +67,9 @@ export function startMcpServer(deps: MCPDeps): void {
     { url: z.string().describe('http(s) 地址') },
     async ({ url }) => {
       if (!isHttpUrl(url)) return textContent({ ok: false, error: 'navigate 仅接受 http/https 地址' })
-      const { view, fail } = target()
-      if (!view) return textContent({ ok: false, error: fail })
-      tabs.navigate(view.info.id, url)
-      return textContent({ ok: true, url, tabId: view.info.id })
+      // 活动标签是设置等内部页面时另开新标签(内部页面不可被导航走)
+      const tab = tabs.openUrl(url)
+      return textContent({ ok: true, url, tabId: tab.id })
     }
   )
 
@@ -78,10 +80,8 @@ export function startMcpServer(deps: MCPDeps): void {
       const settings = getSettingsStore().get()
       const engineId: SearchEngineId = engine ?? settings.searchEngine
       const url = searchUrl(engineId, query)
-      const { view, fail } = target()
-      if (!view) return textContent({ ok: false, error: fail })
-      tabs.navigate(view.info.id, url)
-      return textContent({ ok: true, engine: engineId, url, tabId: view.info.id })
+      const tab = tabs.openUrl(url)
+      return textContent({ ok: true, engine: engineId, url, tabId: tab.id })
     }
   )
 
@@ -241,7 +241,15 @@ export function startMcpServer(deps: MCPDeps): void {
     const list = tabs.listTabs()
     return textContent({
       ok: true,
-      tabs: list.map((t) => ({ id: t.id, url: t.url, title: t.title, loading: t.loading, active: t.active, crashed: t.crashed }))
+      tabs: list.map((t) => ({
+        id: t.id,
+        url: t.url,
+        title: t.title,
+        loading: t.loading,
+        active: t.active,
+        crashed: t.crashed,
+        internal: !!t.internal
+      }))
     })
   })
 
