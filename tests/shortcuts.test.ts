@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isDevToolsHotkey, matchTabHotkey, switchIndexForDigit } from '../src/shared/shortcuts'
+import { isDevToolsHotkey, matchHotkey, matchTabHotkey, switchIndexForDigit } from '../src/shared/shortcuts'
 import type { KeyInputLike } from '../src/shared/shortcuts'
 
 function input(patch: Partial<KeyInputLike> = {}): KeyInputLike {
@@ -115,6 +115,51 @@ describe('matchTabHotkey Tab 快捷键识别', () => {
     expect(matchTabHotkey(input({ type: 'keyUp', key: 't', code: 'KeyT', shift: false }))).toBe(null)
     expect(matchTabHotkey(input({ isAutoRepeat: true, key: 't', code: 'KeyT', shift: false }))).toBe(null)
     expect(matchTabHotkey(input({ isComposing: true, key: 't', code: 'KeyT', shift: false }))).toBe(null)
+  })
+})
+
+describe('matchHotkey 插件热键识别', () => {
+  const spec = { key: 'f', code: 'KeyF', ctrl: true, shift: true }
+
+  it('Ctrl/Cmd+Shift+F 命中', () => {
+    expect(matchHotkey(input({ key: 'f', code: 'KeyF' }), spec)).toBe(true)
+    expect(matchHotkey(input({ key: 'F', code: 'KeyF' }), spec)).toBe(true)
+    expect(matchHotkey(input({ key: 'f', code: 'KeyF', control: false, meta: true }), spec)).toBe(true)
+  })
+
+  it('非 QWERTY:code 命中即可(key 为其它字符)', () => {
+    expect(matchHotkey(input({ key: '\u0192', code: 'KeyF' }), spec)).toBe(true)
+  })
+
+  it('code 缺省时回退按 key 匹配', () => {
+    expect(matchHotkey(input({ key: 'f', code: '' }), { key: 'f', ctrl: true, shift: true })).toBe(true)
+    expect(matchHotkey(input({ key: 'g', code: '' }), { key: 'f', ctrl: true, shift: true })).toBe(false)
+  })
+
+  it('修饰键需精确一致', () => {
+    expect(matchHotkey(input({ key: 'f', code: 'KeyF', shift: false }), spec)).toBe(false)
+    expect(matchHotkey(input({ key: 'f', code: 'KeyF', control: false, meta: false }), spec)).toBe(false)
+    expect(matchHotkey(input({ key: 'f', code: 'KeyF', alt: true }), spec)).toBe(false)
+  })
+
+  it('无 Ctrl 的规格只匹配无 Ctrl/Cmd 输入', () => {
+    const plain = { key: 'f', code: 'KeyF' }
+    expect(matchHotkey(input({ key: 'f', code: 'KeyF', control: false, shift: false }), plain)).toBe(true)
+    expect(matchHotkey(input({ key: 'f', code: 'KeyF', control: true, shift: false }), plain)).toBe(false)
+    expect(matchHotkey(input({ key: 'f', code: 'KeyF', control: false, meta: true, shift: false }), plain)).toBe(
+      false
+    )
+  })
+
+  it('keyUp / 自动重复 / 输入法组合中不命中', () => {
+    expect(matchHotkey(input({ type: 'keyUp', key: 'f', code: 'KeyF' }), spec)).toBe(false)
+    expect(matchHotkey(input({ key: 'f', code: 'KeyF', isAutoRepeat: true }), spec)).toBe(false)
+    expect(matchHotkey(input({ key: 'f', code: 'KeyF', isComposing: true }), spec)).toBe(false)
+  })
+
+  it('其它按键不命中', () => {
+    expect(matchHotkey(input({ key: 'g', code: 'KeyG' }), spec)).toBe(false)
+    expect(matchHotkey(input({ key: 'i', code: 'KeyI' }), spec)).toBe(false)
   })
 })
 

@@ -24,6 +24,7 @@
     "src/plugins/*/main.ts",
     "src/plugins/*/shared.ts",
     "src/plugins/*/picker.ts",
+    "src/plugins/*/scripts.ts",
     "electron.vite.config.ts",
     "vitest.config.ts"
   ]

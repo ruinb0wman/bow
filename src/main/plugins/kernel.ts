@@ -15,6 +15,8 @@ import type {
 } from '@shared/plugins'
 import type { WebContents } from 'electron'
 import type { Suggestion, SuggestRow } from '@shared/types'
+import { matchHotkey } from '@shared/shortcuts'
+import type { HotkeySpec, KeyInputLike } from '@shared/shortcuts'
 import { buildSuggestRows, mergeSuggestions } from '@shared/suggest'
 import { SEARCH_ENGINES } from '@shared/url'
 import { createStore, getSettingsStore } from '../stores'
@@ -40,6 +42,12 @@ interface Subscriber {
 interface ProviderReg {
   pluginId: string
   provider: SuggestProvider
+}
+
+interface HotkeyReg {
+  pluginId: string
+  spec: HotkeySpec
+  handler: () => void
 }
 
 export interface PluginUiHost {
@@ -68,6 +76,7 @@ export class PluginKernel {
   private routes = new Map<string, Map<string, Route>>()
   private subscribers = new Map<string, Set<Subscriber>>()
   private providers: ProviderReg[] = []
+  private hotkeys: HotkeyReg[] = []
   private storageCache = new Map<string, JsonStore<any>>()
   private broadcaster: ((channel: string, payload: unknown) => void) | null = null
   private uiHost: PluginUiHost | null = null
@@ -288,6 +297,32 @@ export class PluginKernel {
     }
   }
 
+  addHotkey(pluginId: string, spec: HotkeySpec, handler: () => void): () => void {
+    const reg: HotkeyReg = { pluginId, spec, handler }
+    this.hotkeys.push(reg)
+    return () => {
+      const i = this.hotkeys.indexOf(reg)
+      if (i >= 0) this.hotkeys.splice(i, 1)
+    }
+  }
+
+  /**
+   * 按注册顺序匹配插件热键,命中则同步调用处理器并返回 true。
+   * 由主进程 before-input-event 在核心快捷键未命中后调用。
+   */
+  handleHotkey(input: KeyInputLike): boolean {
+    for (const reg of [...this.hotkeys]) {
+      if (!matchHotkey(input, reg.spec)) continue
+      try {
+        reg.handler()
+      } catch (e) {
+        logError('插件热键处理失败', reg.pluginId, e)
+      }
+      return true
+    }
+    return false
+  }
+
   storageFor<T>(opts: { file: string; defaults: T }): PluginStorage<T> {
     let store = this.storageCache.get(opts.file)
     if (!store) {
@@ -414,6 +449,12 @@ class PluginContextImpl implements PluginContext {
   readonly tabs: PluginTabApi = {
     list: () => this.kernel.tabs.list(),
     getActive: () => this.kernel.tabs.getActive()
+  }
+
+  readonly shortcuts = {
+    register: (spec: HotkeySpec, handler: () => void): void => {
+      this.disposers.push(this.kernel.addHotkey(this.id, spec, handler))
+    }
   }
 
   dispose(): void {

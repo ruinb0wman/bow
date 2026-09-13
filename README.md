@@ -67,6 +67,8 @@ MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到
 | `adblock_stats` | 广告/追踪拦截统计(由「广告/追踪拦截」插件提供) |
 | `adblock_list_rules / adblock_add_rule / adblock_remove_rule / adblock_set_enabled` | 广告规则增删查与开关(由「广告/追踪拦截」插件提供) |
 | `adblock_import_rules {text, replace?}` | 按 AdGuard/EasyList 常用语法批量导入规则(由「广告/追踪拦截」插件提供) |
+| `browser_fullscreen_element {selector, tabId?}` | 让页面元素铺满网页视口(由「元素全屏」插件提供) |
+| `browser_exit_fullscreen {tabId?}` | 退出元素全屏并还原页面(由「元素全屏」插件提供) |
 
 典型 AI 工作流:`browser_new_tab` → `browser_search` → `browser_snapshot` 找到结果链接的选择器 → `browser_click` → `browser_screenshot` 确认 → `browser_type`/`browser_click` 填表。
 
@@ -75,6 +77,7 @@ MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到
 - `Ctrl+T` 新标签、`Ctrl+W` 关闭、`Ctrl+Shift+T` 恢复
 - `Ctrl+L` 聚焦地址栏、`Ctrl+R` 刷新、`Ctrl+,` 打开设置(设置是内部标签页 `bow://settings`,重复打开只聚焦已有标签)
 - `Ctrl+D` 收藏当前页
+- `Ctrl+Shift+F` 元素全屏:框选当前页面元素铺满网页视口(再按一次或 `Esc` 退出)
 - `Ctrl+Shift+I` / `F12`:为**当前聚焦的视图**(页面 / 浏览器 UI)打开或关闭 DevTools。
   DevTools 固定以**独立窗口**打开(不会停靠、也不会被标签页遮挡);焦点在 DevTools 窗口内时,
   按同一快捷键可关闭它。
@@ -102,7 +105,7 @@ MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到
 
 ## 插件体系
 
-书签、历史、CORS 放行都是内置插件;广告/追踪拦截是参考插件。插件是**仓库内编译期模块**(无动态代码执行),
+书签、历史、CORS 放行、元素全屏都是内置插件;广告/追踪拦截是参考插件。插件是**仓库内编译期模块**(无动态代码执行),
 可在「设置页 → 插件管理」里运行时启停(无需重启),状态持久化到 `plugins.json`;停用时内核自动回收其 IPC、
 建议源、MCP 工具、网络钩子与已注入 CSS。
 
@@ -113,6 +116,7 @@ MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到
 | 网络钩子 | `onBeforeRequest` / `onBeforeSendHeaders` / `onHeadersReceived` 链式拦截与改写 | CORS 放行、广告拦截 |
 | 内容注入 | 按 URL 匹配在 `dom-ready` / `did-finish-load` 注入 CSS/JS(仅标签页,CSS 可按页面动态生成与刷新) | 广告元素隐藏 |
 | MCP 工具 | 把能力暴露给 AI 工具(随插件启停动态增减) | `browser_add_bookmark`、`adblock_stats` |
+| 快捷键 | 注册主进程全局热键(任意焦点下生效,含页面内) | 元素全屏(`Ctrl+Shift+F`) |
 
 > opencode 的 `x-opencode-session` 会话头由**前端应用自行发送**(OpenCode Go/Zen 的官方要求),
 > 浏览器不再代注入;需要时把 `docs/opencode-session-header.md` 里的提示词交给应用开发者。
@@ -136,13 +140,21 @@ MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到
 
 > 限制:跨域 iframe 内部元素、closed shadow root 内部元素、scriptlet/JS 规则暂不支持。
 
+### 元素全屏插件
+
+工具栏「元素全屏」按钮或 `Ctrl+Shift+F` 进入框选:悬停高亮、`↑`/`↓` 切换父/子级、点击选中、`Esc` 取消;选中后元素**原地**铺满网页视口(标签栏/工具栏保留),深色背景层,`img`/`video` 按 `contain` 保持比例。`Esc`、再次点按钮或 `Ctrl+Shift+F` 退出。
+
+- **仅当前页面有效**:不落盘,页面刷新/跳转后自动还原。
+- 仅 `http/https` 页面可用;不移动 DOM(iframe 不会重载),但跨域 iframe 内部元素、closed shadow root 内部元素无法选中。
+- AI 可经 MCP 的 `browser_fullscreen_element` / `browser_exit_fullscreen` 直接按选择器全屏或还原。
+
 ### 新增一个插件
 
 1. 新建 `src/plugins/<id>/`:
    - `main.ts`:默认导出 `PluginMain`(`manifest` + `capabilities` + `activate(ctx)`),
      通过 `ctx.storage / ipc / events / suggest / mcp / net / content` 注册能力;`deactivate` 只处理自有非内核资源。
    - `ui.ts` + `ui/*.vue`:默认导出 UI 贡献(`slots` / `overlays` / `settingsSections`),浮层 id 约定 `plugin:<id>:<panelId>`;`settingsSections` 组件渲染在设置页侧栏对应插件的分区里。
-   - `shared.ts` / `picker.ts`(可选):同构纯逻辑或注入脚本字符串,便于单测。
+   - `shared.ts` / `picker.ts` / `scripts.ts`(可选):同构纯逻辑或注入脚本字符串,便于单测(脚本文件需登记到 `tsconfig.node.json` 的 include)。
    - 边界约束:`main.ts` 不得 import `.vue` 或 `@renderer`;`ui.ts` 不得 import `electron`(由 `tests/pluginBoundaries.test.ts` 强制)。
 2. 在 `src/main/plugins/builtin.ts` 的 `BUILTIN_PLUGINS` 登记 main;在 `src/renderer/src/plugins/registry.ts` 的 `PLUGIN_UI` 登记 ui。
 3. 渲染层用 `window.browserAPI.plugins.invoke(id, method, ...args)` 调插件方法,`plugins.onEvent` 订阅插件事件。

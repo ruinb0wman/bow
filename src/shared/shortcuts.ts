@@ -58,6 +58,33 @@ export function matchTabHotkey(input: KeyInputLike): TabHotkey | null {
   return null
 }
 
+/**
+ * 插件热键规格:由插件通过 PluginContext.shortcuts 注册,主进程统一匹配。
+ * 声明式描述便于单测与避免插件接触 Electron 输入事件。
+ */
+export interface HotkeySpec {
+  /** 主键(小写,如 'f'),匹配 input.key */
+  key: string
+  /** 可选物理键 code(非 QWERTY 布局兼容,如 'KeyF');提供时优先按 code 匹配 */
+  code?: string
+  /** 是否需要 Ctrl(macOS 上 Cmd 等价) */
+  ctrl?: boolean
+  shift?: boolean
+  alt?: boolean
+}
+
+/** 插件热键匹配:keyDown、非自动重复、非输入法组合,修饰键需精确一致 */
+export function matchHotkey(input: KeyInputLike, spec: HotkeySpec): boolean {
+  if (input.type !== 'keyDown') return false
+  if (input.isAutoRepeat || input.isComposing) return false
+  const ctrl = input.control || input.meta
+  if (!!spec.ctrl !== ctrl) return false
+  if (!!spec.shift !== input.shift) return false
+  if (!!spec.alt !== input.alt) return false
+  if (spec.code && input.code === spec.code) return true
+  return input.key.toLowerCase() === spec.key.toLowerCase()
+}
+
 /** 数字键 → 标签索引:1..8 取第 digit 个;9 取最后一个(Chrome 惯例);越界/无标签返回 null */
 export function switchIndexForDigit(digit: number, tabCount: number): number | null {
   if (tabCount <= 0) return null

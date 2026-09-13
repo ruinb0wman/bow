@@ -9,8 +9,15 @@ import bookmarksUi from '@plugins/bookmarks/ui'
 import historyUi from '@plugins/history/ui'
 import corsUi from '@plugins/cors/ui'
 import adblockUi from '@plugins/adblock/ui'
+import elementFullscreenUi from '@plugins/element-fullscreen/ui'
 
-export const PLUGIN_UI: PluginUiContribution[] = [bookmarksUi, historyUi, corsUi, adblockUi]
+export const PLUGIN_UI: PluginUiContribution[] = [
+  bookmarksUi,
+  historyUi,
+  corsUi,
+  adblockUi,
+  elementFullscreenUi
+]
 
 export function pluginUi(id: string): PluginUiContribution | undefined {
   return PLUGIN_UI.find((p) => p.id === id)

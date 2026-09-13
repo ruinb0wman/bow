@@ -8,6 +8,7 @@ import type {
   PluginTabApi,
   SuggestProvider
 } from '@shared/plugins'
+import type { HotkeySpec } from '@shared/shortcuts'
 
 export interface PluginStorage<T> {
   get(): T
@@ -82,6 +83,8 @@ export interface PluginContext {
   pages: PluginPageApi
   /** 只读标签信息 */
   tabs: PluginTabApi
+  /** 注册主进程全局热键(任意焦点下生效,含页面内);停用时自动回收 */
+  shortcuts: { register(spec: HotkeySpec, handler: () => void): void }
 }
 
 export interface PluginMain {

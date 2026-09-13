@@ -54,7 +54,11 @@ app.whenReady().then(async () => {
   initStores()
   // 先于任何窗口/视图创建:保证 DevTools / Tab 快捷键监听覆盖全部 webContents
   setupDevTools()
-  setupTabShortcuts(() => tabs, () => overlay)
+  setupTabShortcuts(
+    () => tabs,
+    () => overlay,
+    () => kernel
+  )
 
   // 插件内核:网络钩子与内容注入必须在任何窗口/视图创建前安装
   kernel = new PluginKernel()
