@@ -64,7 +64,9 @@ MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到
 | `browser_screenshot {tabId?}` | 当前页面截图,以 PNG 图片内容返回给 AI |
 | `browser_get_info {tabId?}` | 当前标签标题 / URL / 加载状态 |
 | `browser_add_bookmark {title?, url, folderId?}` / `browser_list_bookmarks` | 书签维护(由「书签」插件提供) |
-| `adblock_stats` | 广告/追踪拦截统计(由「广告/追踪拦截(参考)」插件提供) |
+| `adblock_stats` | 广告/追踪拦截统计(由「广告/追踪拦截」插件提供) |
+| `adblock_list_rules / adblock_add_rule / adblock_remove_rule / adblock_set_enabled` | 广告规则增删查与开关(由「广告/追踪拦截」插件提供) |
+| `adblock_import_rules {text, replace?}` | 按 AdGuard/EasyList 常用语法批量导入规则(由「广告/追踪拦截」插件提供) |
 
 典型 AI 工作流:`browser_new_tab` → `browser_search` → `browser_snapshot` 找到结果链接的选择器 → `browser_click` → `browser_screenshot` 确认 → `browser_type`/`browser_click` 填表。
 
@@ -82,7 +84,7 @@ MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到
 - 书签(「书签」插件):`<userData>/bookmarks.json`
 - 浏览历史(「浏览历史」插件,最近 5000 条,按 URL 去重):`<userData>/history.json`
 - CORS 放行配置(「CORS 放行」插件,首次启动从 `settings.json` 迁移):`<userData>/cors.json`
-- 广告拦截配置与计数(「广告/追踪拦截(参考)」插件):`<userData>/adblock.json`
+- 广告拦截配置与计数(「广告/追踪拦截」插件,含网络规则与元素规则,自动从 v1 主机清单迁移):`<userData>/adblock.json`
 - 插件启停状态(内核):`<userData>/plugins.json`
 - 核心设置(默认搜索引擎/主页):`<userData>/settings.json`
 - MCP 模式下日志:`<userData>/browser.log`
@@ -98,11 +100,24 @@ MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到
 | 浏览器 UI | 工具栏按钮 / 地址栏尾部插槽 / Overlay 浮层 / 设置分区 | 书签星标与管理面板、各插件设置分区 |
 | 地址栏建议源 | 贡献模糊匹配建议(同 URL 冲突按优先级决胜) | 历史(10)、书签(20) |
 | 网络钩子 | `onBeforeRequest` / `onBeforeSendHeaders` / `onHeadersReceived` 链式拦截与改写 | CORS 放行、广告拦截 |
-| 内容注入 | 按 URL 匹配在 `dom-ready` / `did-finish-load` 注入 CSS/JS(仅标签页) | 广告位隐藏 |
+| 内容注入 | 按 URL 匹配在 `dom-ready` / `did-finish-load` 注入 CSS/JS(仅标签页,CSS 可按页面动态生成与刷新) | 广告元素隐藏 |
 | MCP 工具 | 把能力暴露给 AI 工具(随插件启停动态增减) | `browser_add_bookmark`、`adblock_stats` |
 
 > opencode 的 `x-opencode-session` 会话头由**前端应用自行发送**(OpenCode Go/Zen 的官方要求),
 > 浏览器不再代注入;需要时把 `docs/opencode-session-header.md` 里的提示词交给应用开发者。
+
+### 广告/追踪拦截插件
+
+规则分两类,均可在「设置 → 插件 → 广告/追踪拦截」中增删改/启停:
+
+- **网络规则**:拦截或放行请求,模式支持 `example.com`(含子域)、`*.example.com`、`||ads.example.com^` 与含 `*` 的 URL 通配;`@@` 为放行例外(放行优先)。主文档不拦截。
+- **元素规则**:按域隐藏页面元素,`domain##selector` 为隐藏、`domain#@#selector` 为例外;域对该域及其子域生效,`*` 表示全站。
+
+**元素框选**(类 AdGuard):点击工具栏「屏蔽元素」后,在页面中悬停高亮、点击选中、父/子级切换、选择器可编辑、实时预览、`Esc` 取消、`Enter`/「屏蔽」确认;确认后按当前页域立即生效并持久化。
+
+**文本规则与导入导出**:设置里的「文本规则」页可维护用户规则,支持导入/导出 AdGuard/EasyList 常用子集(`||host^`、`host`、`*.host`、`*` 通配、`@@`、`##`、`#@#`、`!` 注释);不支持的语法(`#?#`、`#$#`、`$document` 等)会跳过并汇总提示。
+
+> 限制:跨域 iframe 内部元素、closed shadow root 内部元素、scriptlet/JS 规则暂不支持。
 
 ### 新增一个插件
 
@@ -110,7 +125,7 @@ MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到
    - `main.ts`:默认导出 `PluginMain`(`manifest` + `capabilities` + `activate(ctx)`),
      通过 `ctx.storage / ipc / events / suggest / mcp / net / content` 注册能力;`deactivate` 只处理自有非内核资源。
    - `ui.ts` + `ui/*.vue`:默认导出 UI 贡献(`slots` / `overlays` / `settingsSections`),浮层 id 约定 `plugin:<id>:<panelId>`。
-   - `shared.ts` / `rules.ts`(可选):同构纯逻辑,便于单测。
+   - `shared.ts` / `picker.ts`(可选):同构纯逻辑或注入脚本字符串,便于单测。
    - 边界约束:`main.ts` 不得 import `.vue` 或 `@renderer`;`ui.ts` 不得 import `electron`(由 `tests/pluginBoundaries.test.ts` 强制)。
 2. 在 `src/main/plugins/builtin.ts` 的 `BUILTIN_PLUGINS` 登记 main;在 `src/renderer/src/plugins/registry.ts` 的 `PLUGIN_UI` 登记 ui。
 3. 渲染层用 `window.browserAPI.plugins.invoke(id, method, ...args)` 调插件方法,`plugins.onEvent` 订阅插件事件。

@@ -36,6 +36,16 @@ export interface McpToolResult {
 export type McpToolHandler = (args: Record<string, unknown>) => McpToolResult | Promise<McpToolResult>
 
 /**
+ * 插件可用的页面执行 API:在指定标签页主世界执行 JS,供需要交互式脚本的插件使用
+ * (如广告插件的元素框选)。由内核注入,插件无需接触 electron。
+ */
+export interface PluginPageApi {
+  activeTabId(): number | null
+  focus(tabId: number): void
+  execute(tabId: number, code: string, opts?: { timeoutMs?: number }): Promise<unknown>
+}
+
+/**
  * 插件运行时上下文:内核为每个插件在激活时创建一份,停用时统一回收。
  * 通过它注册的一切(IPC / 建议源 / MCP 工具 / 网络与内容钩子 / 事件订阅)都会自动登记,
  * 插件自身无需手写清理逻辑(deactivate 里只处理自有的非内核资源)。
@@ -63,7 +73,13 @@ export interface PluginContext {
     onBeforeSendHeaders(hook: NetHook): void
     onHeadersReceived(hook: NetHook): void
   }
-  content: { inject(spec: ContentScriptSpec): void }
+  content: {
+    inject(spec: ContentScriptSpec): void
+    /** 重新按当前 URL 应用内容注入(只重跑 CSS);省略 tabId 表示全部已登记标签页 */
+    refresh(tabId?: number): void
+  }
+  /** 页面执行(主世界 JS),用于元素框选等交互式脚本 */
+  pages: PluginPageApi
   /** 只读标签信息 */
   tabs: PluginTabApi
 }

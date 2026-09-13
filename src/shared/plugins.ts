@@ -90,7 +90,8 @@ export interface ContentScriptSpec {
   excludeMatches?: string[]
   runAt?: 'dom-ready' | 'did-finish-load'
   js?: string
-  css?: string
+  /** 静态 CSS 字符串,或按页面 URL 动态生成(返回空串/undefined 则跳过本页) */
+  css?: string | ((url: string) => string | undefined)
 }
 
 // ---------- 插件可用的只读标签 API ----------

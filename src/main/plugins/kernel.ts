@@ -24,7 +24,7 @@ import { PluginRegistry } from './core'
 import { McpHost } from './mcpHost'
 import { NetHookHost } from './netHooks'
 import { ContentHookHost } from './contentHooks'
-import type { McpToolConfig, McpToolHandler, PluginContext, PluginMain, PluginStorage } from './types'
+import type { McpToolConfig, McpToolHandler, PluginContext, PluginMain, PluginPageApi, PluginStorage } from './types'
 
 const SUGGEST_LIMIT = 9
 
@@ -51,6 +51,12 @@ export interface PluginUiHost {
 
 const EMPTY_TABS: PluginTabApi = { list: () => [], getActive: () => null }
 
+const EMPTY_PAGE_API: PluginPageApi = {
+  activeTabId: () => null,
+  focus: () => {},
+  execute: () => Promise.reject(new Error('页面执行 API 尚未就绪'))
+}
+
 export class PluginKernel {
   readonly registry = new PluginRegistry()
   readonly mcp = new McpHost()
@@ -66,6 +72,7 @@ export class PluginKernel {
   private broadcaster: ((channel: string, payload: unknown) => void) | null = null
   private uiHost: PluginUiHost | null = null
   private tabProvider: () => PluginTabApi = () => EMPTY_TABS
+  private pageApi: PluginPageApi = EMPTY_PAGE_API
 
   constructor() {
     this.stateStore = createStore<{ version: number; disabled: string[] }>('plugins.json', {
@@ -107,6 +114,11 @@ export class PluginKernel {
 
   setTabProvider(fn: () => PluginTabApi): void {
     this.tabProvider = fn
+  }
+
+  /** 注入页面执行 API(标签视图创建后由 index.ts 接线) */
+  setPageApi(api: PluginPageApi): void {
+    this.pageApi = api
   }
 
   /** 由 TabManager 登记标签页 webContents,使其可获得内容注入 */
@@ -293,6 +305,10 @@ export class PluginKernel {
     return this.content.add(pluginId, spec)
   }
 
+  refreshContent(tabId?: number): void {
+    this.content.refresh(tabId)
+  }
+
   addMcpTool(pluginId: string, name: string, config: McpToolConfig, handler: McpToolHandler): void {
     this.mcp.registerTool({ pluginId, name, config, handler })
   }
@@ -303,6 +319,10 @@ export class PluginKernel {
 
   get tabs(): PluginTabApi {
     return this.tabProvider()
+  }
+
+  get pages(): PluginPageApi {
+    return this.pageApi
   }
 
   private broadcast(channel: string, payload: unknown): void {
@@ -379,7 +399,16 @@ class PluginContextImpl implements PluginContext {
   readonly content = {
     inject: (spec: ContentScriptSpec): void => {
       this.disposers.push(this.kernel.addContentScript(this.id, spec))
+    },
+    refresh: (tabId?: number): void => {
+      this.kernel.refreshContent(tabId)
     }
+  }
+
+  readonly pages: PluginPageApi = {
+    activeTabId: () => this.kernel.pages.activeTabId(),
+    focus: (tabId) => this.kernel.pages.focus(tabId),
+    execute: (tabId, code, opts) => this.kernel.pages.execute(tabId, code, opts)
   }
 
   readonly tabs: PluginTabApi = {

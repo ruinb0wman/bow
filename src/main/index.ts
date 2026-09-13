@@ -91,6 +91,35 @@ app.whenReady().then(async () => {
     list: () => tabs.listTabs(),
     getActive: () => tabs.getActiveTabInfo()
   }))
+  // 页面执行 API:主世界执行 JS(元素框选等交互式脚本),带超时保护
+  kernel.setPageApi({
+    activeTabId: () => tabs.getActiveTabInfo()?.id ?? null,
+    focus: (tabId) => {
+      const hit = tabs.getView(tabId)
+      if (hit && !hit.view.webContents.isDestroyed()) hit.view.webContents.focus()
+    },
+    execute: (tabId, code, opts) => {
+      const hit = tabs.getView(tabId)
+      if (!hit || hit.view.webContents.isDestroyed()) {
+        return Promise.reject(new Error('标签页不存在或已关闭'))
+      }
+      const wc = hit.view.webContents
+      const timeoutMs = opts?.timeoutMs ?? 10_000
+      return new Promise<unknown>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`页面脚本执行超时(${timeoutMs}ms)`)), timeoutMs)
+        wc.executeJavaScript(code, true).then(
+          (value) => {
+            clearTimeout(timer)
+            resolve(value)
+          },
+          (err) => {
+            clearTimeout(timer)
+            reject(err)
+          }
+        )
+      })
+    }
+  })
   kernel.setBroadcaster((channel, payload) => {
     if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)
     overlay.send(channel, payload)

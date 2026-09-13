@@ -23,7 +23,7 @@
     "src/shared/**/*",
     "src/plugins/*/main.ts",
     "src/plugins/*/shared.ts",
-    "src/plugins/*/rules.ts",
+    "src/plugins/*/picker.ts",
     "electron.vite.config.ts",
     "vitest.config.ts"
   ]
