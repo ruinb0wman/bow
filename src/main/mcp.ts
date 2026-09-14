@@ -108,7 +108,7 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
    * 被无声忽略、静默导航到活动标签),这里用 strict() 让未知参数显式报错并回显可用参数名。
    * 与 registerPluginTools 同理:raw shape → ZodObject 的重载推导无收益,直接放宽类型。
    *
-   * 处理器统一经 mcpActivity 包一层:地址栏状态灯据此显示「MCP 正在被调用」。
+   * 处理器统一经 mcpActivity 包一层:MCP 状态灯据此显示「MCP 正在被调用」。
    */
   const tool = (
     name: string,
@@ -495,7 +495,7 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
 /** 把插件声明的工具接入某个服务器实例 */
 function registerPluginTools(server: McpServer, kernel: PluginKernel, mode: 'attach' | 'snapshot'): void {
   // 插件侧 config.inputSchema 为 zod raw shape;SDK 的重载推导在此处无收益,直接放宽。
-  // 与核心工具同样经 mcpActivity 计数,地址栏状态灯对插件工具也有反应。
+  // 与核心工具同样经 mcpActivity 计数,MCP 状态灯对插件工具也有反应。
   const register = (spec: McpToolSpec): RegisteredTool =>
     (server.registerTool as any)(spec.name, spec.config, (args: unknown) =>
       mcpActivity.wrapTool(spec.name, () => spec.handler(args as Record<string, unknown>))

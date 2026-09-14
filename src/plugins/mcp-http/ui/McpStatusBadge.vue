@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 地址栏尾部的 MCP 状态灯(由 mcp-http 插件贡献到 addressbar-trailing 插槽)。
+ * 工具栏里的 MCP 状态灯(由 mcp-http 插件贡献到 toolbar 插槽,位于书签按钮右侧)。
  *
  * 三态(优先级从高到低):
  * - 调用中(蓝 + 脉冲)—— 有在途的 MCP 工具调用;
@@ -93,17 +93,18 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  height: 22px;
-  padding: 0 7px;
-  border-radius: 11px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--radius, 6px);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.04em;
   transition: background 0.15s ease;
 }
 
+/* 与同一排的 .tool-btn 一致:工具栏底色是 --bg2,悬停要用 --bg3 才看得见 */
 .mcp-pill:hover {
-  background: var(--bg2, #26272e);
+  background: var(--bg3, #2e3038);
 }
 
 .mcp-dot {

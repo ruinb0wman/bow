@@ -180,10 +180,10 @@ MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到
 ### HTTP 模式的开启方式
 
 HTTP 端点由内置插件「MCP HTTP 服务」提供,**默认开启** —— 只要 bow 正常启动,端点就在监听,
-不需要额外命令行参数。关掉它有两条路:点**地址栏右侧的 MCP 状态灯**只停/启端点(插件保持启用),
+不需要额外命令行参数。关掉它有两条路:点**地址栏右侧工具栏里的 MCP 状态灯**只停/启端点(插件保持启用),
 或在「设置页 → 插件管理」停用整个插件(端口/令牌在插件的设置分区里改)。
 
-地址栏状态灯就是端点的状态机,点一下切换启停:
+MCP 状态灯就是端点的状态机,点一下切换启停:
 
 | 颜色 | 含义 |
 | --- | --- |
@@ -329,7 +329,7 @@ MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生
 
 同一个插件还用 `service.activity` 拿到了「MCP 正在被调用」的实时信号:内核的
 `McpActivityTracker`(`src/main/mcpActivity.ts`)在**工具处理器**上做在途计数,
-插件订阅快照后广播给渲染层,地址栏状态灯据此在白色与蓝色之间切换。
+插件订阅快照后广播给渲染层,MCP 状态灯据此在白色与蓝色之间切换。
 只数工具调用而不数 HTTP 请求,是因为 StreamableHTTP 客户端会挂一条长驻的 GET SSE 流 ——
 按请求计数会让状态灯一旦连上就永远停在蓝色。
 
@@ -391,7 +391,7 @@ MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生
    - `ui.ts` + `ui/*.vue`:默认导出 UI 贡献(`slots` / `overlays` / `settingsSections`),浮层 id 约定 `plugin:<id>:<panelId>`;`settingsSections` 组件渲染在设置页侧栏对应插件的分区里。
    - `shared.ts` / `picker.ts` / `scripts.ts`(可选):同构纯逻辑或注入脚本字符串,便于单测(脚本文件需登记到 `tsconfig.node.json` 的 include)。
    - 边界约束:`main.ts` 不得 import `.vue` 或 `@renderer`;`ui.ts` 不得 import `electron`(由 `tests/pluginBoundaries.test.ts` 强制)。
-2. 在 `src/main/plugins/builtin.ts` 的 `BUILTIN_PLUGINS` 登记 main;在 `src/renderer/src/plugins/registry.ts` 的 `PLUGIN_UI` 登记 ui。
+2. 在 `src/main/plugins/builtin.ts` 的 `BUILTIN_PLUGINS` 登记 main;在 `src/renderer/src/plugins/registry.ts` 的 `PLUGIN_UI` 登记 ui(新插件的按钮默认追加到插槽末尾;要在同一个插槽里插队就写进同文件的 `SLOT_PLUGIN_ORDER`)。
 3. 渲染层用 `window.browserAPI.plugins.invoke(id, method, ...args)` 调插件方法,`plugins.onEvent` 订阅插件事件。
 
 ## 环境注意事项

@@ -4,7 +4,7 @@
  * 新增插件 UI = 新建 src/plugins/<id>/ui.ts 并在此登记一行,host 代码零改动。
  */
 
-import type { PluginUiContribution } from './types'
+import type { PluginUiContribution, PluginSlot } from './types'
 import bookmarksUi from '@plugins/bookmarks/ui'
 import historyUi from '@plugins/history/ui'
 import corsUi from '@plugins/cors/ui'
@@ -20,6 +20,15 @@ export const PLUGIN_UI: PluginUiContribution[] = [
   elementFullscreenUi,
   mcpHttpUi
 ]
+
+/**
+ * 各插槽里插件组件的左右顺序(host 布局策略,不是注册顺序)。
+ * 未列出的插件保持注册顺序排在最后 —— 新插件只管登记,不必改这里。
+ */
+export const SLOT_PLUGIN_ORDER: Record<PluginSlot, readonly string[]> = {
+  'addressbar-trailing': [],
+  toolbar: ['bookmarks', 'mcp-http', 'adblock', 'element-fullscreen']
+}
 
 export function pluginUi(id: string): PluginUiContribution | undefined {
   return PLUGIN_UI.find((p) => p.id === id)

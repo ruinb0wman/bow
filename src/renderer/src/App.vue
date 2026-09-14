@@ -3,9 +3,11 @@ import { computed, onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue'
 import type { Component } from 'vue'
 import type { Suggestion, SuggestPayload, SuggestRow, TabInfo } from '@shared/types'
 import type { PluginInfo } from '@shared/plugins'
+import type { PluginSlot } from './plugins/types'
 import { SETTINGS_URL } from '@shared/internalPages'
 import { faviconLetter } from './lib/avatar'
-import { PLUGIN_UI } from './plugins/registry'
+import { PLUGIN_UI, SLOT_PLUGIN_ORDER } from './plugins/registry'
+import { collectSlot } from './plugins/slots'
 import {
   ArrowLeft,
   ArrowRight,
@@ -33,14 +35,8 @@ let selectOnFocus = false
 const plugins = ref<PluginInfo[]>([])
 const enabledIds = computed(() => new Set(plugins.value.filter((p) => p.enabled).map((p) => p.id)))
 
-function slotComponents(slot: 'addressbar-trailing' | 'toolbar'): Component[] {
-  const out: Component[] = []
-  for (const ui of PLUGIN_UI) {
-    if (!enabledIds.value.has(ui.id)) continue
-    const list = ui.slots?.[slot]
-    if (list) out.push(...list)
-  }
-  return out
+function slotComponents(slot: PluginSlot): Component[] {
+  return collectSlot(PLUGIN_UI, slot, (id) => enabledIds.value.has(id), SLOT_PLUGIN_ORDER[slot])
 }
 const addressbarSlots = computed(() => slotComponents('addressbar-trailing'))
 const toolbarSlots = computed(() => slotComponents('toolbar'))
