@@ -66,6 +66,7 @@ export const MCP_INSTRUCTIONS = `这是一个真实的多标签浏览器窗口(�
 
 返回体约定
 - 所有工具都返回 JSON。先看 ok 字段;ok=false 表示失败(协议层已同时标记 isError),不要当成成功继续往下走。
+- 参数名必须精确:未知参数会被拒绝,报错里会列出本工具接受的参数名,不要凭记忆猜参数。
 - 页面类工具默认作用于「活动标签」。若活动标签是浏览器内部页面(bow://settings,即 browser_list_tabs 里 internal: true),
   会退到最近浏览过的页面标签;一个都没有时会自动新建 about:blank 标签——此时返回的 tabId 并不是你预期的那个,一切以返回值为准。
 
@@ -78,6 +79,8 @@ export const MCP_INSTRUCTIONS = `这是一个真实的多标签浏览器窗口(�
    不要自己猜 CSS 选择器。快照默认最多 200 个元素;页面很大时先调小 maxElements 定位,需要更多再扩大。
 4. browser_click 默认不等待(适合 SPA 内的局部交互);若这次点击会触发跳转,传 waitUntil: 'load',
    或随后用 browser_wait 等具体元素。
+5. browser_press_key 返回 ok 只代表按键已投递,不代表网页已经处理完;若这次按键会触发跳转(如回车提交表单),
+   传 waitUntil: 'load' 等到加载完成。等异步渲染仍然用 browser_wait,不要重复调用同一个工具探路。
 
 工具选型
 - 读结构化数据、批量取值 → browser_eval(最省 token)
@@ -86,6 +89,7 @@ export const MCP_INSTRUCTIONS = `这是一个真实的多标签浏览器窗口(�
 
 边界
 - bow:// 内部页面标签不支持页面类工具,会被明确拒绝。
+- browser_navigate / browser_search 传 tabId 时作用于指定标签(指向内部页面标签会被拒绝);省略则作用于活动标签。
 - 插件被停用后,它贡献的工具(如 adblock_*)会从工具列表消失,这不是故障;可在 bow://settings 的「插件管理」重新启用。
 - browser_press_key 的 Ctrl+T / Ctrl+W 直接操作标签页,不等同于网页内的按键。`
 
@@ -96,6 +100,18 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
     { name: 'mcp-browser', version: '0.1.0' },
     { instructions: MCP_INSTRUCTIONS }
   )
+
+  /**
+   * 注册一个核心工具。
+   * zod 默认会静默丢弃未知参数 —— LLM 传错参数名时拿不到任何反馈(曾导致 navigate 的 tabId
+   * 被无声忽略、静默导航到活动标签),这里用 strict() 让未知参数显式报错并回显可用参数名。
+   * 与 registerPluginTools 同理:raw shape → ZodObject 的重载推导无收益,直接放宽类型。
+   */
+  const tool = (
+    name: string,
+    shape: z.ZodRawShape,
+    handler: (args: any, extra: any) => unknown
+  ): RegisteredTool => (server.registerTool as any)(name, { inputSchema: z.object(shape).strict() }, handler)
 
   // 当前操作目标视图:可指定 tabId,默认取活动标签(活动标签是内部页面时退到最近浏览的页面标签);
   // 内部页面标签(如 bow://settings)持有应用 preload,一律不作为页面工具的操作目标。
@@ -130,16 +146,29 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
   const loadFields = (res: ActionResult): Record<string, unknown> =>
     res.ok ? { waited: res.waited, loadedUrl: res.url } : { error: res.error }
 
-  server.tool(
+  tool(
     'browser_navigate',
     {
       url: z.string().describe('http(s) 地址'),
+      tabId: z.number().optional().describe('目标标签;省略则作用于活动标签'),
       waitUntil: WaitUntilSchema.default('load').describe("'load' 等到页面加载完成(默认);'none' 立即返回"),
       timeoutMs: z.number().int().positive().optional().describe('waitUntil=load 时的超时毫秒数,默认 15000')
     },
-    async ({ url, waitUntil, timeoutMs }) => {
+    async ({ url, tabId, waitUntil, timeoutMs }) => {
       if (!isHttpUrl(url)) return textContent({ ok: false, error: 'navigate 仅接受 http/https 地址' })
-      // 活动标签是设置等内部页面时另开新标签(内部页面不可被导航走)
+      // 指定 tabId:就地导航该标签(是内部页面标签时 target() 会直接拒绝)
+      if (tabId != null) {
+        const { view, fail } = target(tabId)
+        if (!view) return textContent({ ok: false, error: fail })
+        const id = view.info.id
+        if (!tabs.navigate(id, url)) {
+          return textContent({ ok: false, tabId: id, error: `标签 ${id} 无法导航到该地址` })
+        }
+        if (waitUntil === 'none') return textContent({ ok: true, url, tabId: id, createdTab: false })
+        const res = await loadFor(id, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS)
+        return textContent({ ok: res.ok, url, tabId: id, createdTab: false, ...loadFields(res) })
+      }
+      // 未指定:活动标签是设置等内部页面时另开新标签(内部页面不可被导航走)
       const activeBefore = tabs.getActiveView()
       const tab = tabs.openUrl(url)
       const createdTab = tab.id !== activeBefore?.info.id
@@ -149,18 +178,31 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
     }
   )
 
-  server.tool(
+  tool(
     'browser_search',
     {
       query: z.string(),
       engine: EngineSchema.optional(),
+      tabId: z.number().optional().describe('目标标签;省略则作用于活动标签'),
       waitUntil: WaitUntilSchema.default('load').describe("'load' 等到页面加载完成(默认);'none' 立即返回"),
       timeoutMs: z.number().int().positive().optional()
     },
-    async ({ query, engine, waitUntil, timeoutMs }) => {
+    async ({ query, engine, tabId, waitUntil, timeoutMs }) => {
       const settings = getSettingsStore().get()
       const engineId: SearchEngineId = engine ?? settings.searchEngine
       const url = searchUrl(engineId, query)
+      // 指定 tabId:就地导航该标签(是内部页面标签时 target() 会直接拒绝)
+      if (tabId != null) {
+        const { view, fail } = target(tabId)
+        if (!view) return textContent({ ok: false, error: fail })
+        const id = view.info.id
+        if (!tabs.navigate(id, url)) {
+          return textContent({ ok: false, tabId: id, error: `标签 ${id} 无法导航到该地址` })
+        }
+        if (waitUntil === 'none') return textContent({ ok: true, engine: engineId, url, tabId: id, createdTab: false })
+        const res = await loadFor(id, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS)
+        return textContent({ ok: res.ok, engine: engineId, url, tabId: id, createdTab: false, ...loadFields(res) })
+      }
       const activeBefore = tabs.getActiveView()
       const tab = tabs.openUrl(url)
       const createdTab = tab.id !== activeBefore?.info.id
@@ -170,7 +212,7 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
     }
   )
 
-  server.tool(
+  tool(
     'browser_eval',
     { code: z.string().describe('在页面上下文中执行的 JavaScript 表达式/语句,返回最后一个表达式的值'), tabId: z.number().optional() },
     async ({ code, tabId }) => {
@@ -186,7 +228,7 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
     }
   )
 
-  server.tool(
+  tool(
     'browser_snapshot',
     {
       tabId: z.number().optional(),
@@ -201,7 +243,7 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
     }
   )
 
-  server.tool(
+  tool(
     'browser_wait',
     {
       tabId: z.number().optional(),
@@ -229,7 +271,7 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
     }
   )
 
-  server.tool(
+  tool(
     'browser_click',
     {
       selector: z.string().describe('CSS 选择器'),
@@ -251,7 +293,7 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
     }
   )
 
-  server.tool(
+  tool(
     'browser_type',
     {
       selector: z.string().optional().describe('CSS 选择器;省略则输入到当前聚焦元素'),
@@ -272,13 +314,17 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
     }
   )
 
-  server.tool(
+  tool(
     'browser_press_key',
     {
       key: z.string().describe('按键,如 Enter / Tab / Escape / ArrowDown / Ctrl+W / F5;F5 与 Ctrl+R 会等到重新加载完成'),
-      tabId: z.number().optional()
+      tabId: z.number().optional(),
+      waitUntil: WaitUntilSchema.default('none').describe(
+        "'none' 投递后立即返回(默认,仅代表事件已投递);'load' 等到按键引发的跳转加载完成"
+      ),
+      timeoutMs: z.number().int().positive().optional()
     },
-    async ({ key, tabId }) => {
+    async ({ key, tabId, waitUntil, timeoutMs }) => {
       const { view, fail } = target(tabId)
       if (!view) return textContent({ ok: false, error: fail })
       const low = key.toLowerCase()
@@ -296,11 +342,14 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
         return textContent({ ok: true, key, newTabId: t.id })
       }
       const res = await pressKey(view.view.webContents, key)
-      return textContent({ ok: res.ok, ...(res.ok ? { pressed: key } : { error: res.error }), tabId: view.info.id })
+      if (!res.ok) return textContent({ ok: false, tabId: view.info.id, error: res.error })
+      if (waitUntil !== 'load') return textContent({ ok: true, pressed: key, tabId: view.info.id })
+      const load = await waitForLoad(view.view.webContents, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS)
+      return textContent({ ok: load.ok, pressed: key, tabId: view.info.id, ...loadFields(load) })
     }
   )
 
-  server.tool(
+  tool(
     'browser_scroll',
     {
       selector: z.string().optional(),
@@ -327,7 +376,7 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
     { name: 'browser_forward', fn: (id) => tabs.forward(id) }
   ]
   for (const { name, fn } of navigations) {
-    server.tool(
+    tool(
       name,
       {
         tabId: z.number().optional(),
@@ -346,14 +395,14 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
     )
   }
 
-  server.tool('browser_stop', { tabId: z.number().optional() }, async ({ tabId }) => {
+  tool('browser_stop', { tabId: z.number().optional() }, async ({ tabId }) => {
     const { view, fail } = target(tabId)
     if (!view) return textContent({ ok: false, error: fail })
     tabs.stop(view.info.id)
     return textContent({ ok: true, tabId: view.info.id })
   })
 
-  server.tool(
+  tool(
     'browser_reload',
     {
       tabId: z.number().optional(),
@@ -371,7 +420,7 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
     }
   )
 
-  server.tool(
+  tool(
     'browser_new_tab',
     {
       url: z.string().optional(),
@@ -390,19 +439,19 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
     }
   )
 
-  server.tool('browser_close_tab', { tabId: z.number() }, async ({ tabId }) => {
+  tool('browser_close_tab', { tabId: z.number() }, async ({ tabId }) => {
     const res = tabs.close(tabId)
     return textContent(res.ok ? { ok: true, closed: tabId } : { ok: false, error: `标签 ${tabId} 不存在` })
   })
 
-  server.tool('browser_switch_tab', { tabId: z.number() }, async ({ tabId }) => {
+  tool('browser_switch_tab', { tabId: z.number() }, async ({ tabId }) => {
     const hit = tabs.getView(tabId)
     if (!hit) return textContent({ ok: false, error: `标签 ${tabId} 不存在` })
     tabs.activate(tabId)
     return textContent({ ok: true, activate: true, tabId })
   })
 
-  server.tool('browser_list_tabs', {}, async () => {
+  tool('browser_list_tabs', {}, async () => {
     const list = tabs.listTabs()
     return textContent({
       ok: true,
@@ -418,7 +467,7 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
     })
   })
 
-  server.tool('browser_screenshot', { tabId: z.number().optional() }, async ({ tabId }) => {
+  tool('browser_screenshot', { tabId: z.number().optional() }, async ({ tabId }) => {
     const { view, fail } = target(tabId)
     if (!view) return textContent({ ok: false, error: fail })
     const res = await pageScreenshot(view.view.webContents)
@@ -426,7 +475,7 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
     return imageContent(res.data.pngBase64)
   })
 
-  server.tool('browser_get_info', { tabId: z.number().optional() }, async ({ tabId }) => {
+  tool('browser_get_info', { tabId: z.number().optional() }, async ({ tabId }) => {
     const { view, fail } = target(tabId)
     if (!view) return textContent({ ok: false, error: fail })
     return textContent({ ok: true, info: view.info })

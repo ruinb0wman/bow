@@ -221,7 +221,8 @@ function resolveKey(key: string): PressKeySpec | null {
   const parts = key.split('+').map((p) => p.trim().toLowerCase())
   const mods = parts.filter((p) => MOD_MAP[p]) as Modifier[]
   const main = parts.find((p) => !MOD_MAP[p])
-  if (!main) return mods.length ? { keyCode: '', modifiers: mods } : null
+  // 纯修饰键(如裸 'Ctrl')只会生成空 keyCode 的无效事件,却返回 ok —— 直接判为不支持
+  if (!main) return null
   const keyAlias: Record<string, string> = {
     enter: 'Enter',
     return: 'Enter',

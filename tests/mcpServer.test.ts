@@ -113,7 +113,13 @@ describe('MCP 服务器:握手与工具面', () => {
       const tool = tools.find((t) => t.name === name)
       return Object.keys((tool?.inputSchema as { properties?: Record<string, unknown> }).properties ?? {})
     }
-    expect(propsOf('browser_navigate')).toEqual(expect.arrayContaining(['url', 'waitUntil', 'timeoutMs']))
+    expect(propsOf('browser_navigate')).toEqual(
+      expect.arrayContaining(['url', 'tabId', 'waitUntil', 'timeoutMs'])
+    )
+    expect(propsOf('browser_search')).toEqual(
+      expect.arrayContaining(['query', 'tabId', 'waitUntil', 'timeoutMs'])
+    )
+    expect(propsOf('browser_press_key')).toEqual(expect.arrayContaining(['key', 'tabId', 'waitUntil']))
     expect(propsOf('browser_click')).toEqual(expect.arrayContaining(['selector', 'waitUntil']))
     expect(propsOf('browser_wait')).toEqual(
       expect.arrayContaining(['tabId', 'selector', 'state', 'timeoutMs'])
@@ -388,6 +394,39 @@ describe('MCP 服务器:页面操作', () => {
     await client.close()
   })
 
+  it('press_key waitUntil:load 等到按键引发的跳转完成', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs)
+    wc.loading = true
+    setTimeout(() => wc.finishLoad('https://after.example/'), 60)
+    const res = await call(client, 'browser_press_key', { key: 'Enter', waitUntil: 'load' })
+    expect(res.isError).toBe(false)
+    expect(res.data.waited).toBe(true)
+    expect(res.data.loadedUrl).toBe('https://after.example/')
+    await client.close()
+  })
+
+  it('press_key 默认不等待,也不带 waited', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs)
+    wc.loading = true // 一直加载中:若默认等待必然超时
+    const res = await call(client, 'browser_press_key', { key: 'Tab' })
+    expect(res.isError).toBe(false)
+    expect(res.data.waited).toBeUndefined()
+    expect(wc.sentEvents).toHaveLength(3)
+    await client.close()
+  })
+
+  it('press_key 拒绝纯修饰键(不再发空 keyCode 的事件)', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs)
+    const res = await call(client, 'browser_press_key', { key: 'Ctrl' })
+    expect(res.isError).toBe(true)
+    expect(res.data.error).toContain('不支持的按键')
+    expect(wc.sentEvents).toHaveLength(0)
+    await client.close()
+  })
+
   it('snapshot 返回页面标题/URL 与元素列表', async () => {
     const { client, tabs } = await setup()
     const wc = browsingTab(tabs, 'https://snap.example/')
@@ -509,6 +548,138 @@ describe('MCP 服务器:插件工具', () => {
     const res = await call(client, 'demo_ok')
     expect(res.isError).toBe(false)
     expect(res.data.value).toBe(42)
+    await client.close()
+  })
+})
+
+/**
+ * 定住曾经的缺陷:navigate / search 的 schema 里没有 tabId,而 zod 会静默丢弃未知参数,
+ * 于是传 tabId 既不报错也不生效 —— 静默导航到活动标签。
+ */
+describe('MCP 服务器:navigate / search 的 tabId', () => {
+  /** 造一个非活动标签,并返回两个标签 id */
+  const twoTabs = (tabs: FakeTabs): { active: number; other: number } => {
+    const active = tabs.create('https://active.example/', true)
+    const other = tabs.create('https://other.example/', false)
+    return { active: active.id, other: other.id }
+  }
+
+  it('navigate 传 tabId 时就地导航该标签,活动标签不受影响', async () => {
+    const { client, tabs } = await setup()
+    const { active, other } = twoTabs(tabs)
+    const res = await call(client, 'browser_navigate', {
+      url: 'https://target.example/',
+      tabId: other,
+      waitUntil: 'none'
+    })
+    expect(res.isError).toBe(false)
+    expect(res.data.tabId).toBe(other)
+    expect(res.data.createdTab).toBe(false)
+    expect(tabs.getView(other)!.info.url).toBe('https://target.example/')
+    expect(tabs.getView(active)!.info.url).toBe('https://active.example/')
+    await client.close()
+  })
+
+  it('navigate 传不存在的 tabId 报错,且不动活动标签', async () => {
+    const { client, tabs } = await setup()
+    const { active } = twoTabs(tabs)
+    const res = await call(client, 'browser_navigate', {
+      url: 'https://target.example/',
+      tabId: 9999,
+      waitUntil: 'none'
+    })
+    expect(res.isError).toBe(true)
+    expect(res.data.error).toContain('标签 9999 不存在')
+    expect(tabs.getView(active)!.info.url).toBe('https://active.example/')
+    await client.close()
+  })
+
+  it('navigate 传内部页面标签的 tabId 被拒绝', async () => {
+    const { client, tabs } = await setup()
+    const internal = tabs.create('bow://settings', true, true)
+    const res = await call(client, 'browser_navigate', {
+      url: 'https://target.example/',
+      tabId: internal.id,
+      waitUntil: 'none'
+    })
+    expect(res.isError).toBe(true)
+    expect(res.data.error).toContain('内部页面')
+    await client.close()
+  })
+
+  it('navigate 的 waitUntil 在指定标签上同样生效', async () => {
+    const { client, tabs } = await setup()
+    const { other } = twoTabs(tabs)
+    const wc = tabs.getView(other)!.view.webContents
+    wc.loading = true
+    setTimeout(() => wc.finishLoad('https://target.example/'), 60)
+    const res = await call(client, 'browser_navigate', { url: 'https://target.example/', tabId: other })
+    expect(res.isError).toBe(false)
+    expect(res.data.waited).toBe(true)
+    expect(res.data.loadedUrl).toBe('https://target.example/')
+    await client.close()
+  })
+
+  it('search 传 tabId 时就地导航该标签,活动标签不受影响', async () => {
+    const { client, tabs } = await setup()
+    const { active, other } = twoTabs(tabs)
+    const res = await call(client, 'browser_search', { query: 'hello', tabId: other, waitUntil: 'none' })
+    expect(res.isError).toBe(false)
+    expect(res.data.tabId).toBe(other)
+    expect(res.data.createdTab).toBe(false)
+    expect(res.data.url).toContain('hello')
+    expect(tabs.getView(other)!.info.url).toBe(res.data.url)
+    expect(tabs.getView(active)!.info.url).toBe('https://active.example/')
+    await client.close()
+  })
+
+  it('search 传不存在的 tabId 报错', async () => {
+    const { client, tabs } = await setup()
+    twoTabs(tabs)
+    const res = await call(client, 'browser_search', { query: 'hello', tabId: 9999, waitUntil: 'none' })
+    expect(res.isError).toBe(true)
+    expect(res.data.error).toContain('标签 9999 不存在')
+    await client.close()
+  })
+})
+
+/** 未知参数必须显式报错:静默丢弃会让调用方对「走错了标签 / 用错了参数」毫无察觉 */
+describe('MCP 服务器:未知参数严格校验', () => {
+  it('拼错的参数名被拒绝并回显参数名', async () => {
+    const { client } = await setup()
+    const res = await call(client, 'browser_snapshot', { tabId: 1, maxElement: 20 })
+    expect(res.isError).toBe(true)
+    // SDK 层校验失败:text 是 SDK 的错误字符串,不是项目的 {ok:false} JSON
+    expect(res.text).toContain("Unrecognized key(s) in object: 'maxElement'")
+    await client.close()
+  })
+
+  it('把 tabId 写成 tabID 会被拦下(不再静默导航活动标签)', async () => {
+    const { client, tabs } = await setup()
+    const active = tabs.create('https://active.example/', true).id
+    const res = await call(client, 'browser_navigate', { url: 'https://target.example/', tabID: active })
+    expect(res.isError).toBe(true)
+    expect(res.text).toContain("Unrecognized key(s) in object: 'tabID'")
+    expect(tabs.getView(active)!.info.url).toBe('https://active.example/')
+    await client.close()
+  })
+
+  it('零参数工具传参同样被拒绝', async () => {
+    const { client } = await setup()
+    const res = await call(client, 'browser_list_tabs', { tabId: 1 })
+    expect(res.isError).toBe(true)
+    expect(res.text).toContain("Unrecognized key(s) in object: 'tabId'")
+    await client.close()
+  })
+
+  it('严格校验不影响合法调用与默认值', async () => {
+    const { client, tabs } = await setup()
+    tabs.create('https://start.example/', true)
+    const list = await call(client, 'browser_list_tabs', {})
+    expect(list.isError).toBe(false)
+    expect(list.data.tabs).toHaveLength(1)
+    const snap = await call(client, 'browser_snapshot', {}) // maxElements 默认值仍生效
+    expect(snap.isError).toBe(false)
     await client.close()
   })
 })

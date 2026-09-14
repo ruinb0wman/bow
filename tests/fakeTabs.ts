@@ -71,12 +71,21 @@ export class FakeTabs {
     return { ok: true }
   }
 
+  /** 与真实实现一致:就地导航;跨「内部页面 ↔ 普通网页」边界一律拒绝 */
+  navigate(id: number, url: string): boolean {
+    const rec = this.recs.get(id)
+    if (!rec) return false
+    if (rec.internalId) return false
+    rec.info.url = url
+    rec.view.webContents.url = url
+    return true
+  }
+
   /** 与真实实现一致:活动标签可承载则就地导航,否则新建标签 */
   openUrl(url: string, activate = true): TabInfo {
     const active = this.getActiveView()
     if (active && !active.info.internal) {
-      active.info.url = url
-      active.view.webContents.url = url
+      this.navigate(active.info.id, url)
       return { ...active.info, active: true }
     }
     return this.create(url, activate)
