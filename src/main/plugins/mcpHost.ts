@@ -47,6 +47,14 @@ export class McpHost {
     return [...this.specs.keys()]
   }
 
+  /**
+   * 已声明的全部工具(含尚未 attach 的)。
+   * 无状态 HTTP 模式每个请求都会新建服务器实例,需要据此重新注册。
+   */
+  listSpecs(): McpToolSpec[] {
+    return [...this.specs.values()]
+  }
+
   /** 插件停用:移除其全部已注册工具 */
   removeByPlugin(pluginId: string): void {
     for (const [name, spec] of [...this.specs]) {

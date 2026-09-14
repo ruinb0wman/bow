@@ -3,3 +3,6 @@ out/
 dist/
 *.log
 .DS_Store
+
+# pi 项目级 MCP 配置(含机器绝对路径,不入库)
+.pi/mcp.json

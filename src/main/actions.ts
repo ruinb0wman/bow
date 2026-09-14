@@ -158,6 +158,17 @@ const SCROLL_FN = `function __mcpScroll__(sel, direction, amount){
   return { top: target.scrollTop };
 }`
 
+/**
+ * CLICK / TYPE / SCROLL 的注入函数把失败放在 result.error(而不是抛出),
+ * 经 runInPage 包装后会得到 ok:true —— 这里统一提升为顶层失败,
+ * 否则「点不到元素」「不是可输入元素」会被上报成成功。
+ */
+function lift(result: ActionResult): ActionResult {
+  const err = (result.result as { error?: unknown } | null)?.error
+  if (result.ok && typeof err === 'string' && err) return { ok: false, error: err }
+  return result
+}
+
 export async function pageSnapshot(wc: WebContents, maxElements = 200): Promise<ActionResult & { data?: PageSnapshot }> {
   const res = await runInPage(wc, SNAPSHOT_FN, [maxElements])
   if (!res.ok) return res
@@ -165,11 +176,11 @@ export async function pageSnapshot(wc: WebContents, maxElements = 200): Promise<
 }
 
 export async function pageClick(wc: WebContents, selector: string): Promise<ActionResult> {
-  return runInPage(wc, CLICK_FN, [selector])
+  return lift(await runInPage(wc, CLICK_FN, [selector]))
 }
 
 export async function pageType(wc: WebContents, selector: string, text: string, clear: boolean): Promise<ActionResult> {
-  return runInPage(wc, TYPE_FN, [selector, text, clear])
+  return lift(await runInPage(wc, TYPE_FN, [selector, text, clear]))
 }
 
 export async function pageScroll(
@@ -178,7 +189,7 @@ export async function pageScroll(
   direction: 'up' | 'down' | 'top' | 'bottom',
   amount: number
 ): Promise<ActionResult> {
-  return runInPage(wc, SCROLL_FN, [selector, direction, amount])
+  return lift(await runInPage(wc, SCROLL_FN, [selector, direction, amount]))
 }
 
 export type PressKeySpec = { keyCode: string; modifiers?: Modifier[] }
@@ -247,29 +258,109 @@ export async function pageScreenshot(wc: WebContents): Promise<ActionResult & { 
   }
 }
 
-export async function reloadAndWait(wc: WebContents, url: string): Promise<ActionResult> {
-  return new Promise((resolve) => {
-    const onFail = (_e: unknown, code: number, desc: string, validatedUrl: string, isMain: boolean): void => {
-      if (isMain && validatedUrl === url && code !== -3 /* ERR_ABORTED */) {
-        cleanup()
-        resolve({ ok: false, error: `加载失败(${code}): ${desc}` })
-      }
-    }
-    const onFinish = (): void => {
-      if (wc.getURL() !== url) return
-      cleanup()
-      resolve({ ok: true, url: wc.getURL() })
-    }
-    const timer = setTimeout(() => {
-      cleanup()
-      resolve({ ok: true, url: wc.getURL() }) // 超时视为已开始加载
-    }, 5000)
-    const cleanup = (): void => {
-      clearTimeout(timer)
-      wc.removeListener('did-fail-load', onFail)
+/** 轮询间隔;LOAD_GRACE_MS 用于消解「loadURL 已发出、did-start-loading 还没到」的竞态 */
+const POLL_INTERVAL_MS = 120
+const LOAD_GRACE_MS = 300
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * 等待标签页主文档加载完成。
+ * did-finish-load / did-fail-load 是权威信号;轮询只兜底两种情况:调用时加载已在途中
+ * (事件在监听注册前就发生),或调用时加载早已结束(此时宽限期内可直接返回)。
+ * 返回体里的 waited 表示是否真的观察到了加载过程,waited=false 说明页面在调用时就已就绪。
+ */
+export async function waitForLoad(wc: WebContents, timeoutMs = 15_000): Promise<ActionResult> {
+  if (wc.isDestroyed()) return { ok: false, error: '标签页已关闭' }
+  return new Promise<ActionResult>((resolve) => {
+    let settled = false
+    let sawLoading = wc.isLoading()
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let poller: ReturnType<typeof setInterval> | null = null
+    const finish = (result: ActionResult): void => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      if (poller) clearInterval(poller)
+      wc.removeListener('did-start-loading', onStart)
       wc.removeListener('did-finish-load', onFinish)
+      wc.removeListener('did-fail-load', onFail)
+      wc.removeListener('destroyed', onDestroyed)
+      resolve(result)
     }
-    wc.on('did-fail-load', onFail)
+    const onStart = (): void => {
+      sawLoading = true
+    }
+    const onFinish = (): void => finish({ ok: true, url: wc.getURL(), waited: true })
+    const onFail = (_e: unknown, code: number, desc: string, _url: string, isMain: boolean): void => {
+      if (!isMain || code === -3 /* ERR_ABORTED,常由页面自身发起的重定向/中止触发 */) return
+      finish({ ok: false, error: `加载失败(${code}): ${desc}` })
+    }
+    const onDestroyed = (): void => finish({ ok: false, error: '标签页在加载过程中被关闭' })
+    const startedAt = Date.now()
+    poller = setInterval(() => {
+      if (wc.isDestroyed()) {
+        finish({ ok: false, error: '标签页在加载过程中被关闭' })
+        return
+      }
+      if (wc.isLoading()) {
+        sawLoading = true
+        return
+      }
+      if (sawLoading || Date.now() - startedAt >= LOAD_GRACE_MS) {
+        finish({ ok: true, url: wc.getURL(), waited: sawLoading })
+      }
+    }, POLL_INTERVAL_MS)
+    timer = setTimeout(() => finish({ ok: false, error: `等待加载超时(${timeoutMs}ms)` }), timeoutMs)
+    wc.on('did-start-loading', onStart)
     wc.on('did-finish-load', onFinish)
+    wc.on('did-fail-load', onFail)
+    wc.on('destroyed', onDestroyed)
   })
+}
+
+export type WaitSelectorState = 'attached' | 'visible' | 'hidden' | 'detached'
+
+const WAIT_SELECTOR_FN = `function __mcpWaitSelector__(sel, state){
+  var el = document.querySelector(sel); // 选择器非法会抛错,由 runInPage 转成 ok:false
+  if (state === 'attached') return !!el;
+  if (state === 'detached') return !el;
+  var visible = false;
+  if (el) {
+    var r = el.getBoundingClientRect();
+    var s = getComputedStyle(el);
+    visible = !(r.width === 0 && r.height === 0) && s.display !== 'none' &&
+      s.visibility !== 'hidden' && s.opacity !== '0';
+  }
+  return state === 'visible' ? visible : !visible;
+}`
+
+/**
+ * 等待选择器达到指定状态(默认可见)。
+ * 选择器非法等脚本错误会立即失败并原样上报,不会空等到超时。
+ */
+export async function waitForSelector(
+  wc: WebContents,
+  selector: string,
+  state: WaitSelectorState = 'visible',
+  timeoutMs = 10_000
+): Promise<ActionResult> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    let res: ActionResult
+    try {
+      res = await runInPage(wc, WAIT_SELECTOR_FN, [selector, state])
+    } catch (e) {
+      return { ok: false, error: `页面不可用: ${String((e as Error)?.message ?? e)}` }
+    }
+    if (!res.ok) return res
+    if (res.result === true) return { ok: true, selector, state }
+    const left = deadline - Date.now()
+    if (left <= 0) {
+      return { ok: false, error: `等待超时(${timeoutMs}ms):${selector} 未达到状态 ${state}` }
+    }
+    await sleep(Math.min(POLL_INTERVAL_MS, left))
+  }
 }

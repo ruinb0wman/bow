@@ -18,14 +18,90 @@
 npm install
 npm run dev        # 开发(HMR)
 npm run build      # 构建到 out/
-npm run mcp        # 构建后以 MCP 模式启动(供 AI 工具以子进程方式拉起)
+npm run mcp        # 构建后以 stdio MCP 模式启动(供 AI 工具以子进程方式拉起)
+npm run mcp:http   # 构建后以 HTTP MCP 模式常驻(监听 127.0.0.1,多客户端可共享)
+npm run mcp:install -- --help   # 把浏览器 MCP 写进 pi 的配置(幂等、可回滚)
 npm test           # 单元测试
 npm run typecheck  # 类型检查
 ```
 
 ## 给 AI 工具配置 MCP
 
-以本地 stdio 方式接入。假设项目路径为 `$PROJECT`:
+两种传输,按需要选:
+
+| | stdio(默认) | HTTP |
+| --- | --- | --- |
+| 谁启动浏览器 | AI 工具把它当子进程拉起 | 你自己先启动,浏览器常驻 |
+| 多客户端共享 | ✗ 一个会话一个浏览器进程 | ✓ pi / Claude Code / 脚本可同时连 |
+| 重复窗口 | 靠 `idleTimeout: 0` 规避(浏览器无单实例锁) | 不会出现 |
+| 适用 | 随手用、零手工步骤 | 常驻服务、多工具共用同一个浏览器 |
+
+### 接入 pi(推荐用安装脚本)
+
+```bash
+npm run mcp:install                  # stdio 版:pi 自动拉起浏览器
+npm run mcp:install -- --http        # HTTP 版:需先 npm run mcp:http
+npm run mcp:install -- --direct-core # 额外把核心 5 个工具提升为 pi 原生工具
+npm run mcp:install -- --tool-prefix none  # 同时把 settings.toolPrefix 设为 none
+npm run mcp:install -- --dry-run     # 只看会写入什么
+npm run mcp:install -- --remove      # 卸载(配置 + skill)
+```
+
+默认写 `~/.pi/agent/mcp.json`,加 `--project` 写 `./.pi/mcp.json`。脚本是幂等的:
+保留其它服务器与顶层 `settings`,目标文件不是合法 JSON 时直接报错退出,绝不覆盖。
+它还会把能力索引 skill 一并装到 `~/.pi/agent/skills/bow-browser/`(`--no-skill` 可跳过)。
+改完要**重启 pi**(服务器清单与 skill 都在启动时加载)。
+
+### pi 适配器推荐配置(能力索引 + 定向直挂)
+
+pi 的 MCP 适配器默认是**代理模式**:工具 schema 不常驻上下文,模型必须先 `describe` 才拿到参数 ——
+约 200 token/服务器换上下文干净,但模型常常不主动去 describe。它同时支持两条更好的路子,推荐组合使用:
+
+1. **`directTools`:高频工具直挂为原生工具**(schema 进上下文,0 跳)。成本参考:5 个 ≈1k token、
+   20 个 ≈4k、50 个 ≈10k,代理工具 ≈200。
+2. **skill 做能力索引**:`description` 常驻(几十~百 token),正文按需加载 —— 放"什么场景用哪个工具、
+   按什么顺序、有哪些反模式"。本仓库的 `.pi/skills/bow-browser/SKILL.md` 就是它,
+   以 `/skill:bow-browser` 注册;模型不一定会主动加载,需要时直接敲该命令强制加载。
+
+推荐的全局 `~/.pi/agent/mcp.json`:
+
+```json
+{
+  "settings": { "toolPrefix": "none" },
+  "mcpServers": {
+    "codegraph": { "command": "codegraph", "args": ["serve", "--mcp"], "directTools": true },
+    "browser": {
+      "command": "npm",
+      "args": ["run", "mcp"],
+      "cwd": "/absolute/path/to/browser",
+      "lifecycle": "lazy",
+      "idleTimeout": 0,
+      "directTools": ["browser_navigate", "browser_snapshot", "browser_wait", "browser_click", "browser_eval"]
+    }
+  }
+}
+```
+
+browser 那半边一条命令就能装好:`npm run mcp:install -- --direct-core --tool-prefix none`。
+
+几个容易踩的点:
+
+- **`toolPrefix: "none"`**:默认的 `server` 模式会把服务器名再拼一遍 —— 本仓库工具已自带 `browser_` 前缀,
+  codegraph 的工具名也自带 `codegraph_`,默认模式下会变成 `browser_browser_navigate`、
+  `codegraph_codegraph_search` 这种双重前缀(本仓库会话里就能观察到)。两个服务器都自带命名空间,
+  设 `none` 最干净。
+- **`directTools` 数组用工具原始名**,不带前缀。
+- **`directTools` 从缓存注册**(`~/.pi/agent/mcp-cache.json`),不是实时连接:首次配好后那一轮仍走代理,
+  缓存后台填充,**重启 pi** 才生效;工具面变了(比如新增 `browser_wait`)先 `/mcp reconnect browser` 再重启。
+- **更推荐 subagent 定向注册**,不污染主会话上下文:
+  ```yaml
+  tools:
+    - mcp:browser                        # 该服务器全部工具
+    - mcp:codegraph/codegraph_explore    # 或只给具体工具
+  ```
+- 试效果不用改配置:`MCP_DIRECT_TOOLS=browser pi`、`MCP_DIRECT_TOOLS=__none__ pi`。
+
+### 手动配置
 
 - **Claude Code**
   ```bash
@@ -38,28 +114,48 @@ npm run typecheck  # 类型检查
       "browser": {
         "command": "npm",
         "args": ["run", "mcp"],
-        "cwd": "$PROJECT"
+        "cwd": "$PROJECT",
+        "lifecycle": "lazy",
+        "idleTimeout": 0
       }
     }
   }
   ```
+  HTTP 版则写成 `{"url": "http://127.0.0.1:8765/mcp", "lifecycle": "keep-alive"}`。
 
-MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到。AI 断开连接后浏览器保持运行,可继续手动使用。
+MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到。stdio 模式下 AI 断开连接后浏览器保持运行,
+可继续手动使用;但**再开新会话前建议先关掉旧浏览器窗口**,否则会多开一个(应用没有单实例锁)。
+
+### HTTP 模式的安全姿态
+
+这个端点能执行页面 JS、读任意页面内容,因此默认只做本地防护:
+
+- 只监听 **127.0.0.1**,不对外暴露;
+- 开启 DNS rebinding 防护并限定 `Host` 白名单,防止网页脚本打到本机端口;
+- 可选 Bearer 令牌:设了 `MCP_HTTP_TOKEN` 后所有请求必须带 `Authorization: Bearer <token>`。
+
+```bash
+MCP_HTTP=1 MCP_HTTP_PORT=8765 MCP_HTTP_TOKEN=<随机串> npm run mcp:http
+```
+
+对应地在 MCP 配置里加 `"headers": {"Authorization": "Bearer <随机串>"}`(`mcp:install --http --token <串>` 会替你写)。
 
 ## MCP 工具一览
 
 | 工具 | 说明 |
 | --- | --- |
-| `browser_navigate {url}` | 当前标签跳转(仅 http/https) |
-| `browser_search {query, engine?}` | 用默认或指定引擎搜索 |
+| `browser_navigate {url, waitUntil?, timeoutMs?}` | 当前标签跳转(仅 http/https);默认等到加载完成 |
+| `browser_search {query, engine?, waitUntil?, timeoutMs?}` | 用默认或指定引擎搜索;默认等到加载完成 |
+| `browser_wait {tabId?, selector?, state?, timeoutMs?}` | 等页面加载完成(省略 selector)或等元素达到 attached/visible/hidden/detached 状态 |
 | `browser_eval {code, tabId?}` | 在页面上下文执行任意 JavaScript,返回最后一个表达式的值 |
 | `browser_snapshot {tabId?, maxElements?}` | 页面可操作元素快照(title/url + 可点击输入元素列表,含稳定 CSS 选择器) |
-| `browser_click {selector, tabId?}` | 点击元素(注入真实事件序列) |
+| `browser_click {selector, tabId?, waitUntil?, timeoutMs?}` | 点击元素(注入真实事件序列);默认不等待,点击会跳转时传 `waitUntil: 'load'` |
 | `browser_type {selector?, text, clear?, tabId?}` | 输入文字(React 兼容),省略 selector 输入到当前聚焦元素 |
-| `browser_press_key {key, tabId?}` | 按键:Enter / Tab / Escape / ArrowDown / Ctrl+W / F5 等 |
+| `browser_press_key {key, tabId?}` | 按键:Enter / Tab / Escape / ArrowDown / Ctrl+W / F5 等;F5 与 Ctrl+R 会等到重新加载完成 |
 | `browser_scroll {direction, selector?, amount?, tabId?}` | 滚动页面或元素 |
-| `browser_back / forward / reload / stop` | 历史导航(可选 tabId) |
-| `browser_new_tab {url?, activate?}` | 开新标签 |
+| `browser_back / forward {tabId?, waitUntil?}` | 后退/前进(默认等到加载完成) |
+| `browser_reload {tabId?, waitUntil?}` / `browser_stop {tabId?}` | 刷新(默认等到加载完成) / 停止加载 |
+| `browser_new_tab {url?, activate?, waitUntil?}` | 开新标签;带 url 时默认等到加载完成 |
 | `browser_close_tab {tabId}` / `browser_switch_tab {tabId}` / `browser_list_tabs` | 标签管理 |
 | `browser_screenshot {tabId?}` | 当前页面截图,以 PNG 图片内容返回给 AI |
 | `browser_get_info {tabId?}` | 当前标签标题 / URL / 加载状态 |
@@ -70,7 +166,21 @@ MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到
 | `browser_fullscreen_element {selector, tabId?}` | 让页面元素铺满网页视口(由「元素全屏」插件提供) |
 | `browser_exit_fullscreen {tabId?}` | 退出元素全屏并还原页面(由「元素全屏」插件提供) |
 
-典型 AI 工作流:`browser_new_tab` → `browser_search` → `browser_snapshot` 找到结果链接的选择器 → `browser_click` → `browser_screenshot` 确认 → `browser_type`/`browser_click` 填表。
+典型 AI 工作流:`browser_new_tab`/`browser_navigate`(已等到加载完成)→ `browser_wait` 等目标元素渲染出来 → `browser_snapshot` 找到结果链接的选择器 → `browser_click` → `browser_screenshot` 确认 → `browser_type`/`browser_click` 填表。
+
+## MCP 行为约定
+
+- **服务器级 `instructions`**:随 `initialize` 下发给客户端,内含返回体约定、推荐工作流、工具选型与边界
+  (内部页面标签、插件工具动态增减、无 GPU 环境下截图可能为黑帧等),定义在 `src/main/mcp.ts` 的 `MCP_INSTRUCTIONS`。
+- **等待语义**:`navigate` / `search` / `new_tab` / `reload` / `back` / `forward` 默认 `waitUntil: 'load'`,
+  等到主文档 `did-finish-load` 才返回(失败或超时会带回 `error`);`browser_wait` 用于等异步渲染的具体元素。
+  返回体里的 `waited=false` 表示调用时页面已经就绪,并不代表这次没等待。
+  `browser_press_key` 的 `F5` / `Ctrl+R` 同样会等到重新加载完成;`browser_click` 默认不等待。
+- **错误标记**:所有工具返回 `{ok:false, ...}` 时,结果同时带 `isError: true`(`src/main/plugins/mcpResult.ts` 统一处理,
+  核心工具与插件工具一致),AI 无需解析 JSON 就能识别失败。页面脚本把失败放在 `result.error` 的情况
+  (如 `未找到选择器`)也已在 `src/main/actions.ts` 的 `lift()` 里提升为顶层失败。
+- **`createdTab`**:当活动标签是内部页面(如设置页)时,`navigate`/`search` 会另开新标签而不是就地导航,
+  返回体用 `createdTab: true` 标出,避免 AI 对标签状态产生错误预期。
 
 ## 手动使用快捷键
 
@@ -170,11 +280,17 @@ MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到
 ## MCP 冒烟测试
 
 ```bash
-npm run test:mcp   # 拉起 MCP 模式浏览器并自动跑关键流程(新标签→导航→快照→截图→搜索→点击→输入→书签→广告拦截统计)
+npm run test:mcp   # 拉起 MCP 模式浏览器并自动跑关键流程(instructions 下发→新标签等待加载→快照→等待原语/超时 isError→截图→搜索→点击→输入→书签→广告拦截统计)
 ```
 
 需要显示环境;Linux 缺 ALSA 时:`SMOKE_LD_LIBRARY_PATH=<目录> npm run test:mcp`。
 截图会保存到 `/tmp/mcp-shot.png`(可用 `SMOKE_SHOT_PATH` 覆盖)。
+无显示环境可用 `SMOKE_ELECTRON_ARGS=--ozone-platform=headless npm run test:mcp`,但导航仍需网络、
+截图可能为黑帧或空图,完整验证仍需真实桌面。
+
+无需显示环境的部分由 `npm test` 覆盖:`tests/mcpServer.test.ts` 用 `InMemoryTransport` + 假 TabManager
+与真实 `McpServer`/`Client` 握手,验证 instructions 下发、工具面与 schema、`waitUntil` 等待语义、
+失败一律 `isError`、内部页面标签边界与插件工具错误传播;`tests/mcpWait.test.ts` 单独覆盖等待原语。
 
 ## 架构速览
 
@@ -182,7 +298,8 @@ npm run test:mcp   # 拉起 MCP 模式浏览器并自动跑关键流程(新标�
 src/
   main/          主进程:窗口、TabManager(每标签 WebContentsView + 内部页面标签)、
                  通用 Overlay 浮层宿主(OverlayManager + overlay 页面注册表)、
-                 渲染入口解析(rendererEntry)、MCP 服务器、注入式页面操作执行器、JSON 存储、IPC
+                 渲染入口解析(rendererEntry)、MCP 服务器(stdio + 无状态 HTTP + instructions)、
+                 注入式页面操作执行器与等待原语、JSON 存储、IPC
   main/plugins/  插件内核:注册/启停编排、独立存储、IPC 路由、事件总线、建议合并、
                  网络钩子宿主、内容注入宿主、MCP 工具宿主
   plugins/<id>/  内置插件(自包含):main.ts(主进程侧)/ ui.ts + ui/*.vue(渲染层侧)

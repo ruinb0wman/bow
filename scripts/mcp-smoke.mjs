@@ -19,7 +19,9 @@ const root = join(__dirname, '..')
 
 const transport = new StdioClientTransport({
   command: process.env.ELECTRON_BIN || join(root, 'node_modules', '.bin', 'electron'),
-  args: ['.', '--no-sandbox'],
+  // 无显示环境(CI/容器)可传 SMOKE_ELECTRON_ARGS=--ozone-platform=headless,
+  // 但截图可能为黑帧或空图,完整验证仍需真实桌面。
+  args: ['.', '--no-sandbox', ...(process.env.SMOKE_ELECTRON_ARGS?.split(' ').filter(Boolean) ?? [])],
   cwd: root,
   env: {
     ...process.env,
@@ -30,9 +32,10 @@ const transport = new StdioClientTransport({
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-function assert(cond, msg) {
+function assert(cond, msg, detail) {
   if (!cond) {
     console.error('✗ 断言失败: ' + msg)
+    if (detail !== undefined) console.error('  ↳ 返回体: ' + JSON.stringify(detail))
     process.exitCode = 1
     throw new Error(msg)
   }
@@ -47,23 +50,32 @@ const { tools } = await client.listTools()
 const names = tools.map((t) => t.name)
 console.log(`✓ 工具数: ${names.length} -> ${names.join(', ')}`)
 assert(names.includes('browser_navigate') && names.includes('browser_screenshot'), '工具清单完整')
+assert(names.includes('browser_wait'), '等待工具 browser_wait 已注册')
 // 插件贡献的工具应随插件激活一并注册(书签插件 / 广告拦截参考插件)
 assert(names.includes('browser_add_bookmark'), '书签插件已贡献 MCP 工具')
 assert(names.includes('adblock_stats'), '广告拦截插件已贡献 MCP 工具')
 
-// 1. 新标签 + 导航
+// 0. 服务器级使用说明(instructions)应随 initialize 下发
+const instructions = client.getInstructions()
+assert(typeof instructions === 'string' && instructions.length > 200, 'instructions 已下发')
+assert(instructions.includes('isError') && instructions.includes('browser_wait'), 'instructions 含关键约定')
+console.log(`✓ instructions 已下发(${instructions.length} 字符)`)
+
+// 1. 新标签 + 导航(默认 waitUntil:'load',返回时已加载完成,无需额外 sleep)
 const nt = await client.callTool({ name: 'browser_new_tab', arguments: { url: 'https://example.com' } })
-const tabId = JSON.parse(nt.content[0].text).tabId
-console.log('✓ browser_new_tab → tab', tabId)
-assert(typeof tabId === 'number', '返回 tabId')
+const ntText = JSON.parse(nt.content[0].text)
+const tabId = ntText.tabId
+console.log(`✓ browser_new_tab → tab ${tabId}, waited=${ntText.waited}`)
+assert(typeof tabId === 'number', '返回 tabId', ntText)
+assert(nt.isError !== true, 'new_tab 不应报错', ntText)
+assert(ntText.waited === true, 'new_tab 默认应等待加载完成(waited=true)', ntText)
 
-await sleep(3500)
-
-// 2. 信息
+// 2. 信息(加载等待已生效:此时不应仍在 loading)
 const info = await client.callTool({ name: 'browser_get_info', arguments: { tabId } })
 const infoText = JSON.parse(info.content[0].text)
 console.log('✓ browser_get_info:', infoText.info?.url, '/', infoText.info?.title)
 assert(infoText.info?.url?.startsWith('https://'), '已加载页面')
+assert(infoText.info?.loading === false, '加载等待生效:loading 应为 false')
 
 // 2.5 浏览器签名:页面侧 UA 应为 bow,且无 Electron / window.process 泄漏
 const ua = await client.callTool({
@@ -107,6 +119,40 @@ const snap = await client.callTool({ name: 'browser_snapshot', arguments: { tabI
 const snapText = JSON.parse(snap.content[0].text)
 console.log(`✓ browser_snapshot: ${snapText.data?.elements?.length ?? 0} 个元素, title=${snapText.data?.title}`)
 assert(Array.isArray(snapText.data?.elements), '快照含元素列表')
+
+// 3.5 等待原语:browser_wait 等元素
+const wOk = await client.callTool({
+  name: 'browser_wait',
+  arguments: { tabId, selector: 'body', state: 'attached', timeoutMs: 5000 }
+})
+assert(wOk.isError !== true, 'browser_wait 等已存在元素应成功')
+console.log('✓ browser_wait 命中元素:', JSON.parse(wOk.content[0].text).selector)
+
+// 3.6 等待超时:应 ok=false 且在协议层标记 isError
+const wTimeout = await client.callTool({
+  name: 'browser_wait',
+  arguments: { tabId, selector: '#bow-definitely-not-here', timeoutMs: 500 }
+})
+const wTimeoutText = JSON.parse(wTimeout.content[0].text)
+assert(wTimeout.isError === true, 'browser_wait 超时应标记 isError')
+assert(wTimeoutText.ok === false, 'browser_wait 超时 ok 应为 false')
+console.log('✓ browser_wait 超时已标记 isError:', wTimeoutText.error)
+
+// 3.7 非法选择器应立即失败,不空等到超时
+const invalidStartedAt = Date.now()
+const invalidWait = await client.callTool({
+  name: 'browser_wait',
+  arguments: { tabId, selector: '>>bad>>', timeoutMs: 8000 }
+})
+const invalidMs = Date.now() - invalidStartedAt
+assert(invalidWait.isError === true, '非法选择器应标记 isError')
+assert(invalidMs < 3000, `非法选择器应立即失败,实际 ${invalidMs}ms`)
+console.log(`✓ browser_wait 非法选择器立即失败(${invalidMs}ms)`)
+
+// 3.8 失败的工具调用不再伪装成成功
+const badClick = await client.callTool({ name: 'browser_click', arguments: { tabId, selector: '#bow-nope' } })
+assert(badClick.isError === true, 'click 失败应标记 isError')
+console.log('✓ browser_click 失败已标记 isError:', JSON.parse(badClick.content[0].text).error)
 
 // 4. 截图(PNG image content)
 const shot = await client.callTool({ name: 'browser_screenshot', arguments: { tabId } })
@@ -181,8 +227,10 @@ console.log(`✓ browser_list_bookmarks: ${lbText.bookmarks.length} 条`)
 // 9. 广告拦截参考插件统计
 const ab = await client.callTool({ name: 'adblock_stats', arguments: {} })
 const abText = JSON.parse(ab.content[0].text)
-assert(typeof abText.blockedCount === 'number' && abText.ruleCount > 0, 'adblock_stats 返回统计')
-console.log(`✓ adblock_stats: 已拦截 ${abText.blockedCount} 次 / ${abText.ruleCount} 条规则(启用=${abText.enabled})`)
+assert(typeof abText.blockedCount === 'number' && abText.networkRuleCount + abText.cosmeticRuleCount > 0, 'adblock_stats 返回统计')
+console.log(
+  `✓ adblock_stats: 已拦截 ${abText.blockedCount} 次 / ${abText.networkRuleCount} 条网络规则 + ${abText.cosmeticRuleCount} 条元素规则(启用=${abText.enabled})`
+)
 
 // 10. 关标签
 const ct = await client.callTool({ name: 'browser_close_tab', arguments: { tabId } })

@@ -11,6 +11,8 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "mcp": "npm run build && MCP=stdio electron .",
+    "mcp:http": "npm run build && MCP_HTTP=1 electron .",
+    "mcp:install": "node scripts/install-pi-mcp.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
     "test:mcp": "node scripts/mcp-smoke.mjs"

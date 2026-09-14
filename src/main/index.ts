@@ -8,10 +8,11 @@ import { setupDevTools } from './devtools'
 import { setupTabShortcuts } from './tabShortcuts'
 import { loadRendererEntry } from './rendererEntry'
 import { startMcpServer, CORE_MCP_TOOL_NAMES } from './mcp'
+import { startMcpHttpServer } from './mcpHttp'
 import { applyBrowserIdentity } from './ua'
 import { PluginKernel } from './plugins/kernel'
 import { BUILTIN_PLUGINS } from './plugins/builtin'
-import { IS_MCP, log, logError } from './logger'
+import { IS_MCP, IS_MCP_STDIO, IS_MCP_HTTP, MCP_HTTP_PORT, MCP_HTTP_TOKEN, log, logError } from './logger'
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
@@ -43,8 +44,8 @@ let kernel: PluginKernel
 
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
 
-if (IS_MCP) {
-  // MCP 模式下禁止 Chromium 往 stdout 打日志,避免破坏协议帧
+if (IS_MCP_STDIO) {
+  // stdio 模式下禁止 Chromium 往 stdout 打日志,避免破坏协议帧
   app.commandLine.appendSwitch('disable-logging')
 }
 
@@ -166,11 +167,19 @@ app.whenReady().then(async () => {
 
   registerIpc(tabs, mainWindow, overlay, kernel)
 
-  if (IS_MCP) {
+  if (IS_MCP_STDIO) {
     startMcpServer({ tabs, kernel })
   }
+  if (IS_MCP_HTTP) {
+    startMcpHttpServer({ tabs, kernel }, { port: MCP_HTTP_PORT, token: MCP_HTTP_TOKEN })
+      .then((handle) => {
+        // HTTP 模式下 stdout 不承载协议,地址直接打到终端方便复制
+        console.log(`MCP HTTP 端点: ${handle.url}`)
+      })
+      .catch((e) => logError('MCP HTTP 启动失败', e instanceof Error ? e.message : e))
+  }
 
-  log('应用已启动', { mcp: IS_MCP, version: app.getVersion() })
+  log('应用已启动', { mcp: IS_MCP, http: IS_MCP_HTTP, version: app.getVersion() })
 })
 
 app.on('window-all-closed', () => {

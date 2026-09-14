@@ -1,0 +1,67 @@
+---
+name: bow-browser
+description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器能做的事:需要登录态/Cookie 的页面、SPA 或 JS 渲染的内容、真实点击与输入、视觉确认、读取页面 DOM。适用于抓取 fetch_content 拿不到的页面、验证前端交互、填表提交、截图核对。不适用于静态文档或公开 API —— 那些用 fetch_content 或 curl 更快更省。
+---
+
+# bow 浏览器(MCP 服务器 `browser`)
+
+本地 Electron 多标签浏览器,29 个工具;**你的每次操作用户都实时可见**,所以破坏性操作前先说明意图。
+
+## 第一步:确认工具怎么调
+
+| 情况 | 做法 |
+| --- | --- |
+| 工具列表里已有 `browser_*` | 直接调用 |
+| 只有一部分(常见:核心几个在,其余不在) | 在的直接调,不在的走下面的代理三步 |
+| 一个都没有(默认代理模式) | `mcp({search:"browser"})` → `mcp({describe:"<工具名>"})` → `mcp({tool:"<工具名>", args:{...}})` |
+
+**永远不要凭记忆猜参数** —— 代理模式下的 schema 不在上下文里。工具名可能被加了前缀(如 `bow_browser_navigate`),以实际列表为准。
+
+## 工具选型
+
+| 目标 | 用哪个 | 理由 |
+| --- | --- | --- |
+| 读结构化数据、批量取值 | `browser_eval` | 最省 token,一次拿回需要的字段 |
+| 定位可点/可输入元素 | `browser_snapshot` | 返回稳定 CSS 选择器,别自己猜 |
+| 判断样式、布局、视觉效果 | `browser_screenshot` | 只在需要肉眼判断时 |
+| 等异步渲染 | `browser_wait` | 等元素出现,而不是靠猜时长 |
+| 标签管理 | `browser_list_tabs` / `browser_new_tab` / `browser_switch_tab` | |
+
+## 标准工作流
+
+1. `browser_new_tab {url}` 或 `browser_navigate {url}` —— 默认 `waitUntil: 'load'`,返回时主文档已加载完。
+2. 异步内容(SPA、懒加载、无限滚动)用 `browser_wait {selector}` 等目标元素出现;**不要**用 sleep、也不要反复截图探路。
+3. `browser_snapshot {maxElements}` 拿到元素列表,然后**直接用它返回的 `selector`** 调 `browser_click` / `browser_type`。
+4. 这次点击会引发跳转时传 `waitUntil: 'load'`;SPA 内部交互保持默认 `'none'`,再 `browser_wait` 等具体元素。
+5. 收尾复验:`browser_eval` 取关键值,或 `browser_get_info` 看 URL/标题,别调完就不管了。
+
+## 参数速查
+
+- `waitUntil`:`'load'`(默认,等加载完)/ `'none'`(立即返回)
+- `waited`:返回体里的 `false` 表示调用时页面**已经**就绪,不代表这次没等待
+- `createdTab`:活动标签是 `bow://` 内部页(如设置页)时会另开标签 —— 一律以返回的 `tabId` 为准
+- `maxElements`:快照默认最多 200 个元素;页面很大时先调小定位,再按需扩大
+- `tabId`:省略则作用于活动标签(活动标签是内部页时会退到最近浏览的页面标签;都没有则自动新建 `about:blank`)
+- 超时:等加载 15s、等元素 10s,可用 `timeoutMs` 覆盖(上限 120s)
+- `browser_wait` 的 `state`:`attached` / `visible`(默认)/ `hidden` / `detached`
+
+## 必查
+
+每个返回体先看 `ok`。`ok:false` 时协议层同时带 `isError` —— **不要当成成功继续往下走**,先读 `error`。
+
+## 反模式
+
+- ❌ 手写 CSS 选择器 → ✅ 用 `browser_snapshot` 返回的 `selector`
+- ❌ 每次都全量快照 200 个元素 → ✅ 先小后大,必要时配合 `browser_eval` 精确定位
+- ❌ `navigate` 后立刻 `snapshot` 抓异步页 → ✅ 先 `browser_wait`
+- ❌ 用截图代替取值 → ✅ `browser_eval` 更省、更准
+- ❌ 页面没动就重复同一调用 → ✅ 先 `browser_wait`,或 `browser_get_info` 看 `loading`
+- ❌ 连续多次 `browser_new_tab` → ✅ 复用标签,用 `tabId` 指定目标
+
+## 边界与故障
+
+- `bow://` 内部页面标签(设置页等)不支持页面类工具,会明确拒绝;`browser_list_tabs` 用 `internal: true` 标出它们。
+- `adblock_*` 等插件工具在对应插件停用时会**从工具列表消失**,这不是故障 —— `bow://settings → 插件管理` 可重新启用。
+- 无 GPU 环境(ssh/CI 容器)截图可能是黑帧,别反复重试;导航、点击、快照、`browser_eval` 都正常。
+- 一个浏览器实例对应一个 MCP 连接,且应用没有单实例锁:**新会话前先关掉旧的浏览器窗口**,否则会多开。
+- 浏览器未启动 / 连接失败(HTTP 模式常见):先确认 `npm run mcp:http` 已在跑。

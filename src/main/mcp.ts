@@ -1,15 +1,28 @@
 /** MCP stdio 服务器:暴露 AI 操纵浏览器的工具 */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import type { RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { z } from 'zod'
-import type { SearchEngineId } from '@shared/types'
+import type { WebContents } from 'electron'
+import type { ActionResult, SearchEngineId } from '@shared/types'
 import { isHttpUrl, searchUrl } from '@shared/url'
 import type { TabManager } from './tabManager'
 import { getSettingsStore } from './stores'
 import type { PluginKernel } from './plugins/kernel'
+import type { McpToolSpec } from './plugins/mcpHost'
 import { imageContent, textContent } from './plugins/mcpResult'
-import { pageClick, pageSnapshot, pageScreenshot, pageScroll, pageType, pressKey } from './actions'
+import {
+  pageClick,
+  pageSnapshot,
+  pageScreenshot,
+  pageScroll,
+  pageType,
+  pressKey,
+  waitForLoad,
+  waitForSelector
+} from './actions'
 import { log, logError } from './logger'
 
 export type MCPDeps = { tabs: TabManager; kernel: PluginKernel }
@@ -33,15 +46,56 @@ export const CORE_MCP_TOOL_NAMES = [
   'browser_switch_tab',
   'browser_list_tabs',
   'browser_screenshot',
-  'browser_get_info'
+  'browser_get_info',
+  'browser_wait'
 ]
 
 const EngineSchema = z.enum(['google', 'duckduckgo', 'bing', 'baidu'])
 const DirectionSchema = z.enum(['up', 'down', 'top', 'bottom'])
+const WaitUntilSchema = z.enum(['load', 'none'])
+const WaitStateSchema = z.enum(['attached', 'visible', 'hidden', 'detached'])
 
-export function startMcpServer(deps: MCPDeps): void {
-  const { tabs, kernel } = deps
-  const server = new McpServer({ name: 'mcp-browser', version: '0.1.0' })
+const DEFAULT_LOAD_TIMEOUT_MS = 15_000
+const DEFAULT_SELECTOR_TIMEOUT_MS = 10_000
+
+/**
+ * 服务器级使用说明:随 initialize 下发给客户端(无需占用工具描述空间),
+ * 只写 schema 表达不了的东西——返回体约定、推荐工作流、工具选型与边界。
+ */
+export const MCP_INSTRUCTIONS = `这是一个真实的多标签浏览器窗口(应用名 bow),你的每次操作用户都实时可见。
+
+返回体约定
+- 所有工具都返回 JSON。先看 ok 字段;ok=false 表示失败(协议层已同时标记 isError),不要当成成功继续往下走。
+- 页面类工具默认作用于「活动标签」。若活动标签是浏览器内部页面(bow://settings,即 browser_list_tabs 里 internal: true),
+  会退到最近浏览过的页面标签;一个都没有时会自动新建 about:blank 标签——此时返回的 tabId 并不是你预期的那个,一切以返回值为准。
+
+推荐工作流
+1. browser_navigate / browser_search / browser_new_tab / browser_reload 默认已等到页面加载完成(waitUntil: 'load');
+   需要立刻返回就传 waitUntil: 'none'。返回值里 waited=false 表示调用时页面已经就绪。
+2. 页面内容若是异步渲染的(SPA、懒加载),用 browser_wait { selector } 等目标元素出现,
+   不要靠反复截图或盲目等待。
+3. 用 browser_snapshot 拿到元素后,直接使用它返回的 selector 调 browser_click / browser_type,
+   不要自己猜 CSS 选择器。快照默认最多 200 个元素;页面很大时先调小 maxElements 定位,需要更多再扩大。
+4. browser_click 默认不等待(适合 SPA 内的局部交互);若这次点击会触发跳转,传 waitUntil: 'load',
+   或随后用 browser_wait 等具体元素。
+
+工具选型
+- 读结构化数据、批量取值 → browser_eval(最省 token)
+- 定位可点 / 可输入元素 → browser_snapshot
+- 判断样式、布局、视觉效果 → browser_screenshot(无 GPU 的环境可能返回黑帧,此时不要反复重试)
+
+边界
+- bow:// 内部页面标签不支持页面类工具,会被明确拒绝。
+- 插件被停用后,它贡献的工具(如 adblock_*)会从工具列表消失,这不是故障;可在 bow://settings 的「插件管理」重新启用。
+- browser_press_key 的 Ctrl+T / Ctrl+W 直接操作标签页,不等同于网页内的按键。`
+
+/** 构建一个注册好全部核心工具的 MCP 服务器(插件工具由调用方按传输方式接入) */
+export function buildBrowserServer(deps: MCPDeps): McpServer {
+  const { tabs } = deps
+  const server = new McpServer(
+    { name: 'mcp-browser', version: '0.1.0' },
+    { instructions: MCP_INSTRUCTIONS }
+  )
 
   // 当前操作目标视图:可指定 tabId,默认取活动标签(活动标签是内部页面时退到最近浏览的页面标签);
   // 内部页面标签(如 bow://settings)持有应用 preload,一律不作为页面工具的操作目标。
@@ -62,26 +116,57 @@ export function startMcpServer(deps: MCPDeps): void {
     return { view: hit, fail: null }
   }
 
+  /** 取标签页的 WebContents(等待类工具用) */
+  const wcOf = (tabId: number): WebContents | null => tabs.getView(tabId)?.view.webContents ?? null
+
+  /** 等到指定标签加载完成;拿不到视图时返回失败体 */
+  const loadFor = async (tabId: number, timeoutMs: number): Promise<ActionResult> => {
+    const wc = wcOf(tabId)
+    if (!wc) return { ok: false, error: `标签 ${tabId} 不存在` }
+    return waitForLoad(wc, timeoutMs)
+  }
+
+  /** 加载等待结果的统一回执:失败直接带 error,成功带 waited 供模型判断是否真的等了 */
+  const loadFields = (res: ActionResult): Record<string, unknown> =>
+    res.ok ? { waited: res.waited, loadedUrl: res.url } : { error: res.error }
+
   server.tool(
     'browser_navigate',
-    { url: z.string().describe('http(s) 地址') },
-    async ({ url }) => {
+    {
+      url: z.string().describe('http(s) 地址'),
+      waitUntil: WaitUntilSchema.default('load').describe("'load' 等到页面加载完成(默认);'none' 立即返回"),
+      timeoutMs: z.number().int().positive().optional().describe('waitUntil=load 时的超时毫秒数,默认 15000')
+    },
+    async ({ url, waitUntil, timeoutMs }) => {
       if (!isHttpUrl(url)) return textContent({ ok: false, error: 'navigate 仅接受 http/https 地址' })
       // 活动标签是设置等内部页面时另开新标签(内部页面不可被导航走)
+      const activeBefore = tabs.getActiveView()
       const tab = tabs.openUrl(url)
-      return textContent({ ok: true, url, tabId: tab.id })
+      const createdTab = tab.id !== activeBefore?.info.id
+      if (waitUntil === 'none') return textContent({ ok: true, url, tabId: tab.id, createdTab })
+      const res = await loadFor(tab.id, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS)
+      return textContent({ ok: res.ok, url, tabId: tab.id, createdTab, ...loadFields(res) })
     }
   )
 
   server.tool(
     'browser_search',
-    { query: z.string(), engine: EngineSchema.optional() },
-    async ({ query, engine }) => {
+    {
+      query: z.string(),
+      engine: EngineSchema.optional(),
+      waitUntil: WaitUntilSchema.default('load').describe("'load' 等到页面加载完成(默认);'none' 立即返回"),
+      timeoutMs: z.number().int().positive().optional()
+    },
+    async ({ query, engine, waitUntil, timeoutMs }) => {
       const settings = getSettingsStore().get()
       const engineId: SearchEngineId = engine ?? settings.searchEngine
       const url = searchUrl(engineId, query)
+      const activeBefore = tabs.getActiveView()
       const tab = tabs.openUrl(url)
-      return textContent({ ok: true, engine: engineId, url, tabId: tab.id })
+      const createdTab = tab.id !== activeBefore?.info.id
+      if (waitUntil === 'none') return textContent({ ok: true, engine: engineId, url, tabId: tab.id, createdTab })
+      const res = await loadFor(tab.id, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS)
+      return textContent({ ok: res.ok, engine: engineId, url, tabId: tab.id, createdTab, ...loadFields(res) })
     }
   )
 
@@ -117,17 +202,52 @@ export function startMcpServer(deps: MCPDeps): void {
   )
 
   server.tool(
-    'browser_click',
-    { selector: z.string().describe('CSS 选择器'), tabId: z.number().optional() },
-    async ({ selector, tabId }) => {
+    'browser_wait',
+    {
+      tabId: z.number().optional(),
+      selector: z.string().optional().describe('CSS 选择器;省略则等待页面加载完成'),
+      state: WaitStateSchema.default('visible').describe(
+        'attached/visible/hidden/detached;仅在有 selector 时生效'
+      ),
+      timeoutMs: z.number().int().positive().max(120_000).optional().describe('默认:等元素 10000,等加载 15000')
+    },
+    async ({ tabId, selector, state, timeoutMs }) => {
       const { view, fail } = target(tabId)
       if (!view) return textContent({ ok: false, error: fail })
+      const id = view.info.id
+      const wc = view.view.webContents
+      if (selector) {
+        const res = await waitForSelector(wc, selector, state, timeoutMs ?? DEFAULT_SELECTOR_TIMEOUT_MS)
+        return textContent(
+          res.ok
+            ? { ok: true, tabId: id, selector, state, waited: true }
+            : { ok: false, tabId: id, selector, state, error: res.error }
+        )
+      }
+      const res = await waitForLoad(wc, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS)
+      return textContent({ ok: res.ok, tabId: id, ...loadFields(res) })
+    }
+  )
+
+  server.tool(
+    'browser_click',
+    {
+      selector: z.string().describe('CSS 选择器'),
+      tabId: z.number().optional(),
+      waitUntil: WaitUntilSchema.default('none').describe(
+        "'none' 点完即返回(默认,适合 SPA 内局部交互);'load' 等到点击引发的跳转加载完成"
+      ),
+      timeoutMs: z.number().int().positive().optional()
+    },
+    async ({ selector, tabId, waitUntil, timeoutMs }) => {
+      const { view, fail } = target(tabId)
+      if (!view) return textContent({ ok: false, error: fail })
+      const id = view.info.id
       const res = await pageClick(view.view.webContents, selector)
-      return textContent(
-        res.ok
-          ? { ok: true, tabId: view.info.id, selector, result: res }
-          : { ok: false, tabId: view.info.id, error: res.error }
-      )
+      if (!res.ok) return textContent({ ok: false, tabId: id, error: res.error })
+      if (waitUntil !== 'load') return textContent({ ok: true, tabId: id, selector, result: res })
+      const load = await waitForLoad(view.view.webContents, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS)
+      return textContent({ ok: load.ok, tabId: id, selector, result: res, ...loadFields(load) })
     }
   )
 
@@ -155,7 +275,7 @@ export function startMcpServer(deps: MCPDeps): void {
   server.tool(
     'browser_press_key',
     {
-      key: z.string().describe('按键,如 Enter / Tab / Escape / ArrowDown / Ctrl+W / F5'),
+      key: z.string().describe('按键,如 Enter / Tab / Escape / ArrowDown / Ctrl+W / F5;F5 与 Ctrl+R 会等到重新加载完成'),
       tabId: z.number().optional()
     },
     async ({ key, tabId }) => {
@@ -164,7 +284,8 @@ export function startMcpServer(deps: MCPDeps): void {
       const low = key.toLowerCase()
       if (low === 'f5' || low === 'ctrl+r' || low === 'control+r') {
         tabs.reload(view.info.id)
-        return textContent({ ok: true, key })
+        const res = await waitForLoad(view.view.webContents, DEFAULT_LOAD_TIMEOUT_MS)
+        return textContent({ ok: res.ok, tabId: view.info.id, key, ...loadFields(res) })
       }
       if (low === 'ctrl+w' || low === 'control+w') {
         tabs.close(view.info.id)
@@ -200,28 +321,72 @@ export function startMcpServer(deps: MCPDeps): void {
     }
   )
 
-  const histories: Array<{ name: string; fn: (id: number) => void }> = [
+  // 后退/前进会引发导航,默认等到加载完成;stop 无等待语义
+  const navigations: Array<{ name: string; fn: (id: number) => void }> = [
     { name: 'browser_back', fn: (id) => tabs.back(id) },
-    { name: 'browser_forward', fn: (id) => tabs.forward(id) },
-    { name: 'browser_reload', fn: (id) => tabs.reload(id) },
-    { name: 'browser_stop', fn: (id) => tabs.stop(id) }
+    { name: 'browser_forward', fn: (id) => tabs.forward(id) }
   ]
-  for (const { name, fn } of histories) {
-    server.tool(name, { tabId: z.number().optional() }, async ({ tabId }) => {
+  for (const { name, fn } of navigations) {
+    server.tool(
+      name,
+      {
+        tabId: z.number().optional(),
+        waitUntil: WaitUntilSchema.default('load').describe("'load' 等到页面加载完成(默认);'none' 立即返回"),
+        timeoutMs: z.number().int().positive().optional()
+      },
+      async ({ tabId, waitUntil, timeoutMs }) => {
+        const { view, fail } = target(tabId)
+        if (!view) return textContent({ ok: false, error: fail })
+        const id = view.info.id
+        fn(id)
+        if (waitUntil === 'none') return textContent({ ok: true, tabId: id })
+        const res = await waitForLoad(view.view.webContents, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS)
+        return textContent({ ok: res.ok, tabId: id, ...loadFields(res) })
+      }
+    )
+  }
+
+  server.tool('browser_stop', { tabId: z.number().optional() }, async ({ tabId }) => {
+    const { view, fail } = target(tabId)
+    if (!view) return textContent({ ok: false, error: fail })
+    tabs.stop(view.info.id)
+    return textContent({ ok: true, tabId: view.info.id })
+  })
+
+  server.tool(
+    'browser_reload',
+    {
+      tabId: z.number().optional(),
+      waitUntil: WaitUntilSchema.default('load').describe("'load' 等到重新加载完成(默认);'none' 立即返回"),
+      timeoutMs: z.number().int().positive().optional()
+    },
+    async ({ tabId, waitUntil, timeoutMs }) => {
       const { view, fail } = target(tabId)
       if (!view) return textContent({ ok: false, error: fail })
-      fn(view.info.id)
-      return textContent({ ok: true, tabId: view.info.id })
-    })
-  }
+      const id = view.info.id
+      tabs.reload(id)
+      if (waitUntil === 'none') return textContent({ ok: true, tabId: id })
+      const res = await waitForLoad(view.view.webContents, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS)
+      return textContent({ ok: res.ok, tabId: id, ...loadFields(res) })
+    }
+  )
 
   server.tool(
     'browser_new_tab',
-    { url: z.string().optional(), activate: z.boolean().default(true) },
-    async ({ url, activate }) => {
+    {
+      url: z.string().optional(),
+      activate: z.boolean().default(true),
+      waitUntil: WaitUntilSchema.default('load').describe("'load' 等到页面加载完成(默认);'none' 立即返回"),
+      timeoutMs: z.number().int().positive().optional()
+    },
+    async ({ url, activate, waitUntil, timeoutMs }) => {
       if (url && !isHttpUrl(url)) return textContent({ ok: false, error: 'new_tab 仅接受 http/https 地址' })
       const t = tabs.create(url ?? 'about:blank', activate)
-      return textContent({ ok: true, tabId: t.id, url: t.url })
+      // 新建标签的 info.url 要等 did-navigate 才更新,这里先回显请求地址,完成后的真实地址在 loadedUrl
+      const requested = url ?? 'about:blank'
+      if (!url || waitUntil === 'none') return textContent({ ok: true, tabId: t.id, url: requested })
+      const res = await loadFor(t.id, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS)
+      return textContent({ ok: res.ok, tabId: t.id, url: requested, ...loadFields(res) })
     }
   )
 
@@ -267,18 +432,40 @@ export function startMcpServer(deps: MCPDeps): void {
     return textContent({ ok: true, info: view.info })
   })
 
-  // 插件工具:内核已缓冲全部声明(MCP 模式启动前插件已激活),此处统一注册并回交句柄
-  kernel.mcp.attach((spec) =>
-    // 插件侧 config.inputSchema 为 zod raw shape;SDK 的重载推导在此处无收益,直接放宽
-    (server.registerTool as any)(spec.name, spec.config, spec.handler)
-  )
+  return server
+}
 
-  const transport = new StdioServerTransport()
-  server
-    .connect(transport)
-    .then(() => log('MCP 服务器已连接(stdin/stdout)'))
+/** 把插件声明的工具接入某个服务器实例 */
+function registerPluginTools(server: McpServer, kernel: PluginKernel, mode: 'attach' | 'snapshot'): void {
+  // 插件侧 config.inputSchema 为 zod raw shape;SDK 的重载推导在此处无收益,直接放宽
+  const register = (spec: McpToolSpec): RegisteredTool =>
+    (server.registerTool as any)(spec.name, spec.config, spec.handler)
+  // stdio:内核缓冲声明时回交句柄,插件停用时可热移除
+  if (mode === 'attach') kernel.mcp.attach(register)
+  // HTTP 无状态:每个请求都是新实例,直接从声明快照注册(插件启停自然在下一次请求生效)
+  else for (const spec of kernel.mcp.listSpecs()) register(spec)
+}
+
+/**
+ * stdio 模式:单实例长连接。
+ * 传输层可注入(测试用 InMemoryTransport 注入,无需真实 stdio 与显示环境)。
+ */
+export function startMcpServer(deps: MCPDeps, transport?: Transport): Promise<void> {
+  const server = buildBrowserServer(deps)
+  registerPluginTools(server, deps.kernel, 'attach')
+  const link = transport ?? new StdioServerTransport()
+  return server
+    .connect(link)
+    .then(() => log('MCP 服务器已连接'))
     .catch((e) => {
       logError('MCP 服务器启动失败', e instanceof Error ? e.message : e)
       process.exit(1)
     })
+}
+
+/** HTTP 无状态模式:每个请求新建实例(插件工具取声明快照) */
+export function createStatelessServer(deps: MCPDeps): McpServer {
+  const server = buildBrowserServer(deps)
+  registerPluginTools(server, deps.kernel, 'snapshot')
+  return server
 }
