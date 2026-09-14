@@ -17,15 +17,64 @@
 ```bash
 npm install
 npm run dev        # 开发(HMR)
-npm run build      # 构建到 out/
+npm run build      # 只编译 main / preload / renderer 到 out/(不产出可双击的应用)
+npm run dist       # 编译 + 打包成 dist/win-unpacked/bow.exe(需在 Windows 侧跑,见下文)
 npm run mcp        # 构建后以 stdio MCP 模式启动(供 AI 工具以子进程方式拉起)
-npm run mcp:http   # 构建后以 HTTP MCP 模式常驻(监听 127.0.0.1,多客户端可共享)
+npm run mcp:http   # 构建后以 HTTP MCP 模式常驻(强制模式;普通启动也默认开启,见下文)
+npm run test:mcp   # 真机冒烟测试(自己拉起浏览器)
+npm run test:mcp:http  # 真机冒烟测试(连已常驻的 HTTP 浏览器)
+node scripts/open-bow.mjs http --dry-run   # 只看 HTTP 模式将注入的环境变量与端点
 npm run mcp:install -- --help   # 把浏览器 MCP 写进 pi 的配置(幂等、可回滚)
 npm test           # 单元测试
 npm run typecheck  # 类型检查
 ```
 
+## 打包成 bow.exe
+
+`npm run build`(`electron-vite build`)**只是编译** —— 它把主进程 / preload / 渲染层编译到 `out/`,
+产物仍需要 `node_modules` 里的 electron 才能跑。产出可双击的应用要用 electron-builder:
+
+```powershell
+# 必须在 Windows 侧执行(从 Linux/WSL 打 Windows 包需要 wine,用于改写 exe 图标与版本信息)
+npm run dist
+```
+
+产物:`dist/win-unpacked/bow.exe`,自带 Electron 运行时,不依赖仓库与 `node_modules`。
+`dist/` 已在 `.gitignore` 里。
+
+关于数据目录:**打包版与开发版共用同一份 userData**。`main/ua.ts` 的 `applyBrowserIdentity()`
+会把 userData 钉到旧目录名 `mcp-browser`(不跟随 productName),所以书签、历史、插件开关都不会丢。
+
+### 两个容易踩的坑
+
+1. **镜像**。electron-builder 除了 Electron 发行包,还要下 nsis / winCodeSign 工具链,
+   后者默认走 GitHub、国内经常拿不下来。`scripts/dist.mjs` 会自动注入
+   `ELECTRON_MIRROR` 与 `ELECTRON_BUILDER_BINARIES_MIRROR`(读 `.npmrc` 的 `electron_mirror`,
+   否则回落到 npmmirror),所以 `npm run dist` 在 PowerShell / cmd / Git Bash 下都能用 ——
+   **不要**自己写成 `ELECTRON_MIRROR=... electron-builder`,Windows 的 cmd 不认内联赋值。
+2. **外部化依赖**。electron-vite 默认外部化依赖,主进程 bundle 里留的是
+   `require("@modelcontextprotocol/sdk/...")`、`require("zod")`,这些包必须原样出现在
+   `app.asar` 的 `node_modules` 里,否则 `bow.exe` 双击后一闪即退(崩在主进程,窗口都不弹)。
+   electron-builder 会把**生产依赖闭包**自动打进去(`devDependencies` 不会);
+   `npm run dist` 最后一步的 `scripts/verify-dist.mjs` 会从 bundle 里扫出实际的外部 require
+   再逐个核对,不齐就直接失败。
+
+```bash
+node scripts/verify-dist.mjs            # 单独重跑产物自检(自动找 dist/<平台>-unpacked/resources/app.asar)
+node scripts/dist.mjs -- --win portable # 试别的 target
+```
+
+### 单实例
+
+普通启动带单实例锁:重复双击只会把已有窗口带到前台,不会再开一个浏览器
+(否则两个实例都想占 MCP HTTP 端口)。**例外是 `MCP=stdio`** —— 那种模式下浏览器是 MCP 客户端的子进程,
+必须允许与常驻实例并存,否则子进程一启动就退出、客户端的 stdio 连接直接断(`npm run test:mcp` 也会莫名其妙失败)。
+
 ## 给 AI 工具配置 MCP
+
+> **跨平台启动**:两个 MCP 启动脚本都经由 `scripts/open-bow.mjs` 设置环境变量。
+> 不要自己写 `MCP_HTTP=1 electron .` 这种内联赋值 —— Windows 的 PowerShell / cmd 不认,
+> 会把 `MCP_HTTP` 当成命令名报错(`'MCP_HTTP' is not recognized as …`)。
 
 两种传输,按需要选:
 
@@ -40,7 +89,7 @@ npm run typecheck  # 类型检查
 
 ```bash
 npm run mcp:install                  # stdio 版:pi 自动拉起浏览器
-npm run mcp:install -- --http        # HTTP 版:需先 npm run mcp:http
+npm run mcp:install -- --http        # HTTP 版:连常驻端点(它默认就开着,无需先跑 mcp:http)
 npm run mcp:install -- --direct-core # 额外把核心 5 个工具提升为 pi 原生工具
 npm run mcp:install -- --tool-prefix none  # 同时把 settings.toolPrefix 设为 none
 npm run mcp:install -- --dry-run     # 只看会写入什么
@@ -126,32 +175,64 @@ browser 那半边一条命令就能装好:`npm run mcp:install -- --direct-core 
 MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到。stdio 模式下 AI 断开连接后浏览器保持运行,
 可继续手动使用;但**再开新会话前建议先关掉旧浏览器窗口**,否则会多开一个(应用没有单实例锁)。
 
-### HTTP 模式的安全姿态
+### HTTP 模式的开启方式
 
-这个端点能执行页面 JS、读任意页面内容,因此默认只做本地防护:
+HTTP 端点由内置插件「MCP HTTP 服务」提供,**默认开启** —— 只要 bow 正常启动,端点就在监听,
+不需要额外命令行参数。关掉它就在「设置页 → 插件管理」停用该插件(端口/令牌在插件的设置分区里改)。
 
-- 只监听 **127.0.0.1**,不对外暴露;
-- 开启 DNS rebinding 防护并限定 `Host` 白名单,防止网页脚本打到本机端口;
-- 可选 Bearer 令牌:设了 `MCP_HTTP_TOKEN` 后所有请求必须带 `Authorization: Bearer <token>`。
+例外:`MCP=stdio`(`npm run mcp`,即被 AI 工具当子进程拉起)时不会自动开端点 ——
+那种模式下浏览器是子进程,再开一个端点只会和常驻实例抢 8765。要在这个模式下也开就显式传 `MCP_HTTP=1`。
+
+`MCP_HTTP=1` 是**强制模式**(脚本/CI 用),优先级高于插件开关;
+强制模式启的实例不会被插件开关关掉。两条路径共用同一份监听,先起者赢,不会撞端口。
 
 ```bash
-MCP_HTTP=1 MCP_HTTP_PORT=8765 MCP_HTTP_TOKEN=<随机串> npm run mcp:http
+# Git Bash / WSL / macOS / Linux
+MCP_HTTP=1 npm run mcp:http
+
+# Windows PowerShell(PowerShell 不认识内联赋值,但这套写法是原生支持的)
+$env:MCP_HTTP='1'; npm run mcp:http
+
+# 其实上面的环境变量早已由启动器注入,所以直接跑就行
+npm run mcp:http
 ```
 
 对应地在 MCP 配置里加 `"headers": {"Authorization": "Bearer <随机串>"}`(`mcp:install --http --token <串>` 会替你写)。
+
+### 浏览器与 AI 不在同一台机器(WSL2 → Windows)
+
+HTTP 端点只监听回环地址,所以跨「Windows 浏览器 + WSL2 里的 agent」需要 **WSL2 镜像网络**:
+
+```ini
+# C:\Users\<你>\.wslconfig
+[wsl2]
+networkingMode=Mirrored
+```
+
+改完执行 `wsl --shutdown` 重启 WSL 生效。镜像模式下两边共享 `127.0.0.1`,所以
+`http://127.0.0.1:8765/mcp` 在 WSL2 里直接可用,不需要改绑定地址。
+
+⚠️ 镜像模式意味着 **WSL2 与 Windows 共享回环**:不加令牌时,两侧任何本地进程都能控制这个浏览器。
+对不可信的本地环境,设 `MCP_HTTP_TOKEN` 并在 MCP 配置里加同值 `headers`。
+常驻浏览器如果被关闭,AI 侧只需重新连接,不需要重启会话。
+
+```bash
+# 跨主机验证:在 WSL2 里跑,连 Windows 上的常驻浏览器
+npm run test:mcp:http
+```
 
 ## MCP 工具一览
 
 | 工具 | 说明 |
 | --- | --- |
-| `browser_navigate {url, waitUntil?, timeoutMs?}` | 当前标签跳转(仅 http/https);默认等到加载完成 |
-| `browser_search {query, engine?, waitUntil?, timeoutMs?}` | 用默认或指定引擎搜索;默认等到加载完成 |
+| `browser_navigate {url, tabId?, waitUntil?, timeoutMs?}` | 导航(仅 http/https);传 `tabId` 就地导航该标签,省略则作用于活动标签;默认等到加载完成 |
+| `browser_search {query, engine?, tabId?, waitUntil?, timeoutMs?}` | 用默认或指定引擎搜索;`tabId` 语义同 `navigate`;默认等到加载完成 |
 | `browser_wait {tabId?, selector?, state?, timeoutMs?}` | 等页面加载完成(省略 selector)或等元素达到 attached/visible/hidden/detached 状态 |
 | `browser_eval {code, tabId?}` | 在页面上下文执行任意 JavaScript,返回最后一个表达式的值 |
 | `browser_snapshot {tabId?, maxElements?}` | 页面可操作元素快照(title/url + 可点击输入元素列表,含稳定 CSS 选择器) |
 | `browser_click {selector, tabId?, waitUntil?, timeoutMs?}` | 点击元素(注入真实事件序列);默认不等待,点击会跳转时传 `waitUntil: 'load'` |
 | `browser_type {selector?, text, clear?, tabId?}` | 输入文字(React 兼容),省略 selector 输入到当前聚焦元素 |
-| `browser_press_key {key, tabId?}` | 按键:Enter / Tab / Escape / ArrowDown / Ctrl+W / F5 等;F5 与 Ctrl+R 会等到重新加载完成 |
+| `browser_press_key {key, tabId?, waitUntil?, timeoutMs?}` | 按键:Enter / Tab / Escape / ArrowDown / Ctrl+W / F5 等;返回 `ok` 仅代表事件已投递,按键会触发跳转时传 `waitUntil: 'load'`;F5 与 Ctrl+R 会等到重新加载完成 |
 | `browser_scroll {direction, selector?, amount?, tabId?}` | 滚动页面或元素 |
 | `browser_back / forward {tabId?, waitUntil?}` | 后退/前进(默认等到加载完成) |
 | `browser_reload {tabId?, waitUntil?}` / `browser_stop {tabId?}` | 刷新(默认等到加载完成) / 停止加载 |
@@ -176,11 +257,18 @@ MCP_HTTP=1 MCP_HTTP_PORT=8765 MCP_HTTP_TOKEN=<随机串> npm run mcp:http
   等到主文档 `did-finish-load` 才返回(失败或超时会带回 `error`);`browser_wait` 用于等异步渲染的具体元素。
   返回体里的 `waited=false` 表示调用时页面已经就绪,并不代表这次没等待。
   `browser_press_key` 的 `F5` / `Ctrl+R` 同样会等到重新加载完成;`browser_click` 默认不等待。
+  `browser_press_key` 默认不等待(`waitUntil: 'none'`):它返回 `ok` 只说明按键已投递给渲染进程,
+  不代表网页已处理完(如回车提交表单引发的跳转可能稍后才落地);需要跟随后续状态就传 `waitUntil: 'load'`
+  或接一个 `browser_wait`。
+- **未知参数**:所有核心工具的 schema 都是 strict 的,未知/拼错的参数会直接报 `isError` 并回显本工具接受的参数名,
+  不会被静默丢弃(`src/main/mcp.ts` 的 `tool()` helper)。插件工具走各自的声明路径,不在此列。
 - **错误标记**:所有工具返回 `{ok:false, ...}` 时,结果同时带 `isError: true`(`src/main/plugins/mcpResult.ts` 统一处理,
   核心工具与插件工具一致),AI 无需解析 JSON 就能识别失败。页面脚本把失败放在 `result.error` 的情况
   (如 `未找到选择器`)也已在 `src/main/actions.ts` 的 `lift()` 里提升为顶层失败。
 - **`createdTab`**:当活动标签是内部页面(如设置页)时,`navigate`/`search` 会另开新标签而不是就地导航,
   返回体用 `createdTab: true` 标出,避免 AI 对标签状态产生错误预期。
+  传了 `tabId` 时不会另开标签(`createdTab` 恒为 `false`);`tabId` 指向内部页面标签会被拒绝,
+  不存在的 `tabId` 报 `标签 N 不存在`。
 
 ## 手动使用快捷键
 
@@ -215,9 +303,25 @@ MCP_HTTP=1 MCP_HTTP_PORT=8765 MCP_HTTP_TOKEN=<随机串> npm run mcp:http
 
 ## 插件体系
 
-书签、历史、CORS 放行、元素全屏都是内置插件;广告/追踪拦截是参考插件。插件是**仓库内编译期模块**(无动态代码执行),
+书签、历史、CORS 放行、元素全屏、MCP HTTP 服务都是内置插件;广告/追踪拦截是参考插件。插件是**仓库内编译期模块**(无动态代码执行),
 可在「设置页 → 插件管理」里运行时启停(无需重启),状态持久化到 `plugins.json`;停用时内核自动回收其 IPC、
 建议源、MCP 工具、网络钩子与已注入 CSS。
+
+MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生在窗口/标签创建**之前**,
+碰不到 TabManager,所以真正的监听由内核的 `McpHttpHost` 持有,
+插件只在收到 `mcp-http:ready`(内核注入运行时依赖后触发)时做启停决策 —— 与 `setTabProvider` / `setPageApi`
+是同一个时序契约。新增服务型插件请沿用这条路径。
+
+### HTTP 模式的安全姿态
+
+这个端点能执行页面 JS、读任意页面内容,因此默认只做本地防护:
+
+- 只监听 **127.0.0.1**,不对外暴露;
+- 开启 DNS rebinding 防护并限定 `Host` 白名单,防止网页脚本打到本机端口;
+- 可选 Bearer 令牌:设了 `MCP_HTTP_TOKEN`(或插件设置里的令牌)后所有请求必须带 `Authorization: Bearer <token>`。
+
+⚠️ 端点默认开启且无令牌 —— 本机任何进程都能控制这个浏览器(包括登录态)。
+在意的话就在插件设置里填一个令牌,并把同值写进 AI 侧的 MCP 配置。
 
 | 扩展点 | 用途 | 现有用例 |
 | --- | --- | --- |
