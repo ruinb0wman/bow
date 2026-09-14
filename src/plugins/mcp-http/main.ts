@@ -3,27 +3,17 @@
  *
  * 默认开启 —— 插件启用状态存在 plugins.json 的 disabled 列表里,不在列表里即启用。
  * 真正的监听由内核的 McpHttpHost 持有(插件 activate 早于窗口创建,拿不到 TabManager),
- * 本插件只负责三件事:端口/令牌的持久化、依赖就绪后的启动决策、把运行状态经 IPC 交给设置页。
+ * 本插件只负责四件事:端口/令牌的持久化、依赖就绪后的启动决策、把运行状态经 IPC 交给设置页,
+ * 以及为地址栏状态灯提供「当前是否正在被调用」(订阅内核的 MCP 活动计数)。
  *
  * 与 `MCP_HTTP=1` 环境变量的关系:环境变量是强制模式,先起者赢(宿主内部幂等);
  * 且环境变量启动的实例不受本插件开关支配 —— 关掉插件不会把运维强制开的端点关掉。
  */
 
-import type { McpHttpStatus } from '../../main/plugins/mcpHttpHost'
+import type { McpHttpState, McpHttpSettings } from './shared'
 import type { PluginContext, PluginMain } from '../../main/plugins/types'
 
 const DEFAULT_PORT = 8765
-
-interface McpHttpSettings {
-  port: number
-  token: string
-}
-
-interface McpHttpState {
-  settings: McpHttpSettings
-  status: McpHttpStatus
-  defaultPort: number
-}
 
 /** 端口归一:非法/越界值回落到默认端口,避免把 NaN 写进存储后再也起不来 */
 function normalizePort(input: unknown): number {
@@ -50,7 +40,8 @@ const plugin: PluginMain = {
     const state = (): McpHttpState => ({
       settings: store.get(),
       status: ctx.service.mcpHttp.status(),
-      defaultPort: DEFAULT_PORT
+      defaultPort: DEFAULT_PORT,
+      activity: ctx.service.activity.snapshot()
     })
     const announce = (): McpHttpState => {
       const s = state()
@@ -73,6 +64,11 @@ const plugin: PluginMain = {
     // 重新启用时(如设置页先停用再开)内核依赖早已就绪,ready 事件不会再来一次,
     // 所以这里补一次即时启动;两条路径都幂等,不会重复监听。
     if (ctx.service.mcpHttp.status().ready) void start()
+
+    // MCP 调用活动变化 → 重播完整状态,地址栏状态灯据此在「就绪/调用中」间切换
+    ctx.service.activity.onChange(() => {
+      announce()
+    })
 
     ctx.ipc.handle('getState', (): McpHttpState => state())
 
@@ -97,6 +93,27 @@ const plugin: PluginMain = {
       const { port, token } = store.get()
       const status = await ctx.service.mcpHttp.restart({ port, token: token || undefined })
       if (status.error) ctx.logError('MCP HTTP 重启失败', status.error)
+      return announce()
+    })
+
+    /**
+     * 地址栏状态灯点击:在「停用 / 启用」端点之间切换。
+     * 只动 HTTP 端点,插件的启用状态不变(设置页分区与已声明的 MCP 工具都保留)。
+     * 环境变量强制开启的实例停不掉 —— stop() 会原样返回 running 状态,这里如实回播。
+     */
+    ctx.ipc.handle('toggle', async (): Promise<McpHttpState> => {
+      const before = ctx.service.mcpHttp.status()
+      if (before.running) {
+        const next = await ctx.service.mcpHttp.stop()
+        if (next.running) ctx.log('MCP HTTP 由环境变量强制开启,插件停不掉')
+        else ctx.log('MCP HTTP 端点已由状态灯停用')
+        return announce()
+      }
+      if (!before.ready) return announce() // 依赖未就绪,无从启动
+      const { port, token } = store.get()
+      const next = await ctx.service.mcpHttp.start({ port, token: token || undefined })
+      if (next.error) ctx.logError('MCP HTTP 启动失败', next.error)
+      else ctx.log('MCP HTTP 端点已由状态灯启用', next.url)
       return announce()
     })
   },

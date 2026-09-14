@@ -7,22 +7,7 @@
  */
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { RefreshCw } from 'lucide-vue-next'
-
-interface McpHttpStatus {
-  ready: boolean
-  running: boolean
-  port?: number
-  url?: string
-  token?: boolean
-  forced?: boolean
-  error?: string
-}
-
-interface McpHttpState {
-  settings: { port: number; token: string }
-  status: McpHttpStatus
-  defaultPort: number
-}
+import type { McpHttpState } from '../shared'
 
 const api = window.browserAPI
 const state = ref<McpHttpState | null>(null)
@@ -82,7 +67,7 @@ onBeforeUnmount(() => {
         监听中 · {{ state.status.url }}
       </template>
       <template v-else-if="!state?.status.ready">等待浏览器就绪</template>
-      <template v-else>未运行(插件已停用或启动失败)</template>
+      <template v-else>未运行(已停用或启动失败)</template>
       <span v-if="state?.status.forced" class="mcp-badge" title="由 MCP_HTTP 环境变量强制开启">强制</span>
     </span>
   </div>
@@ -117,7 +102,8 @@ onBeforeUnmount(() => {
     <div class="pbm-tools hint">
       端点默认开启:bow 启动后插件会自动监听上面的地址,AI 工具直接连
       <code>http://127.0.0.1:{{ state?.settings.port ?? state?.defaultPort }}/mcp</code> 即可,
-      不需要先跑 <code>npm run mcp:http</code>。想彻底关闭就停用「MCP HTTP 服务」插件。
+      不需要先跑 <code>npm run mcp:http</code>。想彻底关闭就停用「MCP HTTP 服务」插件,
+      或直接点地址栏右侧的 MCP 状态灯(白=就绪、蓝=正在被调用、灰=已停用)。
       改了端口或令牌后,AI 侧配置要同步改并重连。令牌非空时所有请求都必须带
       <code>Authorization: Bearer &lt;令牌&gt;</code>。
     </div>

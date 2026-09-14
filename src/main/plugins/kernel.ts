@@ -22,6 +22,7 @@ import { SEARCH_ENGINES } from '@shared/url'
 import { createStore, getSettingsStore } from '../stores'
 import type { JsonStore } from '../stores'
 import type { MCPDeps } from '../mcp'
+import { mcpActivity } from '../mcpActivity'
 import { log, logError } from '../logger'
 import { PluginRegistry } from './core'
 import { McpHost } from './mcpHost'
@@ -476,6 +477,14 @@ class PluginContextImpl implements PluginContext {
       start: (opts) => this.kernel.mcpHttp.start(opts),
       stop: () => this.kernel.mcpHttp.stop({ source: 'plugin' }),
       restart: (opts) => this.kernel.mcpHttp.restart({ ...opts, source: 'plugin' })
+    },
+    activity: {
+      snapshot: () => mcpActivity.snapshot(),
+      onChange: (cb) => {
+        const off = mcpActivity.onChange(cb)
+        this.disposers.push(off)
+        return off
+      }
     }
   }
 

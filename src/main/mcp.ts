@@ -13,6 +13,7 @@ import { getSettingsStore } from './stores'
 import type { PluginKernel } from './plugins/kernel'
 import type { McpToolSpec } from './plugins/mcpHost'
 import { imageContent, textContent } from './plugins/mcpResult'
+import { mcpActivity } from './mcpActivity'
 import {
   pageClick,
   pageSnapshot,
@@ -106,12 +107,19 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
    * zod 默认会静默丢弃未知参数 —— LLM 传错参数名时拿不到任何反馈(曾导致 navigate 的 tabId
    * 被无声忽略、静默导航到活动标签),这里用 strict() 让未知参数显式报错并回显可用参数名。
    * 与 registerPluginTools 同理:raw shape → ZodObject 的重载推导无收益,直接放宽类型。
+   *
+   * 处理器统一经 mcpActivity 包一层:地址栏状态灯据此显示「MCP 正在被调用」。
    */
   const tool = (
     name: string,
     shape: z.ZodRawShape,
     handler: (args: any, extra: any) => unknown
-  ): RegisteredTool => (server.registerTool as any)(name, { inputSchema: z.object(shape).strict() }, handler)
+  ): RegisteredTool =>
+    (server.registerTool as any)(
+      name,
+      { inputSchema: z.object(shape).strict() },
+      (args: any, extra: any) => mcpActivity.wrapTool(name, () => handler(args, extra))
+    )
 
   // 当前操作目标视图:可指定 tabId,默认取活动标签(活动标签是内部页面时退到最近浏览的页面标签);
   // 内部页面标签(如 bow://settings)持有应用 preload,一律不作为页面工具的操作目标。
@@ -486,9 +494,12 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
 
 /** 把插件声明的工具接入某个服务器实例 */
 function registerPluginTools(server: McpServer, kernel: PluginKernel, mode: 'attach' | 'snapshot'): void {
-  // 插件侧 config.inputSchema 为 zod raw shape;SDK 的重载推导在此处无收益,直接放宽
+  // 插件侧 config.inputSchema 为 zod raw shape;SDK 的重载推导在此处无收益,直接放宽。
+  // 与核心工具同样经 mcpActivity 计数,地址栏状态灯对插件工具也有反应。
   const register = (spec: McpToolSpec): RegisteredTool =>
-    (server.registerTool as any)(spec.name, spec.config, spec.handler)
+    (server.registerTool as any)(spec.name, spec.config, (args: unknown) =>
+      mcpActivity.wrapTool(spec.name, () => spec.handler(args as Record<string, unknown>))
+    )
   // stdio:内核缓冲声明时回交句柄,插件停用时可热移除
   if (mode === 'attach') kernel.mcp.attach(register)
   // HTTP 无状态:每个请求都是新实例,直接从声明快照注册(插件启停自然在下一次请求生效)

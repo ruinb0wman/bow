@@ -15,6 +15,7 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import type { MCPDeps } from './mcp'
 import { createStatelessServer } from './mcp'
+import { mcpActivity } from './mcpActivity'
 import { log, logError } from './logger'
 
 export const MCP_HTTP_PATH = '/mcp'
@@ -40,7 +41,10 @@ export async function startMcpHttpServer(deps: MCPDeps, options: McpHttpOptions 
   let allowedHosts: string[] = []
 
   const http = createServer((req, res) => {
-    void handleRequest(deps, req, res, { token, allowedHosts })
+    // 每个 MCP 请求(含 initialize / tools/list 这类握手)都算一次活动:
+    // 地址栏状态灯据此在 AI 连接期间变蓝,而不是等到真正调工具才亮。
+    const leave = mcpActivity.begin()
+    void handleRequest(deps, req, res, { token, allowedHosts }).finally(leave)
   })
   http.on('clientError', (_e, socket) => socket.destroy())
 

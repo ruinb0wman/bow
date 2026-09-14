@@ -10,6 +10,7 @@ import type {
 } from '@shared/plugins'
 import type { HotkeySpec } from '@shared/shortcuts'
 import type { McpHttpStatus } from './mcpHttpHost'
+import type { McpActivitySnapshot } from '../mcpActivity'
 
 export interface PluginStorage<T> {
   get(): T
@@ -60,6 +61,11 @@ export interface PluginServiceApi {
     start(opts: { port: number; token?: string }): Promise<McpHttpStatus>
     stop(): Promise<McpHttpStatus>
     restart(opts: { port: number; token?: string }): Promise<McpHttpStatus>
+  }
+  /** MCP 调用活动(工具调用/HTTP 请求在途情况),供 UI 显示「正在被调用」 */
+  activity: {
+    snapshot(): McpActivitySnapshot
+    onChange(cb: (snapshot: McpActivitySnapshot) => void): () => void
   }
 }
 

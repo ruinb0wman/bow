@@ -8,8 +8,47 @@
 
 import { describe, expect, it } from 'vitest'
 import type { McpHttpStatus } from '../src/main/plugins/mcpHttpHost'
+import type { McpActivitySnapshot } from '../src/main/mcpActivity'
 import mcpHttp from '../src/plugins/mcp-http/main'
 import type { PluginContext } from '../src/main/plugins/types'
+
+/** 与 src/main/mcpActivity.ts 的 McpActivityTracker 行为一致的测试替身 */
+class FakeActivity {
+  private inFlight = 0
+  private calls = 0
+  private lastTool: string | null = null
+  private lastAt: number | null = null
+  private listeners = new Set<(s: McpActivitySnapshot) => void>()
+
+  snapshot(): McpActivitySnapshot {
+    return { inFlight: this.inFlight, calls: this.calls, lastTool: this.lastTool, lastAt: this.lastAt }
+  }
+
+  onChange(cb: (s: McpActivitySnapshot) => void): () => void {
+    this.listeners.add(cb)
+    return () => this.listeners.delete(cb)
+  }
+
+  beginTool(name: string): () => void {
+    this.calls += 1
+    this.lastTool = name
+    this.inFlight += 1
+    this.emit()
+    let left = false
+    return () => {
+      if (left) return
+      left = true
+      this.inFlight -= 1
+      this.lastAt = Date.now()
+      this.emit()
+    }
+  }
+
+  private emit(): void {
+    const snap = this.snapshot()
+    for (const cb of [...this.listeners]) cb(snap)
+  }
+}
 
 interface Call {
   port: number
@@ -21,9 +60,11 @@ interface Harness {
   calls: { start: Call[]; restart: Call[]; stop: number }
   emits: Array<{ event: string; payload?: unknown }>
   handlers: Map<string, (...args: unknown[]) => unknown>
+  activity: FakeActivity
   readySubscribed: boolean
   fireReady: () => Promise<void>
   markReady: () => void
+  forceEnv: () => void
   failNextStart: (message: string) => void
   statusNow: () => McpHttpStatus
 }
@@ -35,8 +76,12 @@ function harness(): Harness {
   const emits: Array<{ event: string; payload?: unknown }> = []
   const handlers = new Map<string, (...args: unknown[]) => unknown>()
   const readyCbs: Array<() => void> = []
+  const activity = new FakeActivity()
   let status: McpHttpStatus = { ready: false, running: false }
   let pendingError: string | null = null
+  /** 模拟 MCP_HTTP=1:status() 报 forced,stop() 也不掉线 */
+  let envForced = false
+  const statusOf = (): McpHttpStatus => (envForced ? { ...status, forced: true } : status)
 
   /** 内存存储:复刻 JsonStore 的默认值覆盖语义 */
   let stored: Record<string, unknown> = {}
@@ -94,22 +139,26 @@ function harness(): Harness {
         readyCbs.push(cb)
       },
       mcpHttp: {
-        status: (): McpHttpStatus => status,
+        status: statusOf,
         start: (opts: Call): Promise<McpHttpStatus> => {
           calls.start.push(opts)
           status = applied(opts)
-          return Promise.resolve(status)
+          return Promise.resolve(statusOf())
         },
         stop: (): Promise<McpHttpStatus> => {
           calls.stop += 1
-          status = { ready: true, running: false }
-          return Promise.resolve(status)
+          if (!envForced) status = { ready: true, running: false }
+          return Promise.resolve(statusOf())
         },
         restart: (opts: Call): Promise<McpHttpStatus> => {
           calls.restart.push(opts)
           status = applied(opts)
-          return Promise.resolve(status)
+          return Promise.resolve(statusOf())
         }
+      },
+      activity: {
+        snapshot: (): McpActivitySnapshot => activity.snapshot(),
+        onChange: (cb: (s: McpActivitySnapshot) => void): (() => void) => activity.onChange(cb)
       }
     }
   }
@@ -119,6 +168,7 @@ function harness(): Harness {
     calls,
     emits,
     handlers,
+    activity,
     // 必须是 getter:activate() 之前构造返回对象时 readyCbs 还是空的
     get readySubscribed(): boolean {
       return readyCbs.length > 0
@@ -131,6 +181,11 @@ function harness(): Harness {
     /** 模拟「内核依赖早已就绪」:用于重现停用后再启用的场景 */
     markReady: () => {
       status = { ready: true, running: false }
+    },
+    /** 模拟环境变量强制开启:此后 status().forced 为 true,且 stop() 不掉线 */
+    forceEnv: () => {
+      envForced = true
+      status = { ...status, running: true, ready: true }
     },
     failNextStart: (message: string) => {
       pendingError = message
@@ -157,7 +212,7 @@ describe('MCP HTTP 服务插件:声明', () => {
   it('激活时注册设置面 IPC 并订阅内核就绪事件', () => {
     const h = harness()
     activate(h)
-    expect([...h.handlers.keys()].sort()).toEqual(['getState', 'restart', 'setSettings'])
+    expect([...h.handlers.keys()].sort()).toEqual(['getState', 'restart', 'setSettings', 'toggle'])
     expect(h.readySubscribed).toBe(true)
   })
 })
@@ -268,5 +323,66 @@ describe('MCP HTTP 服务插件:停用', () => {
     await mcpHttp.deactivate!(h.ctx)
     expect(h.calls.stop).toBe(1)
     expect(h.statusNow().running).toBe(false)
+  })
+})
+
+describe('MCP HTTP 服务插件:地址栏状态灯', () => {
+  it('状态里带上 MCP 调用活动快照', async () => {
+    const h = harness()
+    activate(h)
+    await h.fireReady()
+    const state = await invoke(h, 'getState')
+    expect(state.activity).toEqual({ inFlight: 0, calls: 0, lastTool: null, lastAt: null })
+    h.activity.beginTool('browser_navigate')
+    expect((await invoke(h, 'getState')).activity.inFlight).toBe(1)
+  })
+
+  it('调用活动变化会重播状态(状态灯据此变蓝)', async () => {
+    const h = harness()
+    activate(h)
+    await h.fireReady()
+    h.emits.length = 0
+    const done = h.activity.beginTool('browser_eval')
+    expect(h.emits.at(-1)?.payload).toMatchObject({ activity: { inFlight: 1, lastTool: 'browser_eval' } })
+    done()
+    expect(h.emits.at(-1)?.payload).toMatchObject({ activity: { inFlight: 0, calls: 1 } })
+  })
+
+  it('toggle 在运行中停掉端点,再点又按当前设置起回来', async () => {
+    const h = harness()
+    activate(h)
+    await h.fireReady()
+    expect(h.statusNow().running).toBe(true)
+
+    const off = await invoke(h, 'toggle')
+    expect(h.calls.stop).toBe(1)
+    expect(off.status.running).toBe(false)
+    // 插件本身仍启用:设置面 IPC 还能用,只是端点不再监听
+    expect(await invoke(h, 'getState')).toBeTruthy()
+
+    h.calls.start.length = 0
+    const on = await invoke(h, 'toggle')
+    expect(h.calls.start).toEqual([{ port: 8765, token: undefined }])
+    expect(on.status.running).toBe(true)
+  })
+
+  it('依赖未就绪时 toggle 不会硬起,只回播当前状态', async () => {
+    const h = harness()
+    activate(h)
+    const state = await invoke(h, 'toggle')
+    expect(h.calls.start).toHaveLength(0)
+    expect(state.status.running).toBe(false)
+    expect(state.status.ready).toBe(false)
+  })
+
+  it('环境变量强制开启时 toggle 停不掉端点(running 原样返回)', async () => {
+    const h = harness()
+    activate(h)
+    await h.fireReady()
+    h.forceEnv()
+    const state = await invoke(h, 'toggle')
+    expect(h.calls.stop).toBe(1)
+    expect(state.status.running).toBe(true)
+    expect(state.status.forced).toBe(true)
   })
 })
