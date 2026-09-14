@@ -1,21 +1,41 @@
 {
   "name": "mcp-browser",
   "version": "0.1.0",
-  "description": "AI 可操纵的简易 Electron 浏览器:多标签 + 搜索 + 书签 + MCP(stdio)服务器",
+  "description": "AI 可操纵的简易 Electron 浏览器:多标签 + 搜索 + 书签 + MCP(stdio / HTTP)服务器",
   "main": "./out/main/index.js",
   "author": "ruinb0w",
   "license": "MIT",
+  "build": {
+    "appId": "com.ruinb0w.bow",
+    "productName": "bow",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "npmRebuild": false,
+    "win": {
+      "target": "dir"
+    },
+    "electronDownload": {
+      "mirror": "https://npmmirror.com/mirrors/electron/"
+    }
+  },
   "scripts": {
     "dev": "electron-vite dev",
     "postinstall": "node scripts/ensure-electron.mjs",
     "build": "electron-vite build",
+    "dist": "node scripts/dist.mjs",
     "start": "electron-vite preview",
-    "mcp": "npm run build && MCP=stdio electron .",
-    "mcp:http": "npm run build && MCP_HTTP=1 electron .",
+    "mcp": "npm run build && node scripts/open-bow.mjs stdio",
+    "mcp:http": "npm run build && node scripts/open-bow.mjs http",
     "mcp:install": "node scripts/install-pi-mcp.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
-    "test:mcp": "node scripts/mcp-smoke.mjs"
+    "test:mcp": "node scripts/mcp-smoke.mjs",
+    "test:mcp:http": "node scripts/mcp-smoke.mjs --http"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
@@ -26,6 +46,7 @@
   "devDependencies": {
     "@vitejs/plugin-vue": "^6.0.8",
     "electron": "^44.3.0",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "typescript": "^5.7.3",
     "vite": "^7.1.11",

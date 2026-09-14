@@ -1,15 +1,21 @@
 #!/usr/bin/env node
 /**
- * MCP 端到端冒烟测试:通过标准 MCP 客户端(stdout/stderr 管道)拉起浏览器并调用全部关键工具。
+ * MCP 端到端冒烟测试:通过标准 MCP 客户端调用浏览器并断言全部关键工具。
+ *
+ * 两种传输:
+ *  1. stdio(默认):自己拉起浏览器子进程 —— `npm run test:mcp`
+ *  2. HTTP:连接已在运行的常驻浏览器 —— `npm run test:mcp:http` 或 `node scripts/mcp-smoke.mjs --http [url]`
+ *     默认 http://127.0.0.1:8765/mcp,可用 MCP_SMOKE_URL 覆盖;设了 MCP_HTTP_TOKEN 会带 Bearer 头。
+ *     ⚠️ HTTP 模式下操作的是你正在用的真实浏览器(会开标签、搜网页、截图);
+ *        书签写入有副作用,默认跳过,确需验证时设 SMOKE_ALLOW_MUTATIONS=1。
  *
  * 前置条件:
- *  - 有可用的显示环境(X/Wayland)
+ *  - stdio 模式需有可用的显示环境(X/Wayland)
  *  - Linux 上若缺 libasound,可用 LD_LIBRARY_PATH 指定(见 README / 本文件顶部 env)
- *
- * 用法: npm run test:mcp
  */
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { writeFileSync } from 'node:fs'
@@ -17,18 +23,34 @@ import { writeFileSync } from 'node:fs'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const root = join(__dirname, '..')
 
-const transport = new StdioClientTransport({
-  command: process.env.ELECTRON_BIN || join(root, 'node_modules', '.bin', 'electron'),
-  // 无显示环境(CI/容器)可传 SMOKE_ELECTRON_ARGS=--ozone-platform=headless,
-  // 但截图可能为黑帧或空图,完整验证仍需真实桌面。
-  args: ['.', '--no-sandbox', ...(process.env.SMOKE_ELECTRON_ARGS?.split(' ').filter(Boolean) ?? [])],
-  cwd: root,
-  env: {
-    ...process.env,
-    MCP: 'stdio',
-    ...(process.env.SMOKE_LD_LIBRARY_PATH ? { LD_LIBRARY_PATH: process.env.SMOKE_LD_LIBRARY_PATH } : {})
-  }
-})
+const argv = process.argv.slice(2)
+const httpFlagAt = argv.indexOf('--http')
+const isHttp = httpFlagAt >= 0 || !!process.env.MCP_SMOKE_URL
+const httpUrl =
+  (httpFlagAt >= 0 && argv[httpFlagAt + 1] && !argv[httpFlagAt + 1].startsWith('--') ? argv[httpFlagAt + 1] : null) ??
+  process.env.MCP_SMOKE_URL ??
+  'http://127.0.0.1:8765/mcp'
+/** HTTP 模式操作的是真实浏览器:默认不做书签写入这类有副作用的操作 */
+const allowMutations = !isHttp || process.env.SMOKE_ALLOW_MUTATIONS === '1'
+
+const transport = isHttp
+  ? new StreamableHTTPClientTransport(new URL(httpUrl), {
+      ...(process.env.MCP_HTTP_TOKEN
+        ? { requestInit: { headers: { Authorization: `Bearer ${process.env.MCP_HTTP_TOKEN}` } } }
+        : {})
+    })
+  : new StdioClientTransport({
+      command: process.env.ELECTRON_BIN || join(root, 'node_modules', '.bin', 'electron'),
+      // 无显示环境(CI/容器)可传 SMOKE_ELECTRON_ARGS=--ozone-platform=headless,
+      // 但截图可能为黑帧或空图,完整验证仍需真实桌面。
+      args: ['.', '--no-sandbox', ...(process.env.SMOKE_ELECTRON_ARGS?.split(' ').filter(Boolean) ?? [])],
+      cwd: root,
+      env: {
+        ...process.env,
+        MCP: 'stdio',
+        ...(process.env.SMOKE_LD_LIBRARY_PATH ? { LD_LIBRARY_PATH: process.env.SMOKE_LD_LIBRARY_PATH } : {})
+      }
+    })
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -43,8 +65,20 @@ function assert(cond, msg, detail) {
 
 const client = new Client({ name: 'mcp-browser-smoke', version: '0.1.0' })
 
-await client.connect(transport)
-console.log('✓ 已连接 MCP stdio')
+try {
+  await client.connect(transport)
+} catch (e) {
+  const hint = isHttp
+    ? `\n  HTTP 端点连不上:${httpUrl}\n` +
+      '  · 浏览器是否以 HTTP 模式常驻?在浏览器所在机器上跑 `npm run mcp:http`\n' +
+      '    (Windows 的 PowerShell / cmd 也能跑:环境变量由 scripts/open-bow.mjs 注入,不必手写)\n' +
+      '  · WSL2 连 Windows 上的浏览器需要 [wsl2] networkingMode=Mirrored,否则 127.0.0.1 不通\n' +
+      '  · 若服务端设了 MCP_HTTP_TOKEN,这里也要设成同一个值'
+    : '\n  stdio 模式需要可用的显示环境(X/Wayland);容器/CI 可试 SMOKE_ELECTRON_ARGS=--ozone-platform=headless'
+  console.error(`✗ 连接 MCP 失败:${e?.message ?? e}${hint}`)
+  process.exit(1)
+}
+console.log(isHttp ? `✓ 已连接 MCP HTTP: ${httpUrl}` : '✓ 已连接 MCP stdio')
 
 const { tools } = await client.listTools()
 const names = tools.map((t) => t.name)
@@ -77,7 +111,54 @@ console.log('✓ browser_get_info:', infoText.info?.url, '/', infoText.info?.tit
 assert(infoText.info?.url?.startsWith('https://'), '已加载页面')
 assert(infoText.info?.loading === false, '加载等待生效:loading 应为 false')
 
-// 2.5 浏览器签名:页面侧 UA 应为 bow,且无 Electron / window.process 泄漏
+// 2.8 tabId 语义守卫:navigate 必须作用于指定标签,不存在的 tabId 必须报错
+//     (曾经:navigate 的 schema 里没有 tabId,而 zod 静默丢弃未知参数 → 静默导航活动标签)
+const other = await client.callTool({
+  name: 'browser_new_tab',
+  arguments: { url: 'https://www.iana.org/', activate: false }
+})
+const otherId = JSON.parse(other.content[0].text).tabId
+await client.callTool({
+  name: 'browser_navigate',
+  arguments: { url: 'https://example.org/', tabId: otherId, waitUntil: 'load' }
+})
+const otherInfo = JSON.parse(
+  (await client.callTool({ name: 'browser_get_info', arguments: { tabId: otherId } })).content[0].text
+)
+assert(
+  String(otherInfo.info?.url).startsWith('https://example.org'),
+  `navigate 未作用于指定标签,实际 ${otherInfo.info?.url}`,
+  otherInfo
+)
+const untouched = JSON.parse(
+  (await client.callTool({ name: 'browser_get_info', arguments: { tabId } })).content[0].text
+)
+assert(
+  String(untouched.info?.url).startsWith('https://example.com'),
+  `navigate 误改了活动标签,实际 ${untouched.info?.url}`,
+  untouched
+)
+console.log(`✓ browser_navigate {tabId} 就地导航标签 ${otherId},活动标签未被波及`)
+
+const badTab = await client.callTool({
+  name: 'browser_navigate',
+  arguments: { url: 'https://example.org/', tabId: 999999 }
+})
+assert(badTab.isError === true, '不存在的 tabId 必须报错(曾经静默导航活动标签)', badTab.content[0].text)
+console.log('✓ 不存在的 tabId 已报错:', JSON.parse(badTab.content[0].text).error)
+
+// 2.9 未知参数必须被拒绝,而不是被静默丢弃
+const unknownArg = await client.callTool({
+  name: 'browser_snapshot',
+  arguments: { tabId, maxElement: 10 }
+})
+assert(unknownArg.isError === true, '未知参数 maxElement 应被拒绝', unknownArg.content[0].text)
+assert(String(unknownArg.content[0].text).includes('Unrecognized key'), '报错应指出未知参数')
+console.log('✓ 未知参数已被拒绝')
+
+await client.callTool({ name: 'browser_close_tab', arguments: { tabId: otherId } })
+
+// 2.95 浏览器签名:页面侧 UA 应为 bow,且无 Electron / window.process 泄漏
 const ua = await client.callTool({
   name: 'browser_eval',
   arguments: { tabId, code: 'navigator.userAgent + "|sep|" + (typeof window.process)' }
@@ -204,10 +285,15 @@ if (inputTarget) {
   const tyText = JSON.parse(ty.content[0].text)
   assert(tyText.ok === true, '输入成功')
   console.log(`✓ browser_type → value: ${JSON.stringify(tyText.value)}`)
-  const kp = await client.callTool({ name: 'browser_press_key', arguments: { key: 'Enter' } })
+  // waitUntil:'load' 会等到回车引发的跳转完成,返回体带 waited(默认 'none' 时不带该字段)
+  const kp = await client.callTool({
+    name: 'browser_press_key',
+    arguments: { key: 'Enter', waitUntil: 'load' }
+  })
   const kpText = JSON.parse(kp.content[0].text)
   assert(kpText.ok === true, '回车成功')
-  console.log('✓ browser_press_key →', kpText.pressed)
+  assert('waited' in kpText, "waitUntil:'load' 时应返回 waited 字段", kpText)
+  console.log(`✓ browser_press_key → ${kpText.pressed}, waited=${kpText.waited}`)
   await sleep(3500)
   const i3 = await client.callTool({ name: 'browser_get_info', arguments: {} })
   console.log('  ↳ 输入搜索后地址:', JSON.parse(i3.content[0].text).info?.url)
@@ -215,13 +301,18 @@ if (inputTarget) {
   console.log('⚠ 未找到输入框,跳过 browser_type 测试')
 }
 
-// 8. 书签
-const bm = await client.callTool({ name: 'browser_add_bookmark', arguments: { title: 'Example', url: 'https://example.com' } })
-const bmText = JSON.parse(bm.content[0].text)
-console.log('✓ browser_add_bookmark →', bmText.id)
+// 8. 书签(HTTP 模式操作真实浏览器,默认跳过写入)
+if (allowMutations) {
+  const bm = await client.callTool({ name: 'browser_add_bookmark', arguments: { title: 'Example', url: 'https://example.com' } })
+  const bmText = JSON.parse(bm.content[0].text)
+  console.log('✓ browser_add_bookmark →', bmText.id)
+} else {
+  console.log('⏭ 跳过 browser_add_bookmark(HTTP 模式,避免改动真实书签;需要就设 SMOKE_ALLOW_MUTATIONS=1)')
+}
 const lb = await client.callTool({ name: 'browser_list_bookmarks', arguments: {} })
 const lbText = JSON.parse(lb.content[0].text)
-assert(lbText.bookmarks.some((b) => b.url === 'https://example.com'), '书签已持久化')
+assert(Array.isArray(lbText.bookmarks), '书签列表可读', lbText)
+if (allowMutations) assert(lbText.bookmarks.some((b) => b.url === 'https://example.com'), '书签已持久化')
 console.log(`✓ browser_list_bookmarks: ${lbText.bookmarks.length} 条`)
 
 // 9. 广告拦截参考插件统计
