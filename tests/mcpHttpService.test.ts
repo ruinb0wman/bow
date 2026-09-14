@@ -24,6 +24,7 @@ vi.mock('electron', async () => {
 
 const { PluginKernel } = await import('../src/main/plugins/kernel')
 const { CORE_MCP_TOOL_NAMES } = await import('../src/main/mcp')
+const { mcpActivity } = await import('../src/main/mcpActivity')
 const mcpHttpPlugin = (await import('../src/plugins/mcp-http/main')).default
 const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')
 const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/sdk/client/streamableHttp.js')
@@ -58,7 +59,6 @@ async function waitFor(cond: () => boolean, timeoutMs = 3000): Promise<void> {
   }
   throw new Error(`等待条件超时(${timeoutMs}ms)`)
 }
-
 describe('MCP HTTP 服务插件:内核接线', () => {
   it('注入依赖并通知就绪后,端点真的在监听', async () => {
     const kernel = await bootKernel()
@@ -93,6 +93,34 @@ describe('MCP HTTP 服务插件:内核接线', () => {
     const parsed = JSON.parse((res.content as Array<{ text: string }>)[0].text)
     expect(parsed.ok).toBe(true)
     expect(parsed.tabs).toHaveLength(1)
+    await client.close()
+  })
+
+  it('客户端保持着长连接时不会把状态灯钉在「调用中」(长驻 GET SSE 流不计入活动)', async () => {
+    const kernel = await bootKernel()
+    const tabs = new FakeTabs()
+    tabs.create('https://probe.example/', true)
+    kernel.attachMcpHttpDeps({ tabs: tabs as never, kernel })
+    kernel.notifyMcpHttpReady()
+    await waitFor(() => kernel.mcpHttp.status().running)
+
+    const client = new Client({ name: 'idle-test', version: '0.0.0' })
+    await client.connect(new StreamableHTTPClientTransport(new URL(kernel.mcpHttp.status().url!)))
+    // 握手 + tools/list + 长驻 SSE 读流都建好了,但这些都不是「在用浏览器」
+    await client.listTools()
+    await new Promise((r) => setTimeout(r, 400))
+    expect(mcpActivity.snapshot().inFlight).toBe(0)
+
+    // 真正调工具时才进入「调用中」,调用结束又回到空闲
+    const pending = client.callTool({
+      name: 'browser_wait',
+      arguments: { selector: '#never-appears', timeoutMs: 1500 }
+    })
+    await waitFor(() => mcpActivity.snapshot().inFlight > 0, 2000)
+    expect(mcpActivity.snapshot().lastTool).toBe('browser_wait')
+    await pending
+    await waitFor(() => mcpActivity.snapshot().inFlight === 0, 2000)
+
     await client.close()
   })
 

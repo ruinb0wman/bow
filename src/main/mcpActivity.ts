@@ -1,21 +1,26 @@
 /**
- * MCP 调用活动跟踪(纯逻辑,可单测)。
+ * MCP 工具调用活动跟踪(纯逻辑,可单测)。
  *
- * 为什么需要:chrome 地址栏要显示「MCP 正在被调用」,但调用发生在主进程的工具处理器
- * 与 HTTP 请求里,渲染层看不见。这里维护一个在途计数 —— mcp.ts 包住工具处理器、
- * mcpHttp.ts 包住每个 HTTP 请求,插件再经 `service.activity` 订阅快照并广播给渲染层。
+ * 为什么需要:chrome 地址栏要显示「MCP 正在被调用」,但调用发生在主进程的工具处理器里,
+ * 渲染层看不见。这里维护一个「在途工具调用」计数 —— mcp.ts 包住核心与插件工具处理器,
+ * 插件再经 `service.activity` 订阅快照并广播给渲染层。
+ *
+ * 为什么不统计 HTTP 请求:StreamableHTTP 客户端会建立一条长驻的 GET SSE 流
+ * (见 SDK 的 webStandardStreamableHttp.handleGetRequest,带 keep-alive 定时器),
+ * 只要客户端连着就一直挂着。按请求计数会让「调用中」永远为真、状态灯被钉死在蓝色。
+ * 所以只以工具调用为准 —— 这也正好对应「AI 此刻真的在动浏览器」这个语义。
  *
  * 只用进程级单例:内核与插件共享同一份活动状态,不需要把 tracker 穿过 MCPDeps。
  */
 
 export interface McpActivitySnapshot {
-  /** 在途活动数(工具调用 + HTTP 请求);> 0 即「调用中」 */
+  /** 在途的工具调用数;> 0 即「调用中」 */
   inFlight: number
-  /** 累计完成的工具调用数(不含 initialize / tools/list 这类握手请求) */
+  /** 累计完成的工具调用数 */
   calls: number
-  /** 最近一次调用的工具名;只有握手请求时为 null */
+  /** 最近一次调用的工具名;从未调用过时为 null */
   lastTool: string | null
-  /** 最近一次活动结束的时间戳(ms);null 表示从未有活动 */
+  /** 最近一次调用结束的时间戳(ms);null 表示从未调用过 */
   lastAt: number | null
 }
 
@@ -32,7 +37,7 @@ export class McpActivityTracker {
     return { inFlight: this.inFlight, calls: this.calls, lastTool: this.lastTool, lastAt: this.lastAt }
   }
 
-  /** 订阅快照变化(活动进入/离开时各触发一次);返回取消订阅函数 */
+  /** 订阅快照变化(进入/离开调用时各触发一次);返回取消订阅函数 */
   onChange(cb: McpActivityListener): () => void {
     this.listeners.add(cb)
     return () => {
@@ -40,16 +45,20 @@ export class McpActivityTracker {
     }
   }
 
-  /** 通用活动进入:返回幂等的离开函数(成对调用;用 try/finally 兜底) */
-  begin(): () => void {
-    return this.enter()
-  }
-
-  /** 工具调用:除在途计数外,额外累计次数并记下工具名 */
+  /** 工具调用开始:累计次数、记录工具名,并进入「调用中」;返回幂等的离开函数 */
   beginTool(name: string): () => void {
     this.calls += 1
     this.lastTool = name
-    return this.enter()
+    this.inFlight += 1
+    this.emit()
+    let left = false
+    return () => {
+      if (left) return
+      left = true
+      this.inFlight = Math.max(0, this.inFlight - 1)
+      this.lastAt = Date.now()
+      this.emit()
+    }
   }
 
   /**
@@ -63,19 +72,6 @@ export class McpActivityTracker {
     } catch (e) {
       leave()
       return Promise.reject(e)
-    }
-  }
-
-  private enter(): () => void {
-    this.inFlight += 1
-    this.emit()
-    let left = false
-    return () => {
-      if (left) return
-      left = true
-      this.inFlight = Math.max(0, this.inFlight - 1)
-      this.lastAt = Date.now()
-      this.emit()
     }
   }
 

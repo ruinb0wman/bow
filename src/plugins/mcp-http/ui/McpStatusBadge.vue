@@ -3,7 +3,7 @@
  * 地址栏尾部的 MCP 状态灯(由 mcp-http 插件贡献到 addressbar-trailing 插槽)。
  *
  * 三态(优先级从高到低):
- * - 调用中(蓝 + 脉冲)—— 有在途的 MCP 工具调用 / HTTP 请求;
+ * - 调用中(蓝 + 脉冲)—— 有在途的 MCP 工具调用;
  * - 就绪(白)—— HTTP 端点监听中、当前空闲;
  * - 已停用(灰)—— 端点未运行(点过停用 / 启动失败 / 依赖未就绪)。
  *
@@ -33,10 +33,7 @@ const title = computed(() => {
   const s = state.value
   if (!s) return 'MCP 状态加载中…'
   const act = s.activity
-  if (act.inFlight > 0) {
-    const what = act.lastTool ? `正在调用 ${act.lastTool}` : '正在处理 MCP 请求'
-    return `MCP ${what}(${act.inFlight} 个在途)`
-  }
+  if (act.inFlight > 0) return `MCP 正在调用 ${act.lastTool ?? '工具'}(${act.inFlight} 个在途)`
   if (s.status.running) {
     const lines = [`MCP HTTP 端点运行中 · ${s.status.url ?? '监听中'}`]
     if (forced.value) {

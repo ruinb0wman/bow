@@ -8,7 +8,7 @@
 
 /** MCP 调用活动快照(结构对齐 src/main/mcpActivity.ts) */
 export interface McpActivitySnapshot {
-  /** 在途活动数(工具调用 + HTTP 请求);> 0 即「调用中」 */
+  /** 在途的工具调用数;> 0 即「调用中」 */
   inFlight: number
   /** 累计完成的工具调用数 */
   calls: number

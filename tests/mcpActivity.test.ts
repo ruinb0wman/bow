@@ -18,27 +18,40 @@ describe('McpActivityTracker', () => {
     })
   })
 
-  it('begin 进入/离开成对计数,离开函数幂等', () => {
+  it('beginTool 的离开函数幂等,重复调用不会把计数减成负数', () => {
     const t = new McpActivityTracker()
-    const leave = t.begin()
+    const leave = t.beginTool('browser_click')
     expect(t.snapshot().inFlight).toBe(1)
     leave()
     expect(t.snapshot().inFlight).toBe(0)
     expect(t.snapshot().lastAt).not.toBeNull()
-    // 重复调用不应把计数减成负数
     leave()
     expect(t.snapshot().inFlight).toBe(0)
   })
 
-  it('嵌套活动逐个归零(HTTP 请求里套工具调用)', () => {
+  it('嵌套的工具调用逐个归零(并行调用互不影响)', () => {
     const t = new McpActivityTracker()
-    const http = t.begin()
-    const tool = t.beginTool('browser_navigate')
+    const a = t.beginTool('browser_navigate')
+    const b = t.beginTool('browser_snapshot')
     expect(t.snapshot().inFlight).toBe(2)
-    tool()
+    a()
     expect(t.snapshot().inFlight).toBe(1)
-    http()
+    b()
     expect(t.snapshot().inFlight).toBe(0)
+  })
+
+  it('只有工具调用会进入「调用中」:traker 没有非工具的活动入口', () => {
+    // 回归护栏:曾经把 HTTP 请求也算作活动,而 StreamableHTTP 客户端会挂一条长驻 GET SSE 流,
+    // 结果状态灯一连接就永远停在蓝色。现在活动只能来自 beginTool/wrapTool。
+    const t = new McpActivityTracker()
+    expect(Object.getOwnPropertyNames(Object.getPrototypeOf(t)).sort()).toEqual([
+      'beginTool',
+      'constructor',
+      'emit',
+      'onChange',
+      'snapshot',
+      'wrapTool'
+    ])
   })
 
   it('beginTool 累计次数并记录最近工具名', () => {
@@ -82,7 +95,7 @@ describe('McpActivityTracker', () => {
     leave()
     expect(seen).toEqual([1, 0])
     off()
-    t.begin()()
+    t.beginTool('browser_eval')()
     expect(seen).toEqual([1, 0])
   })
 
