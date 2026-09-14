@@ -31,10 +31,12 @@ export type TabHotkey =
   | { action: 'close' }
   | { action: 'switch'; digit: number }
   | { action: 'settings' }
+  | { action: 'focus-address' }
 
 /**
  * 标签快捷键识别:Ctrl/Cmd+T(新建)、Ctrl/Cmd+Shift+T(恢复)、
- * Ctrl/Cmd+W(关闭)、Ctrl/Cmd+1..9(切换,9=最后一个标签)、Ctrl/Cmd+,(打开设置)。
+ * Ctrl/Cmd+W(关闭)、Ctrl/Cmd+1..9(切换,9=最后一个标签)、Ctrl/Cmd+,(打开设置)、
+ * Ctrl/Cmd+L(聚焦地址栏,页面内也生效)。
  * 与 isDevToolsHotkey 同风格:忽略自动重复与输入法组合;alt 修饰不参与。
  */
 export function matchTabHotkey(input: KeyInputLike): TabHotkey | null {
@@ -49,6 +51,7 @@ export function matchTabHotkey(input: KeyInputLike): TabHotkey | null {
   }
   if (key === 't' || input.code === 'KeyT') return { action: 'new' }
   if (key === 'w' || input.code === 'KeyW') return { action: 'close' }
+  if (key === 'l' || input.code === 'KeyL') return { action: 'focus-address' }
   if (key === ',' || input.code === 'Comma') return { action: 'settings' }
   // 数字优先物理按键行的 code(Digit1..9):AZERTY 等非 QWERTY 布局下 key 可能是符号
   const codeMatch = /^Digit([1-9])$/.exec(input.code ?? '')

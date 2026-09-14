@@ -1,6 +1,6 @@
 /**
  * Tab 快捷键全局拦截:对所有 webContents 的 before-input-event 统一处理,
- * 保证页面/地址栏/弹层任何焦点下 Ctrl+T / Ctrl+Shift+T / Ctrl+W / Ctrl+数字 / Ctrl+, 均可生效。
+ * 保证页面/地址栏/弹层任何焦点下 Ctrl+T / Ctrl+Shift+T / Ctrl+W / Ctrl+L / Ctrl+数字 / Ctrl+, 均可生效。
  *
  * 背景:标签页是独立 WebContentsView,按键事件只进入当前聚焦的 webContents,
  * 渲染层 keydown 在页面聚焦时收不到按键,因此必须在主进程拦截。
@@ -13,6 +13,17 @@ import type { TabManager } from './tabManager'
 import type { OverlayManager } from './overlay'
 import type { PluginKernel } from './plugins/kernel'
 import { log } from './logger'
+
+/**
+ * 聚焦地址栏:先把键盘焦点交给 chrome WebContents(否则渲染层的 el.focus() 只是改 DOM 状态、
+ * 键盘事件仍进页面),再请求渲染层聚焦并全选地址栏。Ctrl+L 与 Ctrl+T 新建标签共用。
+ */
+function focusAddressBar(tabs: TabManager): void {
+  const wc = tabs.window.webContents
+  if (wc.isDestroyed()) return
+  wc.focus()
+  wc.send('chrome:focus-address')
+}
 
 /**
  * 安装 Tab 快捷键。必须在创建任何窗口/视图之前调用(与 setupDevTools 相同约束);
@@ -35,9 +46,17 @@ export function setupTabShortcuts(
             tabs.create('about:blank', true)
             // 全窗弹层(modal)打开时不抢焦点;否则保持"新建即聚焦地址栏"的 UX
             if (!getOverlay().isFullOpen) {
-              tabs.window.webContents.send('chrome:focus-address')
+              focusAddressBar(tabs)
             }
             log('快捷键:新建标签(Ctrl+T)')
+            break
+          }
+          case 'focus-address': {
+            // 全窗弹层(modal)打开时地址栏被遮罩盖住,不抢焦点(与 Ctrl+T 同策略)
+            if (!getOverlay().isFullOpen) {
+              focusAddressBar(tabs)
+              log('快捷键:聚焦地址栏(Ctrl+L)')
+            }
             break
           }
           case 'settings':

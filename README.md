@@ -288,7 +288,7 @@ npm run test:mcp:http
 ## 手动使用快捷键
 
 - `Ctrl+T` 新标签、`Ctrl+W` 关闭、`Ctrl+Shift+T` 恢复
-- `Ctrl+L` 聚焦地址栏、`Ctrl+R` 刷新、`Ctrl+,` 打开设置(设置是内部标签页 `bow://settings`,重复打开只聚焦已有标签)
+- `Ctrl+L` 聚焦地址栏(页面/地址栏/弹层任意焦点下都生效)、`Ctrl+R` 刷新、`Ctrl+,` 打开设置(设置是内部标签页 `bow://settings`,重复打开只聚焦已有标签)
 - `Ctrl+D` 收藏当前页
 - `Ctrl+Shift+F` 元素全屏:框选当前页面元素铺满网页视口(再按一次或 `Esc` 退出)
 - `Ctrl+Shift+I` / `F12`:为**当前聚焦的视图**(页面 / 浏览器 UI)打开或关闭 DevTools。

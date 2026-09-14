@@ -85,6 +85,26 @@ describe('matchTabHotkey Tab 快捷键识别', () => {
     expect(matchTabHotkey(input({ key: ',', code: 'Comma', shift: false, alt: true }))).toBe(null)
   })
 
+  it('Ctrl/Cmd+L 聚焦地址栏', () => {
+    expect(matchTabHotkey(input({ key: 'l', code: 'KeyL', shift: false }))).toEqual({ action: 'focus-address' })
+    expect(
+      matchTabHotkey(input({ key: 'l', code: 'KeyL', shift: false, control: false, meta: true }))
+    ).toEqual({ action: 'focus-address' })
+    expect(matchTabHotkey(input({ key: 'L', code: 'KeyL', shift: false }))).toEqual({ action: 'focus-address' })
+    // 非 QWERTY:key 可能为空/其它字符,code 仍为 KeyL
+    expect(matchTabHotkey(input({ key: '', code: 'KeyL', shift: false }))).toEqual({ action: 'focus-address' })
+    expect(matchTabHotkey(input({ key: 'ł', code: 'KeyL', shift: false }))).toEqual({ action: 'focus-address' })
+  })
+
+  it('Ctrl+Shift+L / 带 Alt / 无修饰键 / 非 keyDown 不聚焦地址栏', () => {
+    expect(matchTabHotkey(input({ key: 'l', code: 'KeyL' }))).toBe(null) // Ctrl+Shift+L
+    expect(matchTabHotkey(input({ key: 'l', code: 'KeyL', shift: false, alt: true }))).toBe(null)
+    expect(matchTabHotkey(input({ key: 'l', code: 'KeyL', shift: false, control: false, meta: false }))).toBe(null)
+    expect(matchTabHotkey(input({ type: 'keyUp', key: 'l', code: 'KeyL', shift: false }))).toBe(null)
+    expect(matchTabHotkey(input({ isAutoRepeat: true, key: 'l', code: 'KeyL', shift: false }))).toBe(null)
+    expect(matchTabHotkey(input({ isComposing: true, key: 'l', code: 'KeyL', shift: false }))).toBe(null)
+  })
+
   it('Ctrl/Cmd+1..9 切换(code 物理键行优先)', () => {
     expect(matchTabHotkey(input({ key: '1', code: 'Digit1', shift: false }))).toEqual({ action: 'switch', digit: 1 })
     expect(matchTabHotkey(input({ key: '1', code: 'Digit1', shift: false, control: false, meta: true }))).toEqual({ action: 'switch', digit: 1 })

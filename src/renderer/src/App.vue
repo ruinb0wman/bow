@@ -322,12 +322,9 @@ function focusAddress(): void {
 function onKeydown(e: KeyboardEvent): void {
   const mod = e.ctrlKey || e.metaKey
   const key = e.key.toLowerCase()
-  // Ctrl+T / Ctrl+Shift+T / Ctrl+W / Ctrl+数字 已由主进程统一拦截(tabShortcuts.ts),
+  // Ctrl+T / Ctrl+Shift+T / Ctrl+W / Ctrl+L / Ctrl+数字 已由主进程统一拦截(tabShortcuts.ts),
   // 此处仅保留 chrome 聚焦时需要渲染层执行的快捷键
-  if (mod && !e.shiftKey && key === 'l') {
-    e.preventDefault()
-    focusAddress()
-  } else if (mod && !e.shiftKey && key === 'r') {
+  if (mod && !e.shiftKey && key === 'r') {
     e.preventDefault()
     void reload()
   }
