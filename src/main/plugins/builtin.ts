@@ -6,5 +6,6 @@ import bookmarks from '@plugins/bookmarks/main'
 import cors from '@plugins/cors/main'
 import adblock from '@plugins/adblock/main'
 import elementFullscreen from '@plugins/element-fullscreen/main'
+import mcpHttp from '@plugins/mcp-http/main'
 
-export const BUILTIN_PLUGINS: PluginMain[] = [history, bookmarks, cors, adblock, elementFullscreen]
+export const BUILTIN_PLUGINS: PluginMain[] = [history, bookmarks, cors, adblock, elementFullscreen, mcpHttp]

@@ -8,8 +8,8 @@ import { setupDevTools } from './devtools'
 import { setupTabShortcuts } from './tabShortcuts'
 import { loadRendererEntry } from './rendererEntry'
 import { startMcpServer, CORE_MCP_TOOL_NAMES } from './mcp'
-import { startMcpHttpServer } from './mcpHttp'
 import { applyBrowserIdentity } from './ua'
+import { acquireSingletonLock, focusFirstWindow } from './singleInstance'
 import { PluginKernel } from './plugins/kernel'
 import { BUILTIN_PLUGINS } from './plugins/builtin'
 import { IS_MCP, IS_MCP_STDIO, IS_MCP_HTTP, MCP_HTTP_PORT, MCP_HTTP_TOKEN, log, logError } from './logger'
@@ -49,7 +49,21 @@ if (IS_MCP_STDIO) {
   app.commandLine.appendSwitch('disable-logging')
 }
 
+// 必须在 app ready 之前取锁。第二个实例拿到锁失败后会触发已有实例的 second-instance,
+// 由后者把窗口带到前台,自己则直接退出(不创建窗口)。
+const hasSingletonLock = acquireSingletonLock({
+  isStdio: IS_MCP_STDIO,
+  requestLock: () => app.requestSingleInstanceLock()
+})
+app.on('second-instance', () => {
+  focusFirstWindow(BrowserWindow.getAllWindows())
+})
+
 app.whenReady().then(async () => {
+  if (!hasSingletonLock) {
+    app.quit()
+    return
+  }
   // 先于一切窗口/视图/存储:显示名 → bow、userData 钉旧路径、UA 全局签名
   applyBrowserIdentity()
   initStores()
@@ -170,14 +184,20 @@ app.whenReady().then(async () => {
   if (IS_MCP_STDIO) {
     startMcpServer({ tabs, kernel })
   }
+  // MCP HTTP 服务:先注入内核运行时依赖,再起强制模式(若有),最后唤醒等待中的插件。
+  // 顺序即优先级:MCP_HTTP=1 先占住宿主,插件(默认开启)只会在没人起过时才真正监听。
+  kernel.attachMcpHttpDeps({ tabs, kernel })
   if (IS_MCP_HTTP) {
-    startMcpHttpServer({ tabs, kernel }, { port: MCP_HTTP_PORT, token: MCP_HTTP_TOKEN })
-      .then((handle) => {
-        // HTTP 模式下 stdout 不承载协议,地址直接打到终端方便复制
-        console.log(`MCP HTTP 端点: ${handle.url}`)
-      })
-      .catch((e) => logError('MCP HTTP 启动失败', e instanceof Error ? e.message : e))
+    void kernel.mcpHttp.start({ port: MCP_HTTP_PORT, token: MCP_HTTP_TOKEN, source: 'env' }).then((s) => {
+      // HTTP 模式下 stdout 不承载协议,地址直接打到终端方便复制
+      if (s.url) console.log(`MCP HTTP 端点: ${s.url}(由 MCP_HTTP 环境变量强制开启)`)
+      else logError('MCP HTTP 启动失败', s.error ?? '未知错误')
+    })
   }
+  // stdio 模式下浏览器是 MCP 客户端的子进程,再开一个 HTTP 端点没有意义,
+  // 而且会与常驻实例抢 8765(谁先起谁占,另一个只能在设置页看到端口占用错误)。
+  // 需要在 stdio 下也要端点就显式设 MCP_HTTP=1(强制模式不受这里影响)。
+  if (!IS_MCP_STDIO) kernel.notifyMcpHttpReady()
 
   log('应用已启动', { mcp: IS_MCP, http: IS_MCP_HTTP, version: app.getVersion() })
 })

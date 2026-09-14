@@ -9,6 +9,7 @@ import type {
   SuggestProvider
 } from '@shared/plugins'
 import type { HotkeySpec } from '@shared/shortcuts'
+import type { McpHttpStatus } from './mcpHttpHost'
 
 export interface PluginStorage<T> {
   get(): T
@@ -44,6 +45,22 @@ export interface PluginPageApi {
   activeTabId(): number | null
   focus(tabId: number): void
   execute(tabId: number, code: string, opts?: { timeoutMs?: number }): Promise<unknown>
+}
+
+/**
+ * MCP HTTP 服务面:内核持有真正的监听与 Electron 权限,插件只做启停决策。
+ * 单独拎出来是因为插件 activate 早于窗口/标签创建 —— 那时服务还拿不到运行时依赖,
+ * 只能等 onMcpHttpReady 回调(与 setTabProvider / setPageApi 同一个时序假设)。
+ */
+export interface PluginServiceApi {
+  /** 内核运行时依赖就绪后回调;插件被启用即代表“应当运行”,在此处启动服务 */
+  onMcpHttpReady(cb: () => void): void
+  mcpHttp: {
+    status(): McpHttpStatus
+    start(opts: { port: number; token?: string }): Promise<McpHttpStatus>
+    stop(): Promise<McpHttpStatus>
+    restart(opts: { port: number; token?: string }): Promise<McpHttpStatus>
+  }
 }
 
 /**
@@ -83,6 +100,8 @@ export interface PluginContext {
   pages: PluginPageApi
   /** 只读标签信息 */
   tabs: PluginTabApi
+  /** 后台服务(如 MCP HTTP 端点):内核持有资源,插件只做启停决策 */
+  service: PluginServiceApi
   /** 注册主进程全局热键(任意焦点下生效,含页面内);停用时自动回收 */
   shortcuts: { register(spec: HotkeySpec, handler: () => void): void }
 }

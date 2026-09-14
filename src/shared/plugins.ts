@@ -9,7 +9,7 @@
 
 import type { Suggestion, TabInfo } from './types'
 
-export type PluginCapability = 'ui' | 'suggest' | 'mcp' | 'net' | 'content' | 'shortcut'
+export type PluginCapability = 'ui' | 'suggest' | 'mcp' | 'net' | 'content' | 'shortcut' | 'service'
 
 export const PLUGIN_CAPABILITY_LABELS: Record<PluginCapability, string> = {
   ui: '界面',
@@ -17,7 +17,8 @@ export const PLUGIN_CAPABILITY_LABELS: Record<PluginCapability, string> = {
   mcp: 'MCP 工具',
   net: '网络拦截',
   content: '内容注入',
-  shortcut: '快捷键'
+  shortcut: '快捷键',
+  service: '后台服务'
 }
 
 export interface PluginManifest {

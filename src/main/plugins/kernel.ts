@@ -21,12 +21,14 @@ import { buildSuggestRows, mergeSuggestions } from '@shared/suggest'
 import { SEARCH_ENGINES } from '@shared/url'
 import { createStore, getSettingsStore } from '../stores'
 import type { JsonStore } from '../stores'
+import type { MCPDeps } from '../mcp'
 import { log, logError } from '../logger'
 import { PluginRegistry } from './core'
 import { McpHost } from './mcpHost'
+import { McpHttpHost, MCP_HTTP_READY_EVENT } from './mcpHttpHost'
 import { NetHookHost } from './netHooks'
 import { ContentHookHost } from './contentHooks'
-import type { McpToolConfig, McpToolHandler, PluginContext, PluginMain, PluginPageApi, PluginStorage } from './types'
+import type { McpToolConfig, McpToolHandler, PluginContext, PluginMain, PluginPageApi, PluginServiceApi, PluginStorage } from './types'
 
 const SUGGEST_LIMIT = 9
 
@@ -68,6 +70,7 @@ const EMPTY_PAGE_API: PluginPageApi = {
 export class PluginKernel {
   readonly registry = new PluginRegistry()
   readonly mcp = new McpHost()
+  readonly mcpHttp = new McpHttpHost()
   readonly net = new NetHookHost()
   readonly content = new ContentHookHost()
 
@@ -123,6 +126,19 @@ export class PluginKernel {
 
   setTabProvider(fn: () => PluginTabApi): void {
     this.tabProvider = fn
+  }
+
+  /** 注入 MCP HTTP 服务所需的内核运行时依赖(窗口/标签就绪后调用) */
+  attachMcpHttpDeps(deps: MCPDeps): void {
+    this.mcpHttp.attach(deps)
+  }
+
+  /**
+   * 唤醒等待中的服务插件。调用方需在本调用之前发起强制启动(若有),
+   * 这样环境变量路径会先占住宿主,优先级确定、无竞态。
+   */
+  notifyMcpHttpReady(): void {
+    this.emitEvent(MCP_HTTP_READY_EVENT)
   }
 
   /** 注入页面执行 API(标签视图创建后由 index.ts 接线) */
@@ -449,6 +465,18 @@ class PluginContextImpl implements PluginContext {
   readonly tabs: PluginTabApi = {
     list: () => this.kernel.tabs.list(),
     getActive: () => this.kernel.tabs.getActive()
+  }
+
+  readonly service: PluginServiceApi = {
+    onMcpHttpReady: (cb: () => void): void => {
+      this.disposers.push(this.kernel.addSubscriber(this.id, MCP_HTTP_READY_EVENT, cb))
+    },
+    mcpHttp: {
+      status: () => this.kernel.mcpHttp.status(),
+      start: (opts) => this.kernel.mcpHttp.start(opts),
+      stop: () => this.kernel.mcpHttp.stop({ source: 'plugin' }),
+      restart: (opts) => this.kernel.mcpHttp.restart({ ...opts, source: 'plugin' })
+    }
   }
 
   readonly shortcuts = {

@@ -10,13 +10,15 @@ import historyUi from '@plugins/history/ui'
 import corsUi from '@plugins/cors/ui'
 import adblockUi from '@plugins/adblock/ui'
 import elementFullscreenUi from '@plugins/element-fullscreen/ui'
+import mcpHttpUi from '@plugins/mcp-http/ui'
 
 export const PLUGIN_UI: PluginUiContribution[] = [
   bookmarksUi,
   historyUi,
   corsUi,
   adblockUi,
-  elementFullscreenUi
+  elementFullscreenUi,
+  mcpHttpUi
 ]
 
 export function pluginUi(id: string): PluginUiContribution | undefined {
