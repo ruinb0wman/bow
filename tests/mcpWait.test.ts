@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { waitForLoad, waitForSelector } from '../src/main/actions'
+import { sameUrl, waitForLoad, waitForSelector } from '../src/main/actions'
 import { errorContent, imageContent, textContent } from '../src/main/plugins/mcpResult'
 import { FakeWc, asWc, sleep } from './fakeWc'
 
@@ -66,34 +66,31 @@ describe('waitForLoad', () => {
   it('调用时已关闭的标签页立即失败', async () => {
     const wc = new FakeWc()
     wc.destroyed = true
-    const res = await waitForLoad(asWc(wc), 500)
+    const res = await waitForLoad(asWc(wc), { mode: 'idle', timeoutMs: 500 })
     expect(res).toEqual({ ok: false, error: '标签页已关闭' })
   })
 
   it('等待加载中的页面,并在 did-finish-load 时返回', async () => {
     const wc = new FakeWc()
     wc.loading = true
-    setTimeout(() => {
-      wc.loading = false
-      wc.emit('did-finish-load')
-    }, 60)
-    const res = await waitForLoad(asWc(wc), 3000)
-    expect(res.ok).toBe(true)
-    expect(res.waited).toBe(true)
+    setTimeout(() => wc.stopLoad('https://example.org/'), 60)
+    const res = await waitForLoad(asWc(wc), { mode: 'idle', timeoutMs: 3000 })
+    expect(res).toEqual({ ok: true, url: 'https://example.org/', waited: true })
   })
 
-  it('调用时页面已就绪:宽限期内返回且 waited=false', async () => {
+  it('调用时页面已就绪:idle 模式立即返回且 waited=false', async () => {
     const wc = new FakeWc()
-    const res = await waitForLoad(asWc(wc), 3000)
-    expect(res.ok).toBe(true)
-    expect(res.waited).toBe(false)
+    const startedAt = Date.now()
+    const res = await waitForLoad(asWc(wc), { mode: 'idle', timeoutMs: 3000 })
+    expect(res).toEqual({ ok: true, url: 'https://example.com/', waited: false })
+    expect(Date.now() - startedAt).toBeLessThan(200)
   })
 
   it('did-fail-load 主框架失败时上报错误', async () => {
     const wc = new FakeWc()
     wc.loading = true
     setTimeout(() => wc.emit('did-fail-load', {}, -2, 'ERR_FAILED', wc.url, true), 40)
-    const res = await waitForLoad(asWc(wc), 3000)
+    const res = await waitForLoad(asWc(wc), { mode: 'idle', timeoutMs: 3000 })
     expect(res.ok).toBe(false)
     expect(String(res.error)).toContain('加载失败(-2)')
   })
@@ -102,29 +99,23 @@ describe('waitForLoad', () => {
     const wc = new FakeWc()
     wc.loading = true
     setTimeout(() => wc.emit('did-fail-load', {}, -3, 'ERR_ABORTED', wc.url, true), 40)
-    setTimeout(() => {
-      wc.loading = false
-      wc.emit('did-finish-load')
-    }, 120)
-    const res = await waitForLoad(asWc(wc), 3000)
-    expect(res.ok).toBe(true)
+    setTimeout(() => wc.stopLoad('https://example.org/'), 120)
+    const res = await waitForLoad(asWc(wc), { mode: 'idle', timeoutMs: 3000 })
+    expect(res).toEqual({ ok: true, url: 'https://example.org/', waited: true })
   })
 
   it('子框架失败不影响等待结果', async () => {
     const wc = new FakeWc()
     wc.loading = true
     setTimeout(() => wc.emit('did-fail-load', {}, -2, 'ERR_FAILED', 'https://iframe/', false), 40)
-    setTimeout(() => {
-      wc.loading = false
-      wc.emit('did-finish-load')
-    }, 120)
-    expect((await waitForLoad(asWc(wc), 3000)).ok).toBe(true)
+    setTimeout(() => wc.stopLoad('https://example.org/'), 120)
+    expect((await waitForLoad(asWc(wc), { mode: 'idle', timeoutMs: 3000 })).ok).toBe(true)
   })
 
   it('超时返回明确错误', async () => {
     const wc = new FakeWc()
     wc.loading = true
-    const res = await waitForLoad(asWc(wc), 250)
+    const res = await waitForLoad(asWc(wc), { mode: 'idle', timeoutMs: 250 })
     expect(res.ok).toBe(false)
     expect(String(res.error)).toContain('等待加载超时')
   })
@@ -136,7 +127,7 @@ describe('waitForLoad', () => {
       wc.destroyed = true
       wc.emit('destroyed')
     }, 40)
-    const res = await waitForLoad(asWc(wc), 3000)
+    const res = await waitForLoad(asWc(wc), { mode: 'idle', timeoutMs: 3000 })
     expect(res.ok).toBe(false)
     expect(String(res.error)).toContain('关闭')
   })
@@ -144,16 +135,124 @@ describe('waitForLoad', () => {
   it('结束后不再持有监听器(无泄漏)', async () => {
     const wc = new FakeWc()
     wc.loading = true
-    setTimeout(() => {
-      wc.loading = false
-      wc.emit('did-finish-load')
-    }, 40)
-    await waitForLoad(asWc(wc), 3000)
+    setTimeout(() => wc.stopLoad('https://example.org/'), 40)
+    await waitForLoad(asWc(wc), { mode: 'idle', timeoutMs: 3000 })
     await sleep(20)
-    expect(wc.listenerCount('did-finish-load')).toBe(0)
-    expect(wc.listenerCount('did-fail-load')).toBe(0)
-    expect(wc.listenerCount('did-start-loading')).toBe(0)
-    expect(wc.listenerCount('destroyed')).toBe(0)
+    for (const event of [
+      'did-start-loading',
+      'did-finish-load',
+      'did-stop-loading',
+      'did-start-navigation',
+      'did-navigate',
+      'did-fail-load',
+      'destroyed'
+    ] as const) {
+      expect(wc.listenerCount(event)).toBe(0)
+    }
+  })
+})
+
+/**
+ * 竞态回归:2026-09-15 在 HTTP 调用下偶发命中 ——
+ * navigate{tabId} 之后立刻 get_info 看到的是「上一个标签的旧地址 + loading:true」,
+ * 根因是等待被「上一次导航迟到的完成事件」或「300ms 宽限期」提前结算。
+ * A/B/C 三条在修复前必定失败(见 commit message 里的旧实现对照)。
+ */
+describe('waitForLoad 竞态回归', () => {
+  it('A: 上一次导航迟到的 did-finish-load 不得结算本次等待', async () => {
+    const wc = new FakeWc()
+    const p = waitForLoad(asWc(wc), { mode: 'navigation', expectUrl: 'https://example.org/', timeoutMs: 3000 })
+    let settled = false
+    void p.then(() => {
+      settled = true
+    })
+    await sleep(30)
+    wc.emit('did-finish-load') // 没有配对的 start:属于上一次导航的迟到完成事件
+    await sleep(150)
+    expect(settled).toBe(false) // 旧实现此刻已以 ok/waited=true 结算,且 url 是旧地址
+    wc.startLoad('https://example.org/')
+    await sleep(30)
+    wc.stopLoad()
+    await expect(p).resolves.toEqual({ ok: true, url: 'https://example.org/', waited: true })
+  })
+
+  it('B: 加载开始晚于旧的 300ms 宽限期时也必须等到真实完成', async () => {
+    const wc = new FakeWc()
+    const p = waitForLoad(asWc(wc), { mode: 'maybe-navigation', graceMs: 800, timeoutMs: 3000 })
+    let settled = false
+    void p.then(() => {
+      settled = true
+    })
+    await sleep(420) // 旧实现:120ms 轮询越过 300ms 宽限期,此处已 waited=false 返回
+    expect(settled).toBe(false)
+    wc.startLoad('https://example.org/')
+    await sleep(30)
+    wc.stopLoad()
+    await expect(p).resolves.toEqual({ ok: true, url: 'https://example.org/', waited: true })
+  })
+
+  it('C: navigation 模式在地址未到达前不得因「此刻空闲」提前返回', async () => {
+    const wc = new FakeWc()
+    const p = waitForLoad(asWc(wc), { mode: 'navigation', expectUrl: 'https://example.org/', timeoutMs: 3000 })
+    let settled = false
+    void p.then(() => {
+      settled = true
+    })
+    await sleep(500) // 旧实现:约 360ms 就以 waited=false 返回
+    expect(settled).toBe(false)
+    wc.startLoad('https://example.org/')
+    await sleep(30)
+    wc.stopLoad()
+    await expect(p).resolves.toEqual({ ok: true, url: 'https://example.org/', waited: true })
+  })
+
+  it('D: idle 模式在加载中等到停止,空闲时立即返回', async () => {
+    const busy = new FakeWc()
+    busy.loading = true
+    setTimeout(() => busy.stopLoad('https://example.org/'), 60)
+    await expect(waitForLoad(asWc(busy), { mode: 'idle', timeoutMs: 3000 })).resolves.toEqual({
+      ok: true,
+      url: 'https://example.org/',
+      waited: true
+    })
+
+    const idle = new FakeWc()
+    const startedAt = Date.now()
+    await expect(waitForLoad(asWc(idle), { mode: 'idle', timeoutMs: 3000 })).resolves.toEqual({
+      ok: true,
+      url: 'https://example.com/',
+      waited: false
+    })
+    expect(Date.now() - startedAt).toBeLessThan(200)
+  })
+
+  it('E: navigation 模式在已处于目标地址时立即返回 waited=false', async () => {
+    const wc = new FakeWc()
+    wc.url = 'https://example.org/' // 与 expectUrl 只差末尾斜杠
+    const startedAt = Date.now()
+    await expect(
+      waitForLoad(asWc(wc), { mode: 'navigation', expectUrl: 'https://example.org', timeoutMs: 3000 })
+    ).resolves.toEqual({ ok: true, url: 'https://example.org/', waited: false })
+    expect(Date.now() - startedAt).toBeLessThan(200)
+  })
+
+  it('F: 子框架/同文档导航开始不算本次加载的配对信号', async () => {
+    const wc = new FakeWc()
+    const p = waitForLoad(asWc(wc), { mode: 'maybe-navigation', graceMs: 120, timeoutMs: 3000 })
+    wc.emitStartNavigation('https://iframe.example/', false) // 子框架
+    wc.emitStartNavigation('https://example.com/#h', true, true) // 同文档
+    await sleep(30)
+    wc.emit('did-finish-load') // 没有合格配对,不得结算
+    await expect(p).resolves.toEqual({ ok: true, url: 'https://example.com/', waited: false })
+  })
+})
+
+describe('sameUrl', () => {
+  it('忽略 #hash 与末尾斜杠', () => {
+    expect(sameUrl('https://a/x/', 'https://a/x')).toBe(true)
+    expect(sameUrl('https://a/x#h', 'https://a/x')).toBe(true)
+    expect(sameUrl('https://a/x', 'https://a/y')).toBe(false)
+    expect(sameUrl('', '')).toBe(true)
   })
 })
 

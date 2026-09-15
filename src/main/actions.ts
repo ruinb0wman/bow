@@ -259,27 +259,87 @@ export async function pageScreenshot(wc: WebContents): Promise<ActionResult & { 
   }
 }
 
-/** 轮询间隔;LOAD_GRACE_MS 用于消解「loadURL 已发出、did-start-loading 还没到」的竞态 */
+/** 轮询间隔(ms) */
 const POLL_INTERVAL_MS = 120
-const LOAD_GRACE_MS = 300
+/**
+ * 只有 maybe-navigation 模式会用的宽限:多久没有观察到任何加载信号,
+ * 就认为「这次动作不会产生导航」。
+ *
+ * 不能取小值:loadURL() 发出到 did-start-loading 之间隔着一次跨进程投递,
+ * 非活动(后台)标签还会被 Chromium 调度推迟。300ms 曾在真实 HTTP 调用里赌输过 ——
+ * navigate{tabId} 立刻以 waited=false 返回,随后才发现导航其实刚开始。
+ */
+const NO_NAVIGATION_GRACE_MS = 1500
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/** 等待意图:决定「没有观察到加载过程」时是算成功还是继续等 */
+export type LoadWaitMode =
+  /** 等「当前正在进行的加载」结束;不加载时立即返回。用于 browser_wait(无 selector) */
+  | { mode: 'idle' }
+  /**
+   * 等「导航到 expectUrl 并完成」。没观察到本次导航就绝不结算(会等到 timeout 报错),
+   * 除非当前地址已经就是 expectUrl。用于 navigate / search / new_tab。
+   */
+  | { mode: 'navigation'; expectUrl: string }
+  /**
+   * 等「这次动作可能引发的导航」。graceMs 内没有任何加载信号就返回 waited=false。
+   * 用于 click / F5 / reload / back / forward 这些无法预知目标地址的动作。
+   */
+  | { mode: 'maybe-navigation' }
+
+export interface LoadWaitOptions {
+  timeoutMs?: number
+  /** 仅 maybe-navigation:覆盖 NO_NAVIGATION_GRACE_MS(单测用小值) */
+  graceMs?: number
+}
+
+/** 比较「文档身份」:忽略 #hash 与末尾斜杠差异 */
+export function sameUrl(a: string, b: string): boolean {
+  const norm = (u: string): string => {
+    const noHash = (u ?? '').split('#')[0] ?? ''
+    return noHash.length > 1 && noHash.endsWith('/') ? noHash.slice(0, -1) : noHash
+  }
+  return norm(a) === norm(b)
+}
+
 /**
  * 等待标签页主文档加载完成。
- * did-finish-load / did-fail-load 是权威信号;轮询只兜底两种情况:调用时加载已在途中
- * (事件在监听注册前就发生),或调用时加载早已结束(此时宽限期内可直接返回)。
- * 返回体里的 waited 表示是否真的观察到了加载过程,waited=false 说明页面在调用时就已就绪。
+ *
+ * 结算判据(回归用例见 tests/mcpWait.test.ts 的「waitForLoad 竞态回归」):
+ * 1. 只有「观察到了本次加载开始」之后收到的完成事件才允许结算 ——
+ *    否则上一次导航迟到的 did-finish-load 会把本次等待提前结算掉,返回旧地址;
+ * 2. navigation 模式还要求观察到本次主框架导航(did-navigate),或当前地址已等于目标;
+ * 3. 「此刻 isLoading() 为 false」永远不足以判定本次导航成功 ——
+ *    navigation 模式遇到这种情况会继续等(这正是 300ms 宽限期赌输的那条路径)。
+ *
+ * 返回体里的 waited 表示是否真的观察到了加载过程;waited=false 表示调用时页面就已就绪。
  */
-export async function waitForLoad(wc: WebContents, timeoutMs = 15_000): Promise<ActionResult> {
+export async function waitForLoad(
+  wc: WebContents,
+  wait: LoadWaitMode & LoadWaitOptions = { mode: 'idle' }
+): Promise<ActionResult> {
   if (wc.isDestroyed()) return { ok: false, error: '标签页已关闭' }
+  const timeoutMs = wait.timeoutMs ?? 15_000
+  const graceMs = wait.graceMs ?? NO_NAVIGATION_GRACE_MS
+  // 调用时就已经空闲:idle 直接返回;navigation 要看地址是否已达标;maybe-navigation 不在此列(它要等宽限)
+  if (!wc.isLoading()) {
+    if (wait.mode === 'idle') return { ok: true, url: wc.getURL(), waited: false }
+    if (wait.mode === 'navigation' && sameUrl(wc.getURL(), wait.expectUrl)) {
+      return { ok: true, url: wc.getURL(), waited: false }
+    }
+  }
   return new Promise<ActionResult>((resolve) => {
     let settled = false
-    let sawLoading = wc.isLoading()
+    /** 是否观察到「本次」加载:进入时已在加载,或注册之后收到 start / 主框架导航信号 */
+    let started = wc.isLoading()
+    /** 注册之后是否观察到主框架导航提交(navigation 模式的配对判据) */
+    let navigated = false
     let timer: ReturnType<typeof setTimeout> | null = null
     let poller: ReturnType<typeof setInterval> | null = null
+    const startedAt = Date.now()
     const finish = (result: ActionResult): void => {
       if (settled) return
       settled = true
@@ -287,36 +347,73 @@ export async function waitForLoad(wc: WebContents, timeoutMs = 15_000): Promise<
       if (poller) clearInterval(poller)
       wc.removeListener('did-start-loading', onStart)
       wc.removeListener('did-finish-load', onFinish)
+      wc.removeListener('did-stop-loading', onFinish)
+      wc.removeListener('did-start-navigation', onStartNavigation)
+      wc.removeListener('did-navigate', onNavigate)
       wc.removeListener('did-fail-load', onFail)
       wc.removeListener('destroyed', onDestroyed)
       resolve(result)
     }
-    const onStart = (): void => {
-      sawLoading = true
+    /** 这个完成信号是否属于「本次」加载 */
+    const matchesThisLoad = (): boolean => {
+      if (!started) return false
+      if (wait.mode !== 'navigation') return true
+      return navigated || sameUrl(wc.getURL(), wait.expectUrl)
     }
-    const onFinish = (): void => finish({ ok: true, url: wc.getURL(), waited: true })
+    const onStart = (): void => {
+      started = true
+    }
+    const onStartNavigation = (details?: { isMainFrame?: boolean; isSameDocument?: boolean }): void => {
+      // 子框架与同文档(hash)导航不构成「一次加载」
+      if (details?.isMainFrame === false || details?.isSameDocument) return
+      started = true
+    }
+    const onNavigate = (): void => {
+      started = true
+      navigated = true
+    }
+    const onFinish = (): void => {
+      if (matchesThisLoad()) finish({ ok: true, url: wc.getURL(), waited: true })
+    }
     const onFail = (_e: unknown, code: number, desc: string, _url: string, isMain: boolean): void => {
       if (!isMain || code === -3 /* ERR_ABORTED,常由页面自身发起的重定向/中止触发 */) return
       finish({ ok: false, error: `加载失败(${code}): ${desc}` })
     }
     const onDestroyed = (): void => finish({ ok: false, error: '标签页在加载过程中被关闭' })
-    const startedAt = Date.now()
     poller = setInterval(() => {
+      if (settled) return
       if (wc.isDestroyed()) {
         finish({ ok: false, error: '标签页在加载过程中被关闭' })
         return
       }
       if (wc.isLoading()) {
-        sawLoading = true
+        started = true
         return
       }
-      if (sawLoading || Date.now() - startedAt >= LOAD_GRACE_MS) {
-        finish({ ok: true, url: wc.getURL(), waited: sawLoading })
+      // 此刻不在加载:区分「本次加载已结束(事件可能在注册前就发过)」与「本次还没开始」
+      if (started) {
+        if (matchesThisLoad()) finish({ ok: true, url: wc.getURL(), waited: true })
+        return
+      }
+      if (wait.mode === 'idle') {
+        finish({ ok: true, url: wc.getURL(), waited: false })
+        return
+      }
+      if (wait.mode === 'navigation') {
+        // 地址已经对了 → 早就就绪;否则继续等,不能因为「此刻空闲」就判定导航成功
+        if (sameUrl(wc.getURL(), wait.expectUrl)) finish({ ok: true, url: wc.getURL(), waited: false })
+        return
+      }
+      if (Date.now() - startedAt >= graceMs) {
+        finish({ ok: true, url: wc.getURL(), waited: false })
       }
     }, POLL_INTERVAL_MS)
     timer = setTimeout(() => finish({ ok: false, error: `等待加载超时(${timeoutMs}ms)` }), timeoutMs)
     wc.on('did-start-loading', onStart)
     wc.on('did-finish-load', onFinish)
+    wc.on('did-stop-loading', onFinish)
+    wc.on('did-start-navigation', onStartNavigation)
+    wc.on('did-navigate', onNavigate)
     wc.on('did-fail-load', onFail)
     wc.on('destroyed', onDestroyed)
   })

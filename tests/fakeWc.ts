@@ -104,6 +104,31 @@ export class FakeWc extends EventEmitter {
     this.emit('did-finish-load')
   }
 
+  /**
+   * 模拟「一次完整加载」的开始:地址提交(did-navigate)+ 开始加载(did-start-loading)。
+   * 真实 Electron 里 did-navigate 在主框架提交时发出,这里与 start-loading 一起发,
+   * 因为 waitForLoad 的 navigation 模式需要看到「本次主框架导航」这个配对信号。
+   */
+  startLoad(url?: string): void {
+    if (url) this.url = url
+    this.loading = true
+    this.emit('did-start-loading')
+    this.emit('did-navigate', {}, this.url)
+  }
+
+  /** 模拟「一次完整加载」的结束(与 startLoad 配对,两个完成信号一起发) */
+  stopLoad(url?: string): void {
+    if (url) this.url = url
+    this.loading = false
+    this.emit('did-stop-loading')
+    this.emit('did-finish-load')
+  }
+
+  /** 只发主框架导航开始信号(用于验证 started 的配对判据) */
+  emitStartNavigation(url: string, isMainFrame = true, isSameDocument = false): void {
+    this.emit('did-start-navigation', { url, isMainFrame, isSameDocument }, url, isSameDocument, isMainFrame)
+  }
+
   async executeJavaScript(code: string): Promise<unknown> {
     this.execCount++
     if (this.throwOn.has(code)) throw new Error(`页面脚本抛错: ${code}`)

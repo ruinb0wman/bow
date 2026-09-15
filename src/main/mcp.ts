@@ -74,12 +74,14 @@ export const MCP_INSTRUCTIONS = `这是一个真实的多标签浏览器窗口(�
 推荐工作流
 1. browser_navigate / browser_search / browser_new_tab / browser_reload 默认已等到页面加载完成(waitUntil: 'load');
    需要立刻返回就传 waitUntil: 'none'。返回值里 waited=false 表示调用时页面已经就绪。
+   给 tabId 导航「非活动(后台)标签」时,加载由 Chromium 延后启动属正常,这条会等到真结果才返回 ——
+   若不想等,传 waitUntil: 'none' 或更小的 timeoutMs。
 2. 页面内容若是异步渲染的(SPA、懒加载),用 browser_wait { selector } 等目标元素出现,
    不要靠反复截图或盲目等待。
 3. 用 browser_snapshot 拿到元素后,直接使用它返回的 selector 调 browser_click / browser_type,
    不要自己猜 CSS 选择器。快照默认最多 200 个元素;页面很大时先调小 maxElements 定位,需要更多再扩大。
 4. browser_click 默认不等待(适合 SPA 内的局部交互);若这次点击会触发跳转,传 waitUntil: 'load',
-   或随后用 browser_wait 等具体元素。
+   或随后用 browser_wait 等具体元素。动作没有引发跳转时 waitUntil: 'load' 会在约 1.5s 内以 waited=false 返回。
 5. browser_press_key 返回 ok 只代表按键已投递,不代表网页已经处理完;若这次按键会触发跳转(如回车提交表单),
    传 waitUntil: 'load' 等到加载完成。等异步渲染仍然用 browser_wait,不要重复调用同一个工具探路。
 
@@ -143,11 +145,14 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
   /** 取标签页的 WebContents(等待类工具用) */
   const wcOf = (tabId: number): WebContents | null => tabs.getView(tabId)?.view.webContents ?? null
 
-  /** 等到指定标签加载完成;拿不到视图时返回失败体 */
-  const loadFor = async (tabId: number, timeoutMs: number): Promise<ActionResult> => {
+  /**
+   * 等到指定标签导航到 expectUrl 并加载完成;拿不到视图时返回失败体。
+   * 用 navigation 模式:地址没到就不会结算(见 actions.ts 的结算判据)。
+   */
+  const loadFor = async (tabId: number, timeoutMs: number, expectUrl: string): Promise<ActionResult> => {
     const wc = wcOf(tabId)
     if (!wc) return { ok: false, error: `标签 ${tabId} 不存在` }
-    return waitForLoad(wc, timeoutMs)
+    return waitForLoad(wc, { mode: 'navigation', expectUrl, timeoutMs })
   }
 
   /** 加载等待结果的统一回执:失败直接带 error,成功带 waited 供模型判断是否真的等了 */
@@ -173,7 +178,7 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
           return textContent({ ok: false, tabId: id, error: `标签 ${id} 无法导航到该地址` })
         }
         if (waitUntil === 'none') return textContent({ ok: true, url, tabId: id, createdTab: false })
-        const res = await loadFor(id, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS)
+        const res = await loadFor(id, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS, url)
         return textContent({ ok: res.ok, url, tabId: id, createdTab: false, ...loadFields(res) })
       }
       // 未指定:活动标签是设置等内部页面时另开新标签(内部页面不可被导航走)
@@ -181,7 +186,7 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
       const tab = tabs.openUrl(url)
       const createdTab = tab.id !== activeBefore?.info.id
       if (waitUntil === 'none') return textContent({ ok: true, url, tabId: tab.id, createdTab })
-      const res = await loadFor(tab.id, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS)
+      const res = await loadFor(tab.id, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS, url)
       return textContent({ ok: res.ok, url, tabId: tab.id, createdTab, ...loadFields(res) })
     }
   )
@@ -208,14 +213,14 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
           return textContent({ ok: false, tabId: id, error: `标签 ${id} 无法导航到该地址` })
         }
         if (waitUntil === 'none') return textContent({ ok: true, engine: engineId, url, tabId: id, createdTab: false })
-        const res = await loadFor(id, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS)
+        const res = await loadFor(id, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS, url)
         return textContent({ ok: res.ok, engine: engineId, url, tabId: id, createdTab: false, ...loadFields(res) })
       }
       const activeBefore = tabs.getActiveView()
       const tab = tabs.openUrl(url)
       const createdTab = tab.id !== activeBefore?.info.id
       if (waitUntil === 'none') return textContent({ ok: true, engine: engineId, url, tabId: tab.id, createdTab })
-      const res = await loadFor(tab.id, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS)
+      const res = await loadFor(tab.id, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS, url)
       return textContent({ ok: res.ok, engine: engineId, url, tabId: tab.id, createdTab, ...loadFields(res) })
     }
   )
@@ -274,7 +279,7 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
             : { ok: false, tabId: id, selector, state, error: res.error }
         )
       }
-      const res = await waitForLoad(wc, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS)
+      const res = await waitForLoad(wc, { mode: 'idle', timeoutMs: timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS })
       return textContent({ ok: res.ok, tabId: id, ...loadFields(res) })
     }
   )
@@ -296,7 +301,10 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
       const res = await pageClick(view.view.webContents, selector)
       if (!res.ok) return textContent({ ok: false, tabId: id, error: res.error })
       if (waitUntil !== 'load') return textContent({ ok: true, tabId: id, selector, result: res })
-      const load = await waitForLoad(view.view.webContents, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS)
+      const load = await waitForLoad(view.view.webContents, {
+        mode: 'maybe-navigation',
+        timeoutMs: timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS
+      })
       return textContent({ ok: load.ok, tabId: id, selector, result: res, ...loadFields(load) })
     }
   )
@@ -338,7 +346,10 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
       const low = key.toLowerCase()
       if (low === 'f5' || low === 'ctrl+r' || low === 'control+r') {
         tabs.reload(view.info.id)
-        const res = await waitForLoad(view.view.webContents, DEFAULT_LOAD_TIMEOUT_MS)
+        const res = await waitForLoad(view.view.webContents, {
+          mode: 'maybe-navigation',
+          timeoutMs: DEFAULT_LOAD_TIMEOUT_MS
+        })
         return textContent({ ok: res.ok, tabId: view.info.id, key, ...loadFields(res) })
       }
       if (low === 'ctrl+w' || low === 'control+w') {
@@ -352,7 +363,10 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
       const res = await pressKey(view.view.webContents, key)
       if (!res.ok) return textContent({ ok: false, tabId: view.info.id, error: res.error })
       if (waitUntil !== 'load') return textContent({ ok: true, pressed: key, tabId: view.info.id })
-      const load = await waitForLoad(view.view.webContents, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS)
+      const load = await waitForLoad(view.view.webContents, {
+        mode: 'maybe-navigation',
+        timeoutMs: timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS
+      })
       return textContent({ ok: load.ok, pressed: key, tabId: view.info.id, ...loadFields(load) })
     }
   )
@@ -397,7 +411,10 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
         const id = view.info.id
         fn(id)
         if (waitUntil === 'none') return textContent({ ok: true, tabId: id })
-        const res = await waitForLoad(view.view.webContents, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS)
+        const res = await waitForLoad(view.view.webContents, {
+          mode: 'maybe-navigation',
+          timeoutMs: timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS
+        })
         return textContent({ ok: res.ok, tabId: id, ...loadFields(res) })
       }
     )
@@ -423,7 +440,10 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
       const id = view.info.id
       tabs.reload(id)
       if (waitUntil === 'none') return textContent({ ok: true, tabId: id })
-      const res = await waitForLoad(view.view.webContents, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS)
+      const res = await waitForLoad(view.view.webContents, {
+        mode: 'maybe-navigation',
+        timeoutMs: timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS
+      })
       return textContent({ ok: res.ok, tabId: id, ...loadFields(res) })
     }
   )
@@ -442,7 +462,7 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
       // 新建标签的 info.url 要等 did-navigate 才更新,这里先回显请求地址,完成后的真实地址在 loadedUrl
       const requested = url ?? 'about:blank'
       if (!url || waitUntil === 'none') return textContent({ ok: true, tabId: t.id, url: requested })
-      const res = await loadFor(t.id, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS)
+      const res = await loadFor(t.id, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS, url)
       return textContent({ ok: res.ok, tabId: t.id, url: requested, ...loadFields(res) })
     }
   )

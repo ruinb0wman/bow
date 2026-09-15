@@ -37,8 +37,8 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 
 ## 参数速查
 
-- `waitUntil`:`'load'`(默认,等加载完)/ `'none'`(立即返回)
-- `waited`:返回体里的 `false` 表示调用时页面**已经**就绪,不代表这次没等待
+- `waitUntil`:`'load'`(默认,等加载完;动作没引发跳转时约 1.5s 后以 `waited=false` 返回)/ `'none'`(立即返回)
+- `waited`:只看它是不是 `true` —— `false` 表示**没有观察到这次的加载过程**(调用时页面已就绪,或这次动作根本没引发导航);给 `tabId` 导航非活动标签时 Chromium 可能推迟加载,这时 `waitUntil: 'load'` 会一直等到真结果或超时
 - `createdTab`:活动标签是 `bow://` 内部页(如设置页)时会另开标签 —— 一律以返回的 `tabId` 为准
 - `maxElements`:快照默认最多 200 个元素;页面很大时先调小定位,再按需扩大
 - `tabId`:省略则作用于活动标签(活动标签是内部页时会退到最近浏览的页面标签;都没有则自动新建 `about:blank`)

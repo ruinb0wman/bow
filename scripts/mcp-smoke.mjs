@@ -118,10 +118,21 @@ const other = await client.callTool({
   arguments: { url: 'https://www.iana.org/', activate: false }
 })
 const otherId = JSON.parse(other.content[0].text).tabId
-await client.callTool({
+// 这次调用必须「真的等到本次导航完成」:
+//  - waited=false → 等待被宽限期提前结算(导航才刚开始)
+//  - loadedUrl 不是 example.org → 被上一次导航迟到的 did-finish-load 结算了
+const navOther = await client.callTool({
   name: 'browser_navigate',
   arguments: { url: 'https://example.org/', tabId: otherId, waitUntil: 'load' }
 })
+const navOtherText = JSON.parse(navOther.content[0].text)
+assert(navOther.isError !== true, 'navigate{tabId} 不应报错', navOtherText)
+assert(navOtherText.waited === true, 'navigate{tabId} 必须等到真实加载完成(waited=true)', navOtherText)
+assert(
+  String(navOtherText.loadedUrl).startsWith('https://example.org'),
+  'navigate{tabId} 返回的 loadedUrl 必须是本次导航后的地址',
+  navOtherText
+)
 const otherInfo = JSON.parse(
   (await client.callTool({ name: 'browser_get_info', arguments: { tabId: otherId } })).content[0].text
 )
