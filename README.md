@@ -302,7 +302,7 @@ npm run test:mcp:http
 - 书签(「书签」插件):`<userData>/bookmarks.json`
 - 浏览历史(「浏览历史」插件,默认保留最近 500 条,可在「设置页 → 浏览历史」调整,按 URL 去重):`<userData>/history.json`;保留条数配置:`<userData>/history-settings.json`
 - CORS 放行配置(「CORS 放行」插件,首次启动从 `settings.json` 迁移):`<userData>/cors.json`
-- 广告拦截配置与计数(「广告/追踪拦截」插件,含网络规则、元素规则、元素例外标记与订阅,自动从旧版本迁移到 v3):`<userData>/adblock.json`
+- 广告拦截配置与计数(「广告/追踪拦截」插件,含网络规则、元素规则、元素例外标记与订阅,自动从旧版本迁移到 v3;单行 JSON):`<userData>/adblock.json`
 - 插件启停状态(内核):`<userData>/plugins.json`
 - 核心设置(默认搜索引擎/主页):`<userData>/settings.json`
 - MCP 模式下日志:`<userData>/browser.log`
@@ -384,6 +384,8 @@ MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生
 **元素框选**(类 AdGuard):点击工具栏「屏蔽元素」后,在页面中悬停高亮、点击选中、父/子级切换、选择器可编辑、实时预览、`Esc` 取消、`Enter`/「屏蔽」确认;确认后按当前页域立即生效并持久化。在设置页里点「屏蔽元素」会先自动切回最近浏览的页面标签再进入框选。
 
 **文本规则与导入导出**:设置里的「文本规则」页可维护用户规则(仅用户规则,应用后整体替换,不影响内置与订阅),支持导入/导出 EasyList/AdGuard 常用子集(`||host^`、`host`、`*.host`、`*` 通配、`@@`、`##`、`#@#`、`~domain`、常用 `$` 选项、`!` 注释),导入结果会按「不支持选项 / scriptlet / 其它格式」分类汇总跳过项。
+
+**性能姿态**:网络规则走主机后缀索引(每次请求只查相关桶),元素规则建索引后按 host 取候选,单页最多注入 2000 条隐藏选择器(超过的部分不注入,`unhide` 例外仍然生效);设置页列表分页(默认 200 条 + 筛选 + 加载更多),`getState` 不再回传全量规则;`adblock.json` 以单行 JSON 写入(几万条规则时不再每次改动都 pretty-print 一遍)。
 
 > 限制:跨域 iframe 内部元素、closed shadow root 内部元素、scriptlet/JS 规则、过程式过滤暂不支持;`$third-party` / `$domain=` 依赖请求发起页的地址,Electron 的 `onBeforeRequest` 只给到当前 webContents 的 URL(子框架请求会有偏差),拿不到页面地址时按「不拦截」处理。
 

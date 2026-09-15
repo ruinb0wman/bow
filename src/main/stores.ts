@@ -15,10 +15,13 @@ import { log, logError } from './logger'
 export class JsonStore<T> {
   private file: string
   private data: T
+  /** true = 单行 JSON(规则表这类大体积数据用,避免每次改动都 pretty-print 一遍) */
+  private compact: boolean
 
-  constructor(filename: string, defaults: T) {
+  constructor(filename: string, defaults: T, opts: { compact?: boolean } = {}) {
     this.file = join(app.getPath('userData'), filename)
     this.data = this.load(defaults)
+    this.compact = opts.compact === true
   }
 
   private load(defaults: T): T {
@@ -59,7 +62,8 @@ export class JsonStore<T> {
     try {
       mkdirSync(app.getPath('userData'), { recursive: true })
       const tmp = this.file + '.tmp'
-      writeFileSync(tmp, JSON.stringify(this.data, null, 2), 'utf-8')
+      const json = this.compact ? JSON.stringify(this.data) : JSON.stringify(this.data, null, 2)
+      writeFileSync(tmp, json, 'utf-8')
       renameSync(tmp, this.file)
     } catch (e) {
       logError('存储写入失败', this.file, e)
@@ -68,8 +72,8 @@ export class JsonStore<T> {
 }
 
 /** 创建任意 userData 下的 JSON 存储(插件内核与核心设置共用) */
-export function createStore<T>(filename: string, defaults: T): JsonStore<T> {
-  return new JsonStore<T>(filename, defaults)
+export function createStore<T>(filename: string, defaults: T, opts: { compact?: boolean } = {}): JsonStore<T> {
+  return new JsonStore<T>(filename, defaults, opts)
 }
 
 let settingsStore: JsonStore<Settings> | null = null

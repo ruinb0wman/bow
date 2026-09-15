@@ -3,6 +3,8 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   buildCosmeticCss,
+  buildCosmeticCssFromIndex,
+  buildCosmeticIndex,
   buildNetworkIndex,
   createDefaultConfig,
   createCosmeticFlagRule,
@@ -14,6 +16,7 @@ import {
   formatNetworkOptions,
   isNetworkBlocked,
   isThirdPartyHost,
+  MAX_COSMETIC_SELECTORS,
   migrateConfig,
   networkPatternMatches,
   networkRuleMatches,
@@ -351,6 +354,60 @@ describe('元素规则', () => {
     const rules = [cos('hide', 'example.com', '.promo', true, ['beta.example.com'])]
     expect(buildCosmeticCss('www.example.com', rules)).toContain('.promo')
     expect(buildCosmeticCss('beta.example.com', rules)).toBe('')
+  })
+
+  it('索引版与直接版结果一致(且能过滤停用/无选择器规则)', () => {
+    const rules = [
+      cos('hide', '*', '.g1'),
+      cos('hide', 'example.com', '.s1'),
+      cos('hide', 'news.example.com', '.s2'),
+      cos('unhide', 'example.com', '.s1'),
+      cos('hide', 'other.test', '.x'),
+      cos('hide', 'example.com', '.off', false),
+      cos('hide', 'example.com', '')
+    ]
+    const index = buildCosmeticIndex(rules)
+    const sortedLines = (css: string): string[] => css.split('\n').filter(Boolean).sort()
+    for (const host of ['example.com', 'news.example.com', 'deep.news.example.com', 'other.test', 'nope.test']) {
+      // 只比集合:索引版会把专属规则排在前(配额优先给专属规则)
+      expect(sortedLines(buildCosmeticCssFromIndex(index, host)), host).toEqual(
+        sortedLines(buildCosmeticCss(host, rules))
+      )
+    }
+    // news.example.com 上:.g1(泛化) + .s2(专属),.s1 被 unhide 掉
+    const css = buildCosmeticCssFromIndex(index, 'news.example.com')
+    expect(css).toContain('.g1{display:none!important}')
+    expect(css).toContain('.s2{display:none!important}')
+    expect(css).not.toContain('.s1{display:none!important}')
+  })
+
+  it('索引版也支持带端口 host 与元素例外标记', () => {
+    const rules = [cos('hide', 'example.com', '.specific'), cos('hide', '*', '.generic')]
+    const index = buildCosmeticIndex(rules)
+    const flags = [createCosmeticFlagRule('example.com', 'generic')]
+    expect(buildCosmeticCssFromIndex(index, 'example.com:8080', flags)).toBe('.specific{display:none!important}')
+    expect(buildCosmeticCssFromIndex(index, 'example.com:8080', flags)).toBe(
+      buildCosmeticCss('example.com:8080', rules, flags)
+    )
+  })
+
+  it('单页选择器数量有上限(订阅级清单不会把巨型 stylesheet 塞进页面)', () => {
+    const rules = Array.from({ length: MAX_COSMETIC_SELECTORS + 50 }, (_, i) => cos('hide', '*', `.ad-${i}`))
+    const css = buildCosmeticCss('any.test', rules)
+    expect(css.split('\n')).toHaveLength(MAX_COSMETIC_SELECTORS)
+    // 上限可覆盖,且去掉候选时不受影响
+    const small = buildCosmeticCss('any.test', rules, [], { maxSelectors: 10 })
+    expect(small.split('\n')).toHaveLength(10)
+    const index = buildCosmeticIndex(rules)
+    expect(buildCosmeticCssFromIndex(index, 'any.test').split('\n')).toHaveLength(MAX_COSMETIC_SELECTORS)
+  })
+
+  it('超出上限时 unhide 仍然生效', () => {
+    const hides = Array.from({ length: 30 }, (_, i) => cos('hide', '*', `.ad-${i}`))
+    const rules = [...hides, cos('unhide', '*', '.ad-0')]
+    const css = buildCosmeticCss('any.test', rules, [], { maxSelectors: 5 })
+    expect(css.split('\n')).toHaveLength(5)
+    expect(css).not.toContain('.ad-0{display:none!important}')
   })
 
   it('$generichide 只关泛化规则,$elemhide 两者都关,$specifichide 只关专属规则', () => {

@@ -78,8 +78,8 @@ export interface PluginContext {
   readonly id: string
   log(...args: unknown[]): void
   logError(...args: unknown[]): void
-  /** 插件私有 JSON 存储(userData 下),同 filename 复用同一实例 */
-  storage<T>(opts: { file: string; defaults: T }): PluginStorage<T>
+  /** 插件私有 JSON 存储(userData 下),同 filename 复用同一实例;compact=true 写单行 JSON */
+  storage<T>(opts: { file: string; defaults: T; compact?: boolean }): PluginStorage<T>
   ipc: {
     /** 注册渲染层可经 plugins.invoke(id, method, ...args) 调用的方法 */
     handle(method: string, fn: (...args: any[]) => unknown | Promise<unknown>): void

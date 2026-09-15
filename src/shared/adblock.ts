@@ -686,14 +686,9 @@ export function buildNetworkIndex(rules: NetworkRule[]): NetworkIndex {
 /** 取与该 URL 可能相关的候选规则(主机后缀桶 + 通配桶) */
 export function candidateRules(index: NetworkIndex, url: string): NetworkRule[] {
   const host = hostOf(url)
-  const hostname = hostnameOf(url)
-  if (!hostname) return index.other
-  const keys = new Set<string>()
-  if (host) keys.add(host.toLowerCase())
-  const labels = hostname.toLowerCase().split('.')
-  for (let i = 0; i < labels.length; i++) keys.add(labels.slice(i).join('.'))
+  if (!host) return index.other
   const out: NetworkRule[] = []
-  for (const key of keys) {
+  for (const key of hostLookupKeys(host)) {
     const arr = index.byHost.get(key)
     if (arr) out.push(...arr)
   }
@@ -739,26 +734,75 @@ export function removeBadfiltered(rules: NetworkRule[], badfilters: NetworkRule[
 
 // ---------- 元素隐藏 ----------
 
-/**
- * 按页面 host 生成元素隐藏 CSS;每个选择器一条独立规则,坏选择器不影响其他规则。
- * flags 来自 `$generichide` / `$elemhide` / `$specifichide`。
- */
-export function buildCosmeticCss(host: string, rules: CosmeticRule[], flags: CosmeticFlagRule[] = []): string {
-  if (!host) return ''
-  let genericDisabled = false
-  let specificDisabled = false
+/** 单页最多注入多少条隐藏选择器(订阅级清单下避免把巨型 stylesheet 塞进每个页面) */
+export const MAX_COSMETIC_SELECTORS = 2000
+
+export interface CosmeticIndex {
+  /** 无域(全站)规则 */
+  generic: CosmeticRule[]
+  /** 按域名分桶(查表时沿 host 后缀回溯) */
+  byDomain: Map<string, CosmeticRule[]>
+  size: number
+}
+
+/** 建索引:避免每个页面都遍历全部元素规则 */
+export function buildCosmeticIndex(rules: CosmeticRule[]): CosmeticIndex {
+  const generic: CosmeticRule[] = []
+  const byDomain = new Map<string, CosmeticRule[]>()
+  for (const r of rules) {
+    if (!r.enabled || !r.selector) continue
+    const domain = normalizeRuleDomain(r.domain)
+    if (!domain || domain === '*') {
+      generic.push(r)
+      continue
+    }
+    const arr = byDomain.get(domain)
+    if (arr) arr.push(r)
+    else byDomain.set(domain, [r])
+  }
+  return { generic, byDomain, size: rules.length }
+}
+
+/** host 的查表键(含端口与逐级后缀):a.b.com:8080 → a.b.com:8080 / a.b.com / b.com / com */
+export function hostLookupKeys(host: string): string[] {
+  const keys = new Set<string>()
+  const h = (host || '').toLowerCase()
+  if (!h) return []
+  keys.add(h)
+  const labels = h.split(':')[0].split('.')
+  for (let i = 0; i < labels.length; i++) keys.add(labels.slice(i).join('.'))
+  return [...keys]
+}
+
+/** 取该 host 相关的元素规则(专属规则在前,泛化规则在后 —— 配额优先给专属规则) */
+export function cosmeticCandidates(index: CosmeticIndex, host: string): CosmeticRule[] {
+  const out: CosmeticRule[] = []
+  for (const key of hostLookupKeys(host)) {
+    const arr = index.byDomain.get(key)
+    if (arr) out.push(...arr)
+  }
+  return out.length ? [...out, ...index.generic] : index.generic
+}
+
+function cosmeticFlagState(host: string, flags: CosmeticFlagRule[]): { generic: boolean; specific: boolean } {
+  let generic = false
+  let specific = false
   for (const f of flags) {
     if (!f.enabled || !hostMatches(host, f.host)) continue
-    if (f.generic) genericDisabled = true
-    if (f.specific) specificDisabled = true
+    if (f.generic) generic = true
+    if (f.specific) specific = true
   }
+  return { generic, specific }
+}
 
+function cssFromRules(host: string, rules: CosmeticRule[], flags: CosmeticFlagRule[], maxSelectors: number): string {
+  const disabled = cosmeticFlagState(host, flags)
   const hidden = new Set<string>()
   const unhidden = new Set<string>()
   for (const r of rules) {
     if (!r.enabled || !r.selector) continue
     const generic = !r.domain || r.domain === '*'
-    if (generic ? genericDisabled : specificDisabled) continue
+    if (generic ? disabled.generic : disabled.specific) continue
     if (!domainMatches(r.domain, host)) continue
     if (r.excludeDomains?.some((d) => hostMatches(host, d))) continue
     if (r.type === 'hide') hidden.add(r.selector)
@@ -768,8 +812,31 @@ export function buildCosmeticCss(host: string, rules: CosmeticRule[], flags: Cos
   for (const sel of hidden) {
     if (unhidden.has(sel)) continue
     out.push(`${sel}{display:none!important}`)
+    if (out.length >= maxSelectors) break
   }
   return out.join('\n')
+}
+
+/** 方案 A:直接给规则数组(内部建索引,适合小清单与单测) */
+export function buildCosmeticCss(
+  host: string,
+  rules: CosmeticRule[],
+  flags: CosmeticFlagRule[] = [],
+  opts: { maxSelectors?: number } = {}
+): string {
+  if (!host) return ''
+  return cssFromRules(host, rules, flags, opts.maxSelectors ?? MAX_COSMETIC_SELECTORS)
+}
+
+/** 方案 B:复用已建好的索引(插件运行时走这条) */
+export function buildCosmeticCssFromIndex(
+  index: CosmeticIndex,
+  host: string,
+  flags: CosmeticFlagRule[] = [],
+  opts: { maxSelectors?: number } = {}
+): string {
+  if (!host) return ''
+  return cssFromRules(host, cosmeticCandidates(index, host), flags, opts.maxSelectors ?? MAX_COSMETIC_SELECTORS)
 }
 
 // ---------- 去重与等价判断 ----------

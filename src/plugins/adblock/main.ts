@@ -11,7 +11,8 @@
 import { z } from 'zod'
 import type { NetHookContext } from '@shared/plugins'
 import {
-  buildCosmeticCss,
+  buildCosmeticCssFromIndex,
+  buildCosmeticIndex,
   buildNetworkIndex,
   cloneCosmeticRules,
   cloneNetworkRules,
@@ -37,6 +38,7 @@ import {
 import type {
   AdblockConfig,
   CosmeticFlagRule,
+  CosmeticIndex,
   CosmeticRule,
   CosmeticRuleType,
   NetworkIndex,
@@ -185,6 +187,7 @@ function createAdblockPlugin(): PluginMain {
   const picking = new Set<number>()
   let cssCache = new Map<string, string>()
   let index: NetworkIndex = buildNetworkIndex([])
+  let cosmeticIndex: CosmeticIndex = buildCosmeticIndex([])
 
   return {
     manifest: {
@@ -197,15 +200,18 @@ function createAdblockPlugin(): PluginMain {
 
     activate(ctx: PluginContext): void {
       // 默认值仅作占位:真实配置一律经 migrateConfig 生成,以正确识别旧版本数据
+      // compact:规则表可能有几万条,单行 JSON 写入比 pretty-print 快得多
       const s = ctx.storage<AdblockConfig>({
         file: 'adblock.json',
-        defaults: { version: 0 } as unknown as AdblockConfig
+        defaults: { version: 0 } as unknown as AdblockConfig,
+        compact: true
       })
       store = s
       const migrated = migrateConfig(s.get())
       s.setRaw(migrated)
       liveCount = migrated.blockedCount
       index = buildNetworkIndex(migrated.networkRules)
+      cosmeticIndex = buildCosmeticIndex(migrated.cosmeticRules)
 
       const clearCssCache = (): void => {
         cssCache = new Map()
@@ -213,7 +219,9 @@ function createAdblockPlugin(): PluginMain {
 
       /** 每次规则/开关变更后重建索引并清 CSS 缓存 */
       const reindex = (): void => {
-        index = buildNetworkIndex(s.get().networkRules)
+        const cfg = s.get()
+        index = buildNetworkIndex(cfg.networkRules)
+        cosmeticIndex = buildCosmeticIndex(cfg.cosmeticRules)
         clearCssCache()
       }
 
@@ -306,7 +314,7 @@ function createAdblockPlugin(): PluginMain {
         if (existing) return existing
         const rule = createCosmeticRule(type, domain, selector, { enabled: input.enabled ?? true, note: input.note })
         save({ cosmeticRules: [...cfg.cosmeticRules, rule] })
-        clearCssCache()
+        reindex()
         return rule
       }
 
@@ -355,15 +363,16 @@ function createAdblockPlugin(): PluginMain {
             })
           )
         })
-        clearCssCache()
+        reindex()
       }
 
-      /** 合并文本规则(导入 / 文本页应用):replace 时只保留内置规则 */
+      /** 合并文本规则(导入 / 文本页应用):replace 时只保留内置与订阅规则,替换的仅是用户规则 */
+      const keepOnReplace = (source: string): boolean => source === 'builtin' || source === 'subscription'
       const mergeParsedRules = (parsed: ParsedRules, replace: boolean) => {
         const cfg = s.get()
-        const baseNet = replace ? cfg.networkRules.filter((r) => r.source === 'builtin') : cfg.networkRules
-        const baseCos = replace ? cfg.cosmeticRules.filter((r) => r.source === 'builtin') : cfg.cosmeticRules
-        const baseFlags = replace ? cfg.cosmeticFlags.filter((f) => f.source === 'builtin') : cfg.cosmeticFlags
+        const baseNet = replace ? cfg.networkRules.filter((r) => keepOnReplace(r.source)) : cfg.networkRules
+        const baseCos = replace ? cfg.cosmeticRules.filter((r) => keepOnReplace(r.source)) : cfg.cosmeticRules
+        const baseFlags = replace ? cfg.cosmeticFlags.filter((f) => keepOnReplace(f.source)) : cfg.cosmeticFlags
         save({
           networkRules: removeBadfiltered(
             dedupeNetworkRules([...baseNet, ...parsed.networkRules]),
@@ -396,7 +405,7 @@ function createAdblockPlugin(): PluginMain {
         if (!host) return undefined
         const cached = cssCache.get(host)
         if (cached !== undefined) return cached || undefined
-        const css = buildCosmeticCss(host, cfg.cosmeticRules, cfg.cosmeticFlags)
+        const css = buildCosmeticCssFromIndex(cosmeticIndex, host, cfg.cosmeticFlags)
         if (cssCache.size >= 64) cssCache.clear()
         cssCache.set(host, css)
         return css || undefined
@@ -538,7 +547,7 @@ function createAdblockPlugin(): PluginMain {
 
       ctx.ipc.handle('removeCosmeticRule', (input: { id: string }): AdblockState => {
         save({ cosmeticRules: s.get().cosmeticRules.filter((r) => r.id !== input.id) })
-        clearCssCache()
+        reindex()
         ctx.content.refresh()
         return emitChanged()
       })
@@ -682,7 +691,7 @@ function createAdblockPlugin(): PluginMain {
           if (!rule) {
             rule = createCosmeticRule('hide', domain, selector, { source: 'picker' })
             save({ cosmeticRules: [...cfg.cosmeticRules, rule] })
-            clearCssCache()
+            reindex()
           }
           ctx.content.refresh(tab.id)
           ctx.ipc.emit('changed', state())
@@ -830,7 +839,7 @@ function createAdblockPlugin(): PluginMain {
             '按 EasyList/AdGuard 子集批量导入规则(支持 ||host^、host、*.host、* 通配、@@ 例外、$third-party/$domain=/$important 等选项、##/#@#、~domain 排除域、$generichide/$elemhide);不支持的写法会跳过并在 summary 里汇总',
           inputSchema: {
             text: z.string().describe('规则文本,每行一条'),
-            replace: z.boolean().optional().describe('true 时替换现有用户规则(保留内置)')
+            replace: z.boolean().optional().describe('true 时替换现有用户规则(保留内置与订阅规则)')
           }
         },
         async (args) => {

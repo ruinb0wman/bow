@@ -340,10 +340,11 @@ export class PluginKernel {
     return false
   }
 
-  storageFor<T>(opts: { file: string; defaults: T }): PluginStorage<T> {
+  storageFor<T>(opts: { file: string; defaults: T; compact?: boolean }): PluginStorage<T> {
     let store = this.storageCache.get(opts.file)
     if (!store) {
-      store = createStore<T>(opts.file, opts.defaults)
+      // 同一个 file 复用同一实例:compact 以首次请求为准(插件间共享文件名是错误用法)
+      store = createStore<T>(opts.file, opts.defaults, { compact: opts.compact })
       this.storageCache.set(opts.file, store)
     }
     return store as PluginStorage<T>
@@ -402,7 +403,7 @@ class PluginContextImpl implements PluginContext {
     logError(`[plugin:${this.id}]`, ...args)
   }
 
-  storage<T>(opts: { file: string; defaults: T }): PluginStorage<T> {
+  storage<T>(opts: { file: string; defaults: T; compact?: boolean }): PluginStorage<T> {
     return this.kernel.storageFor(opts)
   }
 
