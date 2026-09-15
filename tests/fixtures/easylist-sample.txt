@@ -1,0 +1,47 @@
+! Title: 真实清单片段(手写摘录,用于兼容性回归)
+[Adblock Plus 2.0]
+! 纯主机 / 锚点 / 通配 —— 支持
+||ads.example.com^
+||tracker.example.net^$third-party
+||cdn.example.com/ads/pixel.gif
+example.com^
+*.banner.example.org
+*/ads/*.js
+@@||good.example.com^
+! 选项子集 —— 支持
+||metrics.example.com^$script,third-party
+||pixel.example.com^$image,~third-party
+||api.example.com^$domain=news.example.com|~beta.news.example.com
+||must-block.example.com^$important
+||doubleclick.net^$badfilter
+! 元素规则 —— 支持
+example.com##.ad-banner
+example.com,news.example.com##.sponsored
+example.com,~beta.example.com##.promo
+##.global-ad-slot
+example.com#@#.ad-banner
+@@||news.example.com^$generichide
+@@||beta.example.com^$elemhide
+! 不支持的选项 —— 必须跳过(绝不能降级成整域拦截)
+||redirect.example.com^$redirect=noop.js
+||clean.example.com^$removeparam=utm_source
+||csp.example.com^$csp=script-src 'self'
+||page.example.com^$document
+||popup.example.com^$popup
+||header.example.com^$removeheader=set-cookie
+||unknown.example.com^$totally-unknown-option
+! scriptlet / 过程式过滤 —— 跳过
+example.com#?#.extended:has(.x)
+example.com#$#body { background: none !important; }
+example.com#%#//scriptlet('abort-on-property-read', 'ads')
+example.com##.x:has-text(Sponsored)
+example.com##+js(set-constant, ads, false)
+! 非 ABP 格式 —— 识别并明确拒绝
+0.0.0.0 telemetry.bad.example
+127.0.0.1 metrics.bad.example
+address=/dns.bad.example/0.0.0.0
+server=/dns2.bad.example/0.0.0.0
+DOMAIN-SUFFIX,clash.bad.example
+DOMAIN,clash2.bad.example
+IP-CIDR,10.0.0.0/8,no-resolve
+# hosts 注释行

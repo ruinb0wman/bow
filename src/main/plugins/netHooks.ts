@@ -89,7 +89,8 @@ export class NetHookHost {
     const s = session.defaultSession.webRequest
 
     s.onBeforeRequest((details, callback) => {
-      const ctx = new NetContext('onBeforeRequest', details as DetailsLike)
+      // pageUrl 也在这里补齐:$third-party / $domain= 需要知道发起请求的页面
+      const ctx = new NetContext('onBeforeRequest', details as DetailsLike, pageUrlOf(details as DetailsLike))
       this.run('onBeforeRequest', ctx)
       if (ctx.canceled) {
         callback(ctx.redirectURL ? { redirectURL: ctx.redirectURL } : { cancel: true })

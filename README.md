@@ -257,8 +257,10 @@ npm run test:mcp:http
 | `browser_get_info {tabId?}` | 当前标签标题 / URL / 加载状态 |
 | `browser_add_bookmark {title?, url, folderId?}` / `browser_list_bookmarks` | 书签维护(由「书签」插件提供) |
 | `adblock_stats` | 广告/追踪拦截统计(由「广告/追踪拦截」插件提供) |
-| `adblock_list_rules / adblock_add_rule / adblock_remove_rule / adblock_set_enabled` | 广告规则增删查与开关(由「广告/追踪拦截」插件提供) |
-| `adblock_import_rules {text, replace?}` | 按 AdGuard/EasyList 常用语法批量导入规则(由「广告/追踪拦截」插件提供) |
+| `adblock_list_rules {kind?, domain?, offset?, limit?}` | 广告规则分页查询(默认 network 类型、200 条;由「广告/追踪拦截」插件提供) |
+| `adblock_add_rule / adblock_remove_rule / adblock_set_enabled` | 广告规则增删与开关(不支持 `$` 选项的手写规则会被拒绝)(由「广告/追踪拦截」插件提供) |
+| `adblock_import_rules {text, replace?}` | 按 EasyList/AdGuard 子集批量导入规则,不支持的写法整行跳过并在 summary 汇总(由「广告/追踪拦截」插件提供) |
+| `adblock_subscribe {url, title?}` / `adblock_refresh_subscriptions {id?}` | 新增订阅并立即拉取 / 更新订阅(由「广告/追踪拦截」插件提供) |
 | `browser_fullscreen_element {selector, tabId?}` | 让页面元素铺满网页视口(由「元素全屏」插件提供) |
 | `browser_exit_fullscreen {tabId?}` | 退出元素全屏并还原页面(由「元素全屏」插件提供) |
 
@@ -300,7 +302,7 @@ npm run test:mcp:http
 - 书签(「书签」插件):`<userData>/bookmarks.json`
 - 浏览历史(「浏览历史」插件,默认保留最近 500 条,可在「设置页 → 浏览历史」调整,按 URL 去重):`<userData>/history.json`;保留条数配置:`<userData>/history-settings.json`
 - CORS 放行配置(「CORS 放行」插件,首次启动从 `settings.json` 迁移):`<userData>/cors.json`
-- 广告拦截配置与计数(「广告/追踪拦截」插件,含网络规则与元素规则,自动从 v1 主机清单迁移):`<userData>/adblock.json`
+- 广告拦截配置与计数(「广告/追踪拦截」插件,含网络规则、元素规则、元素例外标记与订阅,自动从旧版本迁移到 v3):`<userData>/adblock.json`
 - 插件启停状态(内核):`<userData>/plugins.json`
 - 核心设置(默认搜索引擎/主页):`<userData>/settings.json`
 - MCP 模式下日志:`<userData>/browser.log`
@@ -366,14 +368,24 @@ MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生
 
 规则分两类,均可在「设置页 → 广告/追踪拦截」中增删改/启停:
 
-- **网络规则**:拦截或放行请求,模式支持 `example.com`(含子域)、`*.example.com`、`||ads.example.com^` 与含 `*` 的 URL 通配;`@@` 为放行例外(放行优先)。主文档不拦截。
-- **元素规则**:按域隐藏页面元素,`domain##selector` 为隐藏、`domain#@#selector` 为例外;域对该域及其子域生效,`*` 表示全站。
+- **网络规则**:拦截或放行请求,模式支持 `example.com`(含子域)、`*.example.com`、`||ads.example.com^`、`||host/path` 与含 `*` 的 URL 通配;`@@` 为放行例外(放行优先),`$important` 的拦截规则无视放行。主文档不拦截。规则列表在设置页里分页展示(默认 200 条、可筛选+加载更多)。
+- **元素规则**:按域隐藏页面元素,`domain##selector` 为隐藏、`domain#@#selector` 为例外,`~domain` 为排除域;域对该域及其子域生效,`*` 表示全站。
+
+**支持的 `$` 选项子集**(文本导入 / 订阅 / 导出往返):`third-party`(别名 `3p`)、`~third-party`(`1p`/`first-party`)、资源类型(`script`/`js`、`image`/`img`、`stylesheet`/`css`、`xmlhttprequest`/`xhr`、`subdocument`/`frame`、`font`、`media`、`websocket`、`ping`、`object`、`other` 及其取反 `~`)、`domain=a.com|~b.a.com`、`important`、`badfilter`(删除等价规则,含内置规则)。
+
+**不支持的写法会整行跳过并汇总**,绝不降级成更宽的规则(例如 `||x^$removeparam=` 不会被当成 `||x^` 整域拦截):`$document`/`$popup`/`$csp`/`$removeparam`/`$redirect`/`$replace`/`$removeheader`/`$permissions`/`$from=`/`$match-case`、scriptlet(`#$#`/`#%#`/`##+js(...)`)、扩展/过程式选择器(`#?#`、`:has-text()`、`:matches-*`、`:style()`、`:upward()`)。hosts / dnsmasq / Clash 格式(如 `0.0.0.0 domain`、`address=/domain/…`、`DOMAIN-SUFFIX,…`)会被识别并明确拒绝,不再假装导入成功。
+
+**元素例外标记**:`@@||host^$generichide`、`$elemhide`、`$specifichide` 落成「元素例外」(只关该 host 的泛化/专属元素隐藏),**不再变成网络放行规则** —— 早期版本会把这类行当成 `@@||host^`,导致整站放行。
+
+**订阅**:设置里的「订阅」页可维护 EasyList/AdGuard 的 `.txt` 地址,手动「更新全部」或单条更新;更新只替换该订阅上一次导入的规则,不影响手动规则与内置规则,并在列表里显示条数/更新时间/失败原因。订阅拉取在浏览器主进程完成(30s 超时,非 2xx 即失败),配置仍存在 `<userData>/adblock.json`。
+
+**MCP**:`adblock_import_rules` 走同一套解析(`summary` 里给出 `network/cosmetic/cosmeticFlags/badfilters/skipped{reasons,foreignFormats}`),`adblock_list_rules` 支持 `kind/domain/offset/limit`(默认 200 条,不再返回全表),另有 `adblock_subscribe` / `adblock_refresh_subscriptions`。
 
 **元素框选**(类 AdGuard):点击工具栏「屏蔽元素」后,在页面中悬停高亮、点击选中、父/子级切换、选择器可编辑、实时预览、`Esc` 取消、`Enter`/「屏蔽」确认;确认后按当前页域立即生效并持久化。在设置页里点「屏蔽元素」会先自动切回最近浏览的页面标签再进入框选。
 
-**文本规则与导入导出**:设置里的「文本规则」页可维护用户规则,支持导入/导出 AdGuard/EasyList 常用子集(`||host^`、`host`、`*.host`、`*` 通配、`@@`、`##`、`#@#`、`!` 注释);不支持的语法(`#?#`、`#$#`、`$document` 等)会跳过并汇总提示。
+**文本规则与导入导出**:设置里的「文本规则」页可维护用户规则(仅用户规则,应用后整体替换,不影响内置与订阅),支持导入/导出 EasyList/AdGuard 常用子集(`||host^`、`host`、`*.host`、`*` 通配、`@@`、`##`、`#@#`、`~domain`、常用 `$` 选项、`!` 注释),导入结果会按「不支持选项 / scriptlet / 其它格式」分类汇总跳过项。
 
-> 限制:跨域 iframe 内部元素、closed shadow root 内部元素、scriptlet/JS 规则暂不支持。
+> 限制:跨域 iframe 内部元素、closed shadow root 内部元素、scriptlet/JS 规则、过程式过滤暂不支持;`$third-party` / `$domain=` 依赖请求发起页的地址,Electron 的 `onBeforeRequest` 只给到当前 webContents 的 URL(子框架请求会有偏差),拿不到页面地址时按「不拦截」处理。
 
 ### 元素全屏插件
 
