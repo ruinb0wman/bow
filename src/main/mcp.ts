@@ -88,10 +88,11 @@ export const MCP_INSTRUCTIONS = `这是一个真实的多标签浏览器窗口(�
 工具选型
 - 读结构化数据、批量取值 → browser_eval(最省 token)
 - 定位可点 / 可输入元素 → browser_snapshot
-- 判断样式、布局、视觉效果 → browser_screenshot(无 GPU 的环境可能返回黑帧,此时不要反复重试)
+- 判断样式、布局、视觉效果 → browser_screenshot;要看滚动到视口外的内容就传 fullPage: true
 
 边界
 - bow:// 内部页面标签不支持页面类工具,会被明确拒绝。
+- browser_screenshot 默认只截当前视口;fullPage: true 截整页(输出分辨率 = 文档 CSS 尺寸 × devicePixelRatio,与普通截图一致)。整页截图需要临时附加调试器,该标签开着 DevTools 会失败;页面过高(设备像素超过 16000)会明确报错,改用 browser_scroll 分段。无 GPU 的环境可能返回黑帧,不要反复重试。
 - browser_navigate / browser_search 传 tabId 时作用于指定标签(指向内部页面标签会被拒绝);省略则作用于活动标签。
 - 插件被停用后,它贡献的工具(如 adblock_*)会从工具列表消失,这不是故障;可在 bow://settings 的「插件管理」重新启用。
 - browser_press_key 的 Ctrl+T / Ctrl+W 直接操作标签页,不等同于网页内的按键。`
@@ -495,13 +496,17 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
     })
   })
 
-  tool('browser_screenshot', { tabId: z.number().optional() }, async ({ tabId }) => {
-    const { view, fail } = target(tabId)
-    if (!view) return textContent({ ok: false, error: fail })
-    const res = await pageScreenshot(view.view.webContents)
-    if (!res.ok || !res.data) return textContent({ ok: false, error: res.error ?? '截图失败' })
-    return imageContent(res.data.pngBase64)
-  })
+  tool(
+    'browser_screenshot',
+    { tabId: z.number().optional(), fullPage: z.boolean().optional() },
+    async ({ tabId, fullPage }) => {
+      const { view, fail } = target(tabId)
+      if (!view) return textContent({ ok: false, error: fail })
+      const res = await pageScreenshot(view.view.webContents, { fullPage: fullPage === true })
+      if (!res.ok || !res.data) return textContent({ ok: false, error: res.error ?? '截图失败' })
+      return imageContent(res.data.pngBase64)
+    }
+  )
 
   tool('browser_get_info', { tabId: z.number().optional() }, async ({ tabId }) => {
     const { view, fail } = target(tabId)

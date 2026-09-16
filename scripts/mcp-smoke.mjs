@@ -54,6 +54,12 @@ const transport = isHttp
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+/** 从 PNG base64 读 IHDR 里的宽高(不引依赖:签名 8B + 长度 4B + 'IHDR' 4B + 宽 4B + 高 4B) */
+function pngSize(base64) {
+  const buf = Buffer.from(base64.slice(0, 64), 'base64')
+  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) }
+}
+
 function assert(cond, msg, detail) {
   if (!cond) {
     console.error('✗ 断言失败: ' + msg)
@@ -255,6 +261,62 @@ console.log(`✓ browser_screenshot: ${(imageContent.data.length / 1024).toFixed
 const shotPath = process.env.SMOKE_SHOT_PATH || '/tmp/mcp-shot.png'
 writeFileSync(shotPath, Buffer.from(imageContent.data, 'base64'))
 console.log(`✓ 截图已保存: ${shotPath}`)
+
+// 4.5 整页截图(fullPage):当前页只有一屏,先塞一个 5000px 高的元素,验证真的截到了视口外
+const tall = await client.callTool({
+  name: 'browser_eval',
+  arguments: {
+    tabId,
+    code: `document.body.innerHTML = '<div style="height:5000px;background:linear-gradient(#ffffff,#000000)"></div>'; JSON.stringify({
+      scrollHeight: document.documentElement.scrollHeight,
+      clientWidth: document.documentElement.clientWidth,
+      innerHeight: window.innerHeight,
+      dpr: window.devicePixelRatio
+    })`
+  }
+})
+const doc = JSON.parse(JSON.parse(tall.content[0].text).result)
+assert(doc.scrollHeight >= 5000, `注入高页面失败,scrollHeight=${doc.scrollHeight}`, doc)
+
+const full = await client.callTool({ name: 'browser_screenshot', arguments: { tabId, fullPage: true } })
+const fullImg = full.content.find((c) => c.type === 'image')
+assert(fullImg && fullImg.mimeType === 'image/png', '整页截图返回 PNG', full.content[0]?.text ?? full)
+const fullSize = pngSize(fullImg.data)
+// 输出分辨率 = 文档 CSS 尺寸 × devicePixelRatio(实测 dpr 1.25 下 12900 CSS px 的页面得到 16125 设备像素)
+assert(
+  Math.abs(fullSize.width - doc.clientWidth * doc.dpr) <= 2,
+  `整页截图宽度应为内容宽 × dpr(${fullSize.width} vs ${doc.clientWidth}×${doc.dpr})`,
+  fullSize
+)
+assert(
+  Math.abs(fullSize.height - doc.scrollHeight * doc.dpr) <= 2,
+  `整页截图高度应覆盖整页(${fullSize.height} vs ${doc.scrollHeight}×${doc.dpr})`,
+  fullSize
+)
+assert(
+  fullSize.height > doc.innerHeight * doc.dpr,
+  '整页截图必须高于一屏(视口截图高度)',
+  { fullSize, viewport: doc }
+)
+console.log(`✓ browser_screenshot {fullPage:true}: ${fullSize.width}×${fullSize.height}(视口 ${doc.clientWidth}×${doc.innerHeight} CSS px,dpr ${doc.dpr})`)
+const fullShotPath = process.env.SMOKE_FULL_PAGE_SHOT_PATH || shotPath.replace(/\.png$/, '-full.png')
+writeFileSync(fullShotPath, Buffer.from(fullImg.data, 'base64'))
+console.log(`✓ 整页截图已保存: ${fullShotPath}`)
+
+// 4.6 超过设备像素上限时必须明确报错 —— Chromium 不会报错,而是返回内容重复的错图
+//     (实测 dpr 1.25 下 16500 设备像素开始出错,所以按 16000 设备像素卡住)
+await client.callTool({
+  name: 'browser_eval',
+  arguments: { tabId, code: `document.body.innerHTML = '<div style="height:20000px"></div>'` }
+})
+const tooTall = await client.callTool({ name: 'browser_screenshot', arguments: { tabId, fullPage: true } })
+assert(tooTall.isError === true, '超高页面必须报错而不是返回错图', tooTall.content[0]?.text)
+assert(
+  String(tooTall.content[0]?.text).includes('超过单张整页截图上限'),
+  '超高页面应给出上限提示',
+  tooTall.content[0]?.text
+)
+console.log('✓ 超高页面已报错:', JSON.parse(tooTall.content[0].text).error)
 
 // 5. 列表
 const lt = await client.callTool({ name: 'browser_list_tabs', arguments: {} })

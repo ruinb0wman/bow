@@ -64,10 +64,57 @@ function makeElement(spec: FakeElement): Record<string, unknown> {
   return el
 }
 
+export class FakeDebugger {
+  attached = false
+  /** attach() 抛错(模拟 DevTools 占着调试器) */
+  attachError: Error | null = null
+  /** sendCommand 抛错 */
+  sendError: Error | null = null
+  detachCount = 0
+  calls: Array<{ method: string; params?: unknown }> = []
+  /** Page.getLayoutMetrics 的返回;拿不到尺寸的路径用空对象 */
+  metrics: unknown = { cssContentSize: { width: 1200, height: 800 } }
+  /** Runtime.evaluate 读到的 devicePixelRatio;null 模拟读不到 */
+  devicePixelRatio: number | null = 1.25
+  /** Page.captureScreenshot 返回的 base64;null = 空图 */
+  shotData: string | null = Buffer.from('fake-fullpage-png').toString('base64')
+
+  isAttached(): boolean {
+    return this.attached
+  }
+
+  attach(): void {
+    if (this.attachError) throw this.attachError
+    this.attached = true
+  }
+
+  detach(): void {
+    this.attached = false
+    this.detachCount++
+  }
+
+  async sendCommand(method: string, params?: unknown): Promise<any> {
+    this.calls.push({ method, params })
+    if (this.sendError) throw this.sendError
+    if (method === 'Page.getLayoutMetrics') return this.metrics
+    if (method === 'Runtime.evaluate') {
+      return { result: this.devicePixelRatio == null ? {} : { value: this.devicePixelRatio } }
+    }
+    if (method === 'Page.captureScreenshot') return { data: this.shotData }
+    return {}
+  }
+}
+
 export class FakeWc extends EventEmitter {
   destroyed = false
   loading = false
   url = 'https://example.com/'
+  /** 视口截图(capturePage)的假返回值 */
+  captureEmpty = false
+  capturePng = Buffer.from('fake-viewport-png')
+  captureCount = 0
+  /** 整页截图(capturePage 之外的 CDP 路径)用的假调试器 */
+  debugger = new FakeDebugger()
   /** 页面元素:选择器 → 元素规格 */
   elements = new Map<string, FakeElement>()
   /** 会由 querySelector 抛错的选择器 */
@@ -83,6 +130,12 @@ export class FakeWc extends EventEmitter {
 
   isDestroyed(): boolean {
     return this.destroyed
+  }
+
+  /** 视口截图:真实 Electron 用 NativeImage,这里只需要 isEmpty()/toPNG() 两个面 */
+  async capturePage(): Promise<{ isEmpty: () => boolean; toPNG: () => Buffer }> {
+    this.captureCount++
+    return { isEmpty: () => this.captureEmpty, toPNG: () => this.capturePng }
   }
 
   isLoading(): boolean {

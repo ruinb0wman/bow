@@ -247,8 +247,44 @@ function resolveKey(key: string): PressKeySpec | null {
   return { keyCode, modifiers: mods }
 }
 
-/** 截图:capturePage → PNG base64 */
-export async function pageScreenshot(wc: WebContents): Promise<ActionResult & { data?: { pngBase64: string } }> {
+/**
+ * 单张整页截图的设备像素高度上限。
+ *
+ * 超过 GPU 能承载的 surface 尺寸时,Chromium 不会报错,而是**安静地返回错图** ——
+ * 真机实测(dpr 1.25,1583px 宽):12900 CSS px / 16125 设备像素完整正确,
+ * 13200 CSS px / 16500 设备像素时底部直接变回页面顶部(内容重复、尾部丢失)。
+ * 所以上限必须按**设备像素**算(6 万像素高的页面在 dpr 2 下同样会超),CSS 像素上限
+ * 由 devicePixelRatio 换算;取 16000 而不是 16384 是为了留一点余量。
+ */
+const MAX_FULL_PAGE_DEVICE_PX = 16_000
+
+/**
+ * 读页面缩放比(devicePixelRatio)。
+ * 走 CDP 的 Runtime.evaluate 而不是 wc.executeJavaScript:此时调试器已经挂上了,
+ * 这条路不受页面 CSP / 脚本策略影响,也不会另起一次主进程→渲染进程的往返。
+ * 读不到就返回 null —— 宁可明确失败,不能拿 dpr=1 去赌一个可能高得多的真实尺寸(会得到错图)。
+ */
+async function readDevicePixelRatio(dbg: WebContents['debugger']): Promise<number | null> {
+  const res = await dbg.sendCommand('Runtime.evaluate', {
+    expression: 'window.devicePixelRatio',
+    returnByValue: true
+  })
+  const value = Number(res?.result?.value)
+  return Number.isFinite(value) && value > 0 ? value : null
+}
+
+/** 截图选项 */
+export interface ScreenshotOptions {
+  /** true = 截整页(含视口外的滚动内容);false/省略 = 只截当前视口 */
+  fullPage?: boolean
+}
+
+/** 截图:默认截当前视口(capturePage);fullPage 走 CDP 的 beyond-viewport 截整页 */
+export async function pageScreenshot(
+  wc: WebContents,
+  opts: ScreenshotOptions = {}
+): Promise<ActionResult & { data?: { pngBase64: string } }> {
+  if (opts.fullPage) return await fullPageScreenshot(wc)
   try {
     const image = await wc.capturePage()
     if (image.isEmpty()) return { ok: false, error: '截图为空(页面可能尚未渲染)' }
@@ -256,6 +292,81 @@ export async function pageScreenshot(wc: WebContents): Promise<ActionResult & { 
   } catch (e) {
     logError('截图失败', e)
     return { ok: false, error: String((e as Error).message ?? e) }
+  }
+}
+
+/**
+ * 整页截图。
+ *
+ * capturePage() 只能拿到视口内的像素,没有整页选项,所以这里临时挂上 CDP:
+ * Page.getLayoutMetrics 取文档尺寸 → Page.captureScreenshot{captureBeyondViewport} 一次渲染整页。
+ * clip 的坐标是文档坐标(x/y 从 0 起),因此页面当前滚到哪里都不影响结果。
+ *
+ * 两点刻意的取舍:
+ * - clip.scale 固定 1,但输出分辨率就是设备像素(文档 CSS 尺寸 × devicePixelRatio),
+ *   与普通截图一致 —— 高倍屏下更清晰,代价是高度上限得按设备像素换算。
+ * - 我们自己 attach 的调试器用完就 detach;调试器被别人占着(开了 DevTools)时直接报错,不去抢。
+ */
+async function fullPageScreenshot(
+  wc: WebContents
+): Promise<ActionResult & { data?: { pngBase64: string } }> {
+  const dbg = wc.debugger
+  if (!dbg) return { ok: false, error: '当前环境不支持整页截图(拿不到调试器)' }
+
+  let attachedByUs = false
+  if (!dbg.isAttached()) {
+    try {
+      dbg.attach('1.3')
+      attachedByUs = true
+    } catch (e) {
+      return {
+        ok: false,
+        error: `整页截图需要临时附加调试器,附加失败(DevTools 是否已打开?):${String((e as Error).message ?? e)}`
+      }
+    }
+  }
+
+  try {
+    const metrics = await dbg.sendCommand('Page.getLayoutMetrics')
+    const size = metrics?.cssContentSize ?? metrics?.contentSize
+    const width = Math.ceil(Number(size?.width) || 0)
+    const height = Math.ceil(Number(size?.height) || 0)
+    if (width <= 0 || height <= 0) return { ok: false, error: '拿不到页面尺寸,整页截图失败' }
+
+    const dpr = await readDevicePixelRatio(dbg)
+    if (dpr == null) return { ok: false, error: '拿不到页面缩放比,整页截图失败' }
+    const maxCssHeight = Math.floor(MAX_FULL_PAGE_DEVICE_PX / dpr)
+    if (height > maxCssHeight) {
+      return {
+        ok: false,
+        error:
+          `页面高 ${height}px(×缩放比 ${dpr} = ${Math.round(height * dpr)} 设备像素)超过单张整页截图上限` +
+          `(设备像素 ${MAX_FULL_PAGE_DEVICE_PX},当前缩放比下约 ${maxCssHeight}px);请用 browser_scroll 分段截图`
+      }
+    }
+
+    const shot = await dbg.sendCommand('Page.captureScreenshot', {
+      format: 'png',
+      fromSurface: true,
+      captureBeyondViewport: true,
+      clip: { x: 0, y: 0, width, height, scale: 1 }
+    })
+    const pngBase64 = shot?.data
+    if (typeof pngBase64 !== 'string' || !pngBase64) {
+      return { ok: false, error: '整页截图返回为空(页面可能尚未渲染或过高)' }
+    }
+    return { ok: true, data: { pngBase64 } }
+  } catch (e) {
+    logError('整页截图失败', e)
+    return { ok: false, error: `整页截图失败:${String((e as Error).message ?? e)}` }
+  } finally {
+    if (attachedByUs) {
+      try {
+        dbg.detach()
+      } catch (e) {
+        logError('调试器 detach 失败', e)
+      }
+    }
   }
 }
 

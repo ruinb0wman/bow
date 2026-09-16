@@ -47,11 +47,17 @@ interface CallResult {
   isError: boolean
   data: any
   text: string
+  content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>
 }
 
 async function call(client: Client, name: string, args: Record<string, unknown> = {}): Promise<CallResult> {
   const res = await client.callTool({ name, arguments: args })
-  const content = (res.content ?? []) as Array<{ type: string; text?: string }>
+  const content = (res.content ?? []) as Array<{
+    type: string
+    text?: string
+    data?: string
+    mimeType?: string
+  }>
   const text = content.find((c) => c.type === 'text')?.text ?? ''
   let data: unknown = null
   try {
@@ -59,7 +65,7 @@ async function call(client: Client, name: string, args: Record<string, unknown> 
   } catch {
     data = null
   }
-  return { isError: res.isError === true, data, text }
+  return { isError: res.isError === true, data, text, content }
 }
 
 /** 建一个普通网页标签并返回它的假 WebContents */
@@ -680,6 +686,176 @@ describe('MCP 服务器:未知参数严格校验', () => {
     expect(list.data.tabs).toHaveLength(1)
     const snap = await call(client, 'browser_snapshot', {}) // maxElements 默认值仍生效
     expect(snap.isError).toBe(false)
+    await client.close()
+  })
+})
+
+/**
+ * 截图的两条路径:视口(capturePage)与整页(CDP beyond-viewport)。
+ *
+ * 这里能守住的:两条路径各自被走到、CDP 参数与文档尺寸一致、异常一律显式失败。
+ * 真实整页像素(是否真的含视口外内容)只能由桌面环境验证——见 README 的 MCP 冒烟测试。
+ */
+describe('MCP 服务器:截图', () => {
+  it('默认只截视口:走 capturePage,完全不碰调试器', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs)
+    const res = await call(client, 'browser_screenshot', {})
+    expect(res.isError).toBe(false)
+    expect(res.content[0]).toMatchObject({
+      type: 'image',
+      mimeType: 'image/png',
+      data: wc.capturePng.toString('base64')
+    })
+    expect(wc.captureCount).toBe(1)
+    expect(wc.debugger.calls).toHaveLength(0)
+    expect(wc.debugger.attached).toBe(false)
+    await client.close()
+  })
+
+  it('fullPage: true 按文档尺寸截整页,用完自动 detach', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs)
+    wc.debugger.metrics = { cssContentSize: { width: 1200, height: 3076.4 } }
+
+    const res = await call(client, 'browser_screenshot', { fullPage: true })
+
+    expect(res.isError).toBe(false)
+    expect(res.content[0]).toMatchObject({ type: 'image', data: wc.debugger.shotData })
+    expect(wc.debugger.calls.map((c) => c.method)).toEqual([
+      'Page.getLayoutMetrics',
+      'Runtime.evaluate',
+      'Page.captureScreenshot'
+    ])
+    const shot = wc.debugger.calls.find((c) => c.method === 'Page.captureScreenshot')!.params as any
+    expect(shot.captureBeyondViewport).toBe(true)
+    // 尺寸向上取整(clip 只接受整数);scale 固定 1,分辨率跟着 devicePixelRatio 走(设备像素)
+    expect(shot.clip).toEqual({ x: 0, y: 0, width: 1200, height: 3077, scale: 1 })
+    // 走整页就不能同时走视口路径,否则等于多截一张废图
+    expect(wc.captureCount).toBe(0)
+    expect(wc.debugger.attached).toBe(false)
+    expect(wc.debugger.detachCount).toBe(1)
+    await client.close()
+  })
+
+  it('调试器已被别处 attach 时:借用但不 detach(不抢别人的连接)', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs)
+    wc.debugger.attached = true
+
+    const res = await call(client, 'browser_screenshot', { fullPage: true })
+
+    expect(res.isError).toBe(false)
+    expect(wc.debugger.attached).toBe(true)
+    expect(wc.debugger.detachCount).toBe(0)
+    await client.close()
+  })
+
+  it('高度上限按设备像素算:同一高度在 dpr 2 下被拒', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs)
+    // 16000 设备像素上限 ÷ 1.25 = 12800 CSS px 可用
+    wc.debugger.metrics = { cssContentSize: { width: 1200, height: 12_800 } }
+    const ok = await call(client, 'browser_screenshot', { fullPage: true })
+    expect(ok.isError).toBe(false)
+
+    // 同样的页面在 dpr 2 下就是 25600 设备像素 —— Chromium 不会报错,而是返回内容重复的错图,
+    // 所以必须在这里拦下(实测:13200 CSS px / 16500 设备像素时底部会变回页面顶部)
+    wc.debugger.devicePixelRatio = 2
+    const rejected = await call(client, 'browser_screenshot', { fullPage: true })
+    expect(rejected.isError).toBe(true)
+    expect(rejected.data.error).toContain('超过单张整页截图上限')
+    expect(rejected.data.error).toContain('当前缩放比下约 8000px')
+    await client.close()
+  })
+
+  it('读不到 devicePixelRatio 时失败,不用 1 去赌(否则会静默给错图)', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs)
+    wc.debugger.devicePixelRatio = null
+
+    const res = await call(client, 'browser_screenshot', { fullPage: true })
+
+    expect(res.isError).toBe(true)
+    expect(res.data.error).toContain('拿不到页面缩放比')
+    expect(wc.debugger.calls.map((c) => c.method)).toEqual(['Page.getLayoutMetrics', 'Runtime.evaluate'])
+    await client.close()
+  })
+
+  it('页面高超过上限:明确报错,不给半张图', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs)
+    wc.debugger.metrics = { cssContentSize: { width: 1200, height: 20_000 } }
+
+    const res = await call(client, 'browser_screenshot', { fullPage: true })
+
+    expect(res.isError).toBe(true)
+    expect(res.data.error).toContain('超过单张整页截图上限')
+    expect(wc.debugger.calls.map((c) => c.method)).toEqual(['Page.getLayoutMetrics', 'Runtime.evaluate'])
+    expect(wc.debugger.attached).toBe(false)
+    expect(wc.debugger.detachCount).toBe(1)
+    await client.close()
+  })
+
+  it('拿不到文档尺寸时失败,不发 captureScreenshot', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs)
+    wc.debugger.metrics = {}
+
+    const res = await call(client, 'browser_screenshot', { fullPage: true })
+
+    expect(res.isError).toBe(true)
+    expect(res.data.error).toContain('拿不到页面尺寸')
+    expect(wc.debugger.calls.map((c) => c.method)).toEqual(['Page.getLayoutMetrics'])
+    await client.close()
+  })
+
+  it('DevTools 占着调试器(attach 抛错):报错并说明原因,不残留连接', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs)
+    wc.debugger.attachError = new Error('Another debugger is already attached')
+
+    const res = await call(client, 'browser_screenshot', { fullPage: true })
+
+    expect(res.isError).toBe(true)
+    expect(res.data.error).toContain('DevTools')
+    expect(wc.debugger.calls).toHaveLength(0)
+    expect(wc.debugger.detachCount).toBe(0)
+    await client.close()
+  })
+
+  it('CDP 调用抛错时失败,但仍 detach 干净', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs)
+    wc.debugger.sendError = new Error('target closed')
+
+    const res = await call(client, 'browser_screenshot', { fullPage: true })
+
+    expect(res.isError).toBe(true)
+    expect(res.data.error).toContain('整页截图失败')
+    expect(wc.debugger.attached).toBe(false)
+    expect(wc.debugger.detachCount).toBe(1)
+    await client.close()
+  })
+
+  it('CDP 返回空图:失败而不是返回空内容', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs)
+    wc.debugger.shotData = null
+
+    const res = await call(client, 'browser_screenshot', { fullPage: true })
+
+    expect(res.isError).toBe(true)
+    expect(res.data.error).toContain('返回为空')
+    expect(res.content.every((c) => c.type !== 'image')).toBe(true)
+    await client.close()
+  })
+
+  it('fullPage 是布尔:传字符串被严格校验拦下', async () => {
+    const { client, tabs } = await setup()
+    browsingTab(tabs)
+    const res = await call(client, 'browser_screenshot', { fullPage: 'yes' })
+    expect(res.isError).toBe(true)
     await client.close()
   })
 })

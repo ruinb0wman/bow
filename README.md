@@ -253,7 +253,7 @@ npm run test:mcp:http
 | `browser_reload {tabId?, waitUntil?}` / `browser_stop {tabId?}` | 刷新(默认等到加载完成) / 停止加载 |
 | `browser_new_tab {url?, activate?, waitUntil?}` | 开新标签;带 url 时默认等到加载完成 |
 | `browser_close_tab {tabId}` / `browser_switch_tab {tabId}` / `browser_list_tabs` | 标签管理 |
-| `browser_screenshot {tabId?}` | 当前页面截图,以 PNG 图片内容返回给 AI |
+| `browser_screenshot {tabId?, fullPage?}` | 截图,以 PNG 图片内容返回给 AI;默认只截当前视口,`fullPage: true` 截整页(含滚动到视口外的内容) |
 | `browser_get_info {tabId?}` | 当前标签标题 / URL / 加载状态 |
 | `browser_add_bookmark {title?, url, folderId?}` / `browser_list_bookmarks` | 书签维护(由「书签」插件提供) |
 | `adblock_stats` | 广告/追踪拦截统计(由「广告/追踪拦截」插件提供) |
@@ -414,6 +414,13 @@ MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生
   `LD_LIBRARY_PATH=<包含 libasound.so.2 的目录>`,或安装 `libasound2` 系统包。
 - **无 GPU/无显示环境**:在无合成管线的容器里(如 ssh/CI),浏览器功能(导航/点击/输入/快照/MCP)均正常,
   但 `browser_screenshot` 可能返回黑色帧——截图请在实际桌面环境使用。
+- **整页截图(`fullPage: true`)**:`capturePage()` 只能拿视口内的像素,整页需要临时 `debugger.attach`
+  后走 CDP 的 `Page.captureScreenshot{captureBeyondViewport}`。因此:
+  - 该标签页开着 DevTools 时会明确报错(不去抢别人已附加的调试器);
+  - 输出分辨率是设备像素(文档 CSS 尺寸 × `devicePixelRatio`),与普通截图一致;
+  - 超过 GPU 能承载的 surface 高度时 Chromium **不报错而是返回错图**(实测 dpr 1.25 下
+    16125 设备像素正确、16500 设备像素时底部变回页面顶部),所以按设备像素卡 16000 上限,
+    超过就明确报错让调用方改用 `browser_scroll` 分段;
 - **MCP 模式日志**写入 `<userData>/browser.log`,不会污染 stdio 协议。
 
 ## MCP 冒烟测试
@@ -423,7 +430,8 @@ npm run test:mcp   # 拉起 MCP 模式浏览器并自动跑关键流程(instruct
 ```
 
 需要显示环境;Linux 缺 ALSA 时:`SMOKE_LD_LIBRARY_PATH=<目录> npm run test:mcp`。
-截图会保存到 `/tmp/mcp-shot.png`(可用 `SMOKE_SHOT_PATH` 覆盖)。
+截图会保存到 `/tmp/mcp-shot.png`(可用 `SMOKE_SHOT_PATH` 覆盖);整页截图另存为同名 `-full.png`
+(可用 `SMOKE_FULL_PAGE_SHOT_PATH` 覆盖,断言 PNG 高度覆盖 `document.scrollHeight`)。
 无显示环境可用 `SMOKE_ELECTRON_ARGS=--ozone-platform=headless npm run test:mcp`,但导航仍需网络、
 截图可能为黑帧或空图,完整验证仍需真实桌面。
 
