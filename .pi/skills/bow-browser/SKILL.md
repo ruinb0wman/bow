@@ -24,6 +24,7 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 | 读结构化数据、批量取值 | `browser_eval` | 最省 token,一次拿回需要的字段 |
 | 定位可点/可输入元素 | `browser_snapshot` | 返回稳定 CSS 选择器,别自己猜 |
 | 判断样式、布局、视觉效果 | `browser_screenshot` | 只在需要肉眼判断时 |
+| 要看整页(含滚动到视口外的部分) | `browser_screenshot {fullPage:true}` | 一次截全,不用边滚边截 |
 | 等异步渲染 | `browser_wait` | 等元素出现,而不是靠猜时长 |
 | 标签管理 | `browser_list_tabs` / `browser_new_tab` / `browser_switch_tab` | |
 
@@ -43,6 +44,8 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 - `maxElements`:快照默认最多 200 个元素;页面很大时先调小定位,再按需扩大
 - `tabId`:省略则作用于活动标签(活动标签是内部页时会退到最近浏览的页面标签;都没有则自动新建 `about:blank`)
 - 超时:等加载 15s、等元素 10s,可用 `timeoutMs` 覆盖(上限 120s)
+- `fullPage`(仅 `browser_screenshot`):`true` 截整页。输出分辨率是设备像素(文档 CSS 尺寸 × `devicePixelRatio`),
+  所以高倍屏下的 PNG 会比 CSS 尺寸大;页面当前滚到哪里都不影响结果。页面太高会被上限拦下(见下)。
 - `browser_wait` 的 `state`:`attached` / `visible`(默认)/ `hidden` / `detached`
 
 ## 必查
@@ -63,6 +66,9 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 - `bow://` 内部页面标签(设置页等)不支持页面类工具,会明确拒绝;`browser_list_tabs` 用 `internal: true` 标出它们。
 - `adblock_*` 等插件工具在对应插件停用时会**从工具列表消失**,这不是故障 —— `bow://settings → 插件管理` 可重新启用。
 - 无 GPU 环境(ssh/CI 容器)截图可能是黑帧,别反复重试;导航、点击、快照、`browser_eval` 都正常。
+- `fullPage: true` 两条硬限制,都**不是 bug**:①该标签开着 DevTools 时会报错(整页截图要临时挂调试器,不抢别人的);
+  ②超过 16000 设备像素高会明确报错 —— Chromium 在这个尺寸以上不报错而是返回内容重复的错图(实测 dpr 1.25 下
+  16125 设备像素正常、16500 开始出错),所以宁可报错。这时改用 `browser_scroll` 分段截。
 - 要在本机跑 `npm run dev` / `npm run test:mcp` 做图形验证时,注意 pi 的 bash 沙箱会拒绝
   unix socket(`connect` 到 X11/Wayland 都是 EPERM),即使 WSLg 正常也起不来窗口 —— 这类命令请在沙箱外的终端跑。
 - stdio 实例不参与单实例锁(客户端子进程必须能独立启动):**开新会话前先关掉旧的 stdio 实例**,否则会多开;
