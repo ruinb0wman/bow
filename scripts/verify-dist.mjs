@@ -18,6 +18,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { externalRequires } from './lib/externalRequires.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -62,21 +63,6 @@ function collectEntries(node, prefix = '') {
     if (value && typeof value === 'object' && 'files' in value) out.push(...collectEntries(value, p))
   }
   return out
-}
-
-/** 从主进程 bundle 里扫出运行时外部依赖:非相对、非 node: 内置、非 electron 的 require/import */
-function externalRequires(bundleSource) {
-  const names = new Set()
-  const re = /(?:require\(|from\s*)["']([^"']+)["']/g
-  for (const m of bundleSource.matchAll(re)) {
-    const spec = m[1]
-    if (spec.startsWith('.') || spec.startsWith('/') || spec.startsWith('node:')) continue
-    if (spec === 'electron' || spec.startsWith('electron/')) continue
-    // 作用域包取前两段,普通包取第一段
-    const parts = spec.split('/')
-    names.add(parts[0].startsWith('@') ? `${parts[0]}/${parts[1]}` : parts[0])
-  }
-  return [...names].sort()
 }
 
 function findAsar(argPath) {
