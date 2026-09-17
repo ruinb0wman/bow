@@ -441,6 +441,10 @@ npm run test:mcp   # 拉起 MCP 模式浏览器并自动跑关键流程(instruct
 
 ## 架构速览
 
+> 逐文件职责地图、插件契约(`PluginContext` 全 API)、七类扩展点、MCP 工具表、
+> IPC 通道表、数据文件与环境变量、以及**已核实的文档漂移清单**见
+> [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) —— 本章只是速览,细节以那份为准。
+
 ```
 src/
   main/          主进程:窗口、TabManager(每标签 WebContentsView + 内部页面标签)、
