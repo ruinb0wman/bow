@@ -25,6 +25,9 @@
     "src/plugins/*/shared.ts",
     "src/plugins/*/picker.ts",
     "src/plugins/*/scripts.ts",
+    "src/plugins/*/registration.ts",
+    "src/plugins/*/linuxDesktop.ts",
+    "src/plugins/*/windowsRegistry.ts",
     "electron.vite.config.ts",
     "vitest.config.ts"
   ]
