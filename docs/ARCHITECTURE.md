@@ -62,6 +62,8 @@ src/
     ui.ts                       渲染层侧:slots / overlays / settingsSections
     ui/*.vue                    该插件的 UI 组件
     shared.ts | picker.ts | scripts.ts   同构纯逻辑或注入脚本字符串(便于单测)
+    adb.ts | targets.ts | cdp.ts          设备检查插件的 I/O 层(spawn / 转发池 / CDP 客户端;新文件名须登记到 tsconfig.node.json 的 include)
+    relay.ts                              设备检查插件的「剥 Origin」TCP 中继(前端能连上设备的唯一原因;新文件名须登记到 tsconfig.node.json 的 include)
     registration.ts | linuxDesktop.ts | windowsRegistry.ts   平台实现 / 注册计划(新文件须登记到 tsconfig.node.json 的 include)
   preload/index.ts              contextBridge 暴露 window.browserAPI
   renderer/
@@ -86,6 +88,7 @@ src/
     history.ts      历史条目增删/去重/裁剪/搜索/时间格式化
     bookmarkTree.ts 书签树 CRUD + 展平 + 一级目录迁移
     ua.ts           bowUserAgent() 纯函数
+    devtools.ts     DevTools 前端 URL 构造(tabManager 与设备检查插件共用的唯一来源)
     adblock.ts      广告规则模型/解析/索引/匹配/迁移(v3),~1400 行
 tests/            vitest 31 个测试文件(493 个用例)+ 3 个测试替身(fakeTabs/fakeWc/fakeKernel)
 scripts/          构建与运维脚本(见 §11)
@@ -269,6 +272,7 @@ interface PluginUiContribution {
 | `content.inject` | `(spec) => void` | 移除规则并 `removeInsertedCSS` 所有已注入 key |
 | `content.refresh` | `(tabId?) => void` | 只重跑 CSS(不重跑 JS),用于规则变更后的即时反馈 |
 | `pages.activeTabId/focus/execute` | `execute(tabId, code, {timeoutMs=10000})` | 不回收(内核持有) |
+| `pages.openDevToolsTab` | `(wsUrl, title?, activate?) => number` | 不回收(内核持有)。把 CDP 目标接进 DevTools 前端标签页(设备检查插件用);`devtools://` 地址由 `@shared/devtools` 统一拼 |
 | `tabs.list/getActive` | `() => TabInfo[] / TabInfo \| null` | 只读;数据源是 `TabManager` |
 | `service.onMcpHttpReady` | `(cb) => void` | 订阅 `MCP_HTTP_READY_EVENT` |
 | `service.mcpHttp.start/stop/restart/status` | 见 §6.5 | 内核持有监听;`stop()` 固定以 `source:'plugin'` 调用 |
@@ -418,6 +422,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `element-fullscreen` | — | ui, shortcut, mcp | `getState` `pickAndFullscreen` `exitFullscreen` | `browser_fullscreen_element` `browser_exit_fullscreen` | — | — | — | `Ctrl/Cmd+Shift+F` | on `tab:navigated` `tab:closed` `tab:activated`;emit `fullscreen-changed` `pick-done` | 无(纯内存) |
 | `mcp-http` | ✓ | ui, service | `getState` `setSettings` `restart` `toggle` | — | — | — | — | — | on `mcp-http:ready`(经 `service.onMcpHttpReady`)+ `mcpActivity.onChange`;emit `changed` | `mcp-http.json` |
 | `default-browser` | — | ui | `status` `register` `unregister` `openSettings` | — | — | — | — | — | — | 无(状态现读系统:Linux 读 `mimeapps.list`;Windows 先按 UserChoice 主键→备用键→`Software\Classes` 默认值读“记录”,再用 PowerShell 调 shell 的 `AssocQueryString` 拿“**实际生效者**”,两者不一致时以实际为准并标注记录已失效) |
+| `device-inspect` | — | ui, mcp | `list` `open` `getSettings` `setSettings` `checkAdb` `connect` `pair` `cleanupForwards` `rawAdb` | `device_list_targets` `device_inspect` `device_eval` `device_screenshot` `device_connect` | — | — | — | — | — | `device-inspect.json`(adb 命令 / 前端策略 / 端口转发记录) |
 
 **渲染层侧**(`registry.ts` / 各插件 `ui.ts`)
 
@@ -430,6 +435,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `element-fullscreen` | — | `ElementFullscreenButton` | — | — |
 | `mcp-http` | — | `McpStatusBadge` | — | `McpHttpSettings` |
 | `default-browser` | — | — | — | `DefaultBrowserSettings` |
+| `device-inspect` | — | `DeviceInspectButton` | `plugin:device-inspect:panel`(full,`DeviceInspectPanel`) | —(adb 设置放在面板内的折叠区,不占设置页侧栏) |
 
 `SLOT_PLUGIN_ORDER.toolbar = ['bookmarks','mcp-http','adblock','element-fullscreen']`;
 `addressbar-trailing` 为空(保持注册顺序)。未列出的插件排在已列出者之后。
@@ -491,14 +497,17 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `browser_screenshot` | tabId, fullPage | fullPage falsy | **image content**(`image/png`);失败才是 text |
 | `browser_get_info` | tabId | — | `{ok,info:TabInfo}` |
 
-插件工具 12 个:`browser_add_bookmark` `browser_list_bookmarks`(书签)、
+插件工具 17 个:`browser_add_bookmark` `browser_list_bookmarks`(书签)、
 `adblock_stats` `adblock_list_rules` `adblock_add_rule` `adblock_remove_rule` `adblock_set_enabled`
 `adblock_import_rules` `adblock_subscribe` `adblock_refresh_subscriptions`(广告)、
-`browser_fullscreen_element` `browser_exit_fullscreen`(元素全屏)—— 共 12 个,合计 **31** 个工具。
+`browser_fullscreen_element` `browser_exit_fullscreen`(元素全屏)、
+`device_list_targets` `device_inspect` `device_eval` `device_screenshot` `device_connect`(设备检查)
+—— 共 17 个,合计 **36** 个工具。
 
 静态计数来源:`CORE_MCP_TOOL_NAMES`(19)+ `ctx.mcp.tool(...)` 的调用点
 (`bookmarks/main.ts:136,161`、`adblock/main.ts:711,730,752,799,821,835,853,874`、
-`element-fullscreen/main.ts:196,227`)。⚠️ 实际工具面**随插件启停变化**:停用 adblock 就少 8 个。
+`element-fullscreen/main.ts:196,227`、`device-inspect/main.ts:381,421,438,461,481`)。
+⚠️ 实际工具面**随插件启停变化**:停用 adblock 就少 8 个,停用 device-inspect 就少 5 个。
 
 ⚠️ 插件工具的 schema **不做 strict 校验**(走 `kernel.mcp` 声明快照),未知参数会被静默丢弃。
 
@@ -663,6 +672,7 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `cors.json` | `{enabled, whitelist}` | 首次从 `settings.json` 的 `corsBypassEnabled/corsWhitelist` 迁移(幂等) | cors |
 | `adblock.json` | `AdblockConfig v3`(compact) | 经 `migrateConfig()` 生成,默认值仅占位 `{version:0}` | adblock |
 | `mcp-http.json` | `{port, token}` | `{port:8765, token:''}` | mcp-http |
+| `device-inspect.json` | `{adbCommand, strategy, forwards[]}` | `{adbCommand:'', strategy:'electron-bundled', forwards:[]}`;`forwards` 是端口转发记录(adb 侧的转发登记在 adb server 里,靠它回收) | device-inspect |
 | `browser.log` | 日志(MCP 模式) | — | logger |
 
 ---
@@ -785,8 +795,8 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
   ⚠️ 给主进程加新的 `tabs.*` / `wc.*` 调用时**必须同步补假实现**,否则测试会红得莫名其妙。
 - `tests/mcpServer.test.ts`(861 行)用 `InMemoryTransport` + 真实 `McpServer`/`Client` 握手,
   覆盖 instructions 下发、工具面与 schema、`waitUntil` 语义、失败一律 `isError`、内部页面边界、插件工具错误传播。
-- **当前基线(2026-09-18 复测)**:`npm test` → **31 个文件 / 493 个用例全绿**,约 3.7s。
-  31 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
+- **当前基线(2026-09-18 复测)**:`npm test` → **35 个文件 / 573 个用例全绿**,约 3.7s。
+  35 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
   `fakeWc.ts`、`fakeKernel.ts`。
 
 | 测试文件 | 行数 | 用例 | 测试文件 | 行数 | 用例 |
@@ -804,7 +814,16 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 
 其余:`ua`(5)、`pluginMatch`(13)、`settingsNav`(4)、`modalStack`(3)、`bundleScan`(4)、
 `adblockPickerScript`(4)、`elementFullscreenPlugin`(3)、`localFile`(6)、`navInput`(9)、`openArgs`(14)、
-`defaultBrowser`(60)。合计 493。
+`defaultBrowser`(60)。合计 **573**。
+
+设备检查插件的三个测试文件(它们不在上表里:代码量不大,但每一条都在钉外部格式):
+
+| 测试文件 | 行数 | 用例 | 铉住的是什么 |
+| --- | --- | --- | --- |
+| `deviceInspect.test.ts` | 425 | 38 | adb 输出格式、`/proc/net/unix` 列、`/json` 字段、前端 URL 形态、失败文案 |
+| `deviceInspectTargets.test.ts` | 434 | 20 | 转发池(换端口重试 / 回收 / 中继挂掉要回收转发)、套接字探活自愈、整链路发现(假 adb + 假 HTTP) |
+| `deviceInspectRelay.test.ts` | 236 | 12 | **真 TCP 链路**:带 Origin 的握手到设备侧时 Origin 已消失、首部之后双向透传、超限断开 |
+| `deviceInspectCdp.test.ts` | 226 | 10 | 与**真实**本地 WebSocket 服务端对打:握手不带 Origin、id 匹配、超时、对端断开 |
 
 ---
 
@@ -823,7 +842,6 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | 7 | README 「手动使用快捷键」清单 | 缺 `Ctrl+数字`(1..8 切标签、9 取最后一个,`tabShortcuts.ts` + `switchIndexForDigit` 实现) | 少一条已实现能力 |
 | 8 | README 「架构速览」的 src 树 | 未列 `main/mcpActivity.ts`、`main/mcpHttp.ts`、`main/tabShortcuts.ts`、`main/plugins/mcpHttpHost.ts`、`main/plugins/mcpResult.ts`、`renderer/src/lib/`、`shared/adblock.ts` 等 | 定位成本 |
 | 9 | `FIX-PLAN.md`(仓库根) | 自述 P0/P1/P2 已全部实现,但仍留在根目录;里面的行号引用(如 `mcp.ts:133`)与当前 556 行的文件已不匹配;自述「288 passed」而当前实测为 **404 passed** | **历史文件容易被当成现状**,建议归档或加「已完成」抬头 |
-| 10 | `.pi/skills/bow-browser/SKILL.md:8` 「本地 Electron 多标签浏览器,29 个工具」 | 静态计数为 **31**(19 核心 + 12 插件,证据见 §6.2) | 该文件会随 `mcp:install` 装进 `~/.pi/agent/skills/` 影响 AI 的工具预期;实数量随插件启停浮动 |
 
 ### 文档未覆盖的重要行为(不是矛盾,是缺口)
 
@@ -879,6 +897,24 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 18. Linux 容器缺 `libasound.so.2` 时用 `LD_LIBRARY_PATH`;无 GPU 环境截图可能黑帧(功能本身正常)。
 19. pi 的 bash 沙箱会拒绝 unix socket(连 X11/Wayland 都是 EPERM)→ `npm run dev` / `test:mcp`
     这类要开窗的命令请在沙箱外的终端跑。
+
+**远端调试(设备检查插件)**
+
+20. Chromium 的 DevTools 端点只对**带 `Origin` 头**的 WebSocket 握手做白名单校验
+    (`devtools_http_handler.cc`);白名单**唯一**来源是 `--remote-allow-origins`,手机上加不了。
+    ⚠️ **Android 上连「同源豁免」也不成立**:它的 devtools 服务在 unix 抽象套接字上,
+    `server_ip_address_` 为 null → `is_same_origin` 恒为 false。所以「用设备自带前端凑同源」是错的
+    (本项目早期计划里就是这么写的,已纠正)。正确做法 = **本地剥 Origin 的 TCP 中继**(`relay.ts`)。
+21. 反过来,**Node 的 `WebSocket` 握手不带 Origin**(实测),所以主进程直连设备的 CDP 客户端不需要代理;
+    中继只是为了让**浏览器页面里的前端**能连上。
+22. 中继只改 HTTP 首部、之后纯字节透传 —— **不需要 WebSocket 帧编解码**,也就不需要 `ws` 依赖。
+    实测(electron 44 + 一个「带 Origin 就 403」的假设备):前端经中继后 Elements/Console/Network 全部可用。
+23. `adb forward` 登记在 **adb server 进程**里,bow 退出不会自动清 → 转发记录必须落盘并在下次激活时回收;
+    且只回收**自己记录过的**那几条(用户手动建的 `adb forward tcp:9222 …` 不能动)。
+24. 前端地址里的 `ws=` 参数**不能带 `ws://` 前缀**(devtools 前端自己会补),写错的表现是白屏;
+    唯一的拼装处在 `@shared/devtools`。
+25. 验证这类功能时注意 **`out/` 是旧产物**:`electron .` 加载的是 `out/main/index.js`,
+    改完主进程代码不 `npm run build` 就会拿旧行为做实验(本人踩过:中继没生效,却以为是链路有问题)。
 
 ---
 

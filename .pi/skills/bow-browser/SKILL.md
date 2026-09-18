@@ -5,7 +5,7 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 
 # bow 浏览器(MCP 服务器 `browser`)
 
-本地 Electron 多标签浏览器,29 个工具;**你的每次操作用户都实时可见**,所以破坏性操作前先说明意图。
+本地 Electron 多标签浏览器,36 个工具(19 核心 + 17 插件,随插件启停浮动);**你的每次操作用户都实时可见**,所以破坏性操作前先说明意图。
 
 ## 第一步:确认工具怎么调
 
@@ -27,6 +27,7 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 | 要看整页(含滚动到视口外的部分) | `browser_screenshot {fullPage:true}` | 一次截全,不用边滚边截 |
 | 等异步渲染 | `browser_wait` | 等元素出现,而不是靠猜时长 |
 | 标签管理 | `browser_list_tabs` / `browser_new_tab` / `browser_switch_tab` | |
+| 调试**手机**上的 WebView / Chrome | `device_list_targets` → `device_inspect` / `device_eval` / `device_screenshot` | 这些作用于 adb 连着的真机页面,不是 bow 自己的标签页;用 `targetKey` 寻址 |
 
 ## 标准工作流
 

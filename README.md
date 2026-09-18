@@ -317,6 +317,11 @@ npm run test:mcp:http
 | `adblock_subscribe {url, title?}` / `adblock_refresh_subscriptions {id?}` | 新增订阅并立即拉取 / 更新订阅(由「广告/追踪拦截」插件提供) |
 | `browser_fullscreen_element {selector, tabId?}` | 让页面元素铺满网页视口(由「元素全屏」插件提供) |
 | `browser_exit_fullscreen {tabId?}` | 退出元素全屏并还原页面(由「元素全屏」插件提供) |
+| `device_list_targets {serial?}` | 列出通过 adb 连接的可调试手机目标(Android 应用里的 WebView / Chrome),含所属 App 包名与 `targetKey`(由「设备检查」插件提供) |
+| `device_inspect {targetKey, activate?}` | 在 bow 的标签页里打开该目标的 DevTools 前端(等同 `chrome://inspect` 的 inspect)(由「设备检查」插件提供) |
+| `device_eval {code, targetKey?}` | 在**手机页面**里执行 JavaScript(由「设备检查」插件提供) |
+| `device_screenshot {targetKey?, fullPage?}` | 截取**手机页面**并作为 PNG 返回(由「设备检查」插件提供) |
+| `device_connect {address}` | 连接已开启无线调试的设备(`adb connect <address>`)(由「设备检查」插件提供) |
 
 典型 AI 工作流:`browser_new_tab`/`browser_navigate`(已等到加载完成)→ `browser_wait` 等目标元素渲染出来 → `browser_snapshot` 找到结果链接的选择器 → `browser_click` → `browser_screenshot` 确认 → `browser_type`/`browser_click` 填表。
 
@@ -357,6 +362,7 @@ npm run test:mcp:http
 - 浏览历史(「浏览历史」插件,默认保留最近 500 条,可在「设置页 → 浏览历史」调整,按 URL 去重):`<userData>/history.json`;保留条数配置:`<userData>/history-settings.json`
 - CORS 放行配置(「CORS 放行」插件,首次启动从 `settings.json` 迁移):`<userData>/cors.json`
 - 广告拦截配置与计数(「广告/追踪拦截」插件,含网络规则、元素规则、元素例外标记与订阅,自动从旧版本迁移到 v3;单行 JSON):`<userData>/adblock.json`
+- 设备检查(「设备检查」插件):`<userData>/device-inspect.json` —— 只存 adb 命令、前端来源策略与**端口转发记录**(转发登记在 adb server 里,bow 被强杀后靠这份记录在下次启动时回收)
 - 插件启停状态(内核):`<userData>/plugins.json`
 - 核心设置(默认搜索引擎/主页):`<userData>/settings.json`
 - MCP 模式下日志:`<userData>/browser.log`
@@ -374,7 +380,7 @@ npm run test:mcp:http
 
 ## 插件体系
 
-书签、历史、CORS 放行、元素全屏、MCP HTTP 服务、默认浏览器都是内置插件;广告/追踪拦截是参考插件。插件是**仓库内编译期模块**(无动态代码执行),
+书签、历史、CORS 放行、元素全屏、MCP HTTP 服务、默认浏览器、设备检查都是内置插件;广告/追踪拦截是参考插件。插件是**仓库内编译期模块**(无动态代码执行),
 可在「设置页 → 插件管理」里运行时启停(无需重启),状态持久化到 `plugins.json`;停用时内核自动回收其 IPC、
 建议源、MCP 工具、网络钩子与已注入 CSS。
 
@@ -451,6 +457,32 @@ MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生
 - 仅 `http/https` 页面可用;不移动 DOM(iframe 不会重载),但跨域 iframe 内部元素、closed shadow root 内部元素无法选中。
 - AI 可经 MCP 的 `browser_fullscreen_element` / `browser_exit_fullscreen` 直接按选择器全屏或还原。
 
+### 设备检查插件(手机 WebView / Chrome)
+
+工具栏「设备检查」按钮(手机图标)→ 全窗面板:设备 → 套接字 → 可调试目标,点「检查」就把该目标接进 DevTools 前端(在 bow 的**标签页**里打开,不是新窗口)。
+
+复制的是 `chrome://inspect` 那条链路:adb 设备 → `cat /proc/net/unix` 找出 `webview_devtools_remote_<pid>` / `chrome_devtools_remote` → `adb forward` → 设备 `/json` 目标列表 → DevTools 前端。所属 App 的包名来自 `/json/version` 的 `Android-Package` 字段(Chromium 只在 Android 上返回它)。
+
+**前提条件**(缺一个就只会看到空列表,面板会给出对应提示):
+
+1. **adb 可用**。「设置」里可填复合命令:Windows 侧没有 adb 时填 `wsl adb`(本机就是这种:bow.exe 在 Windows、adb 在 WSL);留空则依次探测 `adb` → `wsl adb`。
+2. **设备已授权**:手机屏幕上点「允许 USB 调试」;无线调试则先「配对」(Android 11+:手机「无线调试 → 使用配对码配对设备」,面板里填地址与配对码)再「连接」。
+3. **应用开启了 WebView 调试**:debug 包默认开;release 包必须让开发调用 `WebView.setWebContentsDebuggingEnabled(true)`,否则套接字根本不存在。Chrome 则打开任意标签页即可。
+4. **跨 WSL 时要镜像网络**:转发建在 WSL 的 netns 里,Windows 侧访问 `127.0.0.1:<端口>` 依赖 WSL2 镜像网络(`.wslconfig` 的 `networkingMode=Mirrored`)。不通时提示语会直接点名这一条。
+
+**为什么必须由 bow 代理(而不是让前端直连设备)**:Chromium 的调试端点会对**带 `Origin` 头**的 WebSocket 握手做白名单校验,白名单唯一来源是 `--remote-allow-origins`,手机上加不了;而浏览器里的 devtools 前端**一定**带 `Origin: devtools://devtools`。更关键的是:**Android 上连「同源豁免」都不存在** —— 它的 devtools 服务挂在 unix 抽象套接字上,`server_ip_address_` 为 null,所以 `is_same_origin` 恒为 false。
+
+因此 bow 在本地为每个套接字起一个**剥 Origin 的 TCP 中继**(`relay.ts`,~90 行、无依赖):前端连本机中继 → 中继删掉 `Origin` 头 → 转发到 `adb forward` 端口。WS 握手就是一个 HTTP 请求,所以只改首部即可,**不需要实现 WebSocket 帧编解码**。
+
+⚠️ 主进程自己的 CDP 客户端(Node 的 `WebSocket` 握手不带 Origin,已实测)本来就不受这限制,`device_eval` / `device_screenshot` 只是复用了同一个 `ws` 地址。
+
+**前端来源两种策略**(设置里可切;两者都经中继):
+
+- `bow 自带`(默认):`devtools://devtools/bundled/devtools_app.html` —— 用 Electron 自带的前端,不依赖设备提供前端资源;
+- `设备自带`:`http://127.0.0.1:<中继端口>/devtools/inspector.html` —— 从设备自己的 CDP 端点取前端,版本与设备完全一致(设备未打包前端资源时会 404)。
+
+**转发与中继的回收**:`adb forward` 登记在 adb server 进程里,bow 退出不会自动清。插件在停用、退出、以及下次激活时都会清理(还有面板里的「回收全部转发」按钮);中继监听随插件停用/退出一起关闭。只清理**自己记录过的**转发 —— 不会去动你手动建的 `adb forward`。
+
 ### 新增一个插件
 
 1. 新建 `src/plugins/<id>/`:
@@ -463,6 +495,9 @@ MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生
 3. 渲染层用 `window.browserAPI.plugins.invoke(id, method, ...args)` 调插件方法,`plugins.onEvent` 订阅插件事件。
 
 ## 环境注意事项
+
+- **手机调试要 adb**:「设备检查」插件不会自带 adb。Windows 侧没有 adb 时,在插件面板的「设置」里填 `wsl adb`
+  (或你实际的 adb 路径);跨 WSL 时还需 WSL2 镜像网络,详见「设备检查插件」一节。
 
 - **Linux 依赖**:Electron 需要 `libasound.so.2`(ALSA)。精简容器若缺失,可在运行时指定
   `LD_LIBRARY_PATH=<包含 libasound.so.2 的目录>`,或安装 `libasound2` 系统包。
