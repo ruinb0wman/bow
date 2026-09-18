@@ -30,9 +30,13 @@ src/
   main/                          主进程(唯一持有 Electron 权限的地方)
     index.ts                     启动编排:身份/存储/热键 → 插件内核 → 窗口/标签 → IPC → MCP
     logger.ts                    日志 + 环境变量常量(IS_MCP_* / MCP_HTTP_*)
-    ua.ts                        applyBrowserIdentity():显示名/ userData 路径 / UA 签名,一次调用
+    ua.ts                        applyBrowserIdentity():显示名/ userData 路径 / UA 签名,一次调用;
+                                 APP_DESKTOP_NAME 导出桌面集成标识(与 .desktop 文件名同源)
     singleInstance.ts            单实例锁(stdio 模式例外)
     rendererEntry.ts             三个渲染入口解析(dev=ELECTRON_RENDERER_URL,prod=file)
+    openArgs.ts                  启动参数 → 打开目标(裸路径/URL;classifyArg 的判定顺序对 Windows 盘符路径敏感,
+                                 second-instance 复用同一套规则)
+    navInput.ts                  地址栏输入的本地文件兜底(不 import electron,可单测)
     devtools.ts                  DevTools 永远 detach + 全局快捷键拦截
     tabShortcuts.ts              标签快捷键(Ctrl+T/W/L/,/数字/Shift+T)全局拦截
     tabManager.ts                TabManager:每标签一个 WebContentsView + 内部页面标签 + 布局
@@ -58,6 +62,7 @@ src/
     ui.ts                       渲染层侧:slots / overlays / settingsSections
     ui/*.vue                    该插件的 UI 组件
     shared.ts | picker.ts | scripts.ts   同构纯逻辑或注入脚本字符串(便于单测)
+    registration.ts | linuxDesktop.ts | windowsRegistry.ts   平台实现 / 注册计划(新文件须登记到 tsconfig.node.json 的 include)
   preload/index.ts              contextBridge 暴露 window.browserAPI
   renderer/
     index.html + src/App.vue            chrome UI:标签栏/工具栏/地址栏/插件插槽
@@ -71,6 +76,7 @@ src/
     types.ts        跨端类型(TabInfo/Settings/Suggestion/Overlay*/ActionResult…)
     plugins.ts      插件契约类型 + PluginCapability 标签表
     url.ts          地址栏输入解析 + 搜索引擎表 + DEFAULT_SETTINGS
+    localFile.ts    本地路径形态判定(isFileUrl / looksLikeLocalPath / expandHome)
     internalPages.ts bow:// 内部页面标识与 parse
     settingsNav.ts  设置页侧栏导航模型
     pluginMatch.ts  URL 通配 / host 与子域匹配
@@ -81,7 +87,7 @@ src/
     bookmarkTree.ts 书签树 CRUD + 展平 + 一级目录迁移
     ua.ts           bowUserAgent() 纯函数
     adblock.ts      广告规则模型/解析/索引/匹配/迁移(v3),~1400 行
-tests/            vitest 27 个测试文件(404 个用例)+ 3 个测试替身(fakeTabs/fakeWc/fakeKernel)
+tests/            vitest 31 个测试文件(493 个用例)+ 3 个测试替身(fakeTabs/fakeWc/fakeKernel)
 scripts/          构建与运维脚本(见 §11)
 docs/             本文件 + opencode-session-header.md
 .pi/skills/bow-browser/SKILL.md      给 AI 的能力索引(由 mcp:install 同步到 ~/.pi/agent/skills/)
@@ -96,8 +102,12 @@ docs/             本文件 + opencode-session-header.md
 ```text
 模块级(import 时):
   logger.ts 读取 MCP / MCP_HTTP / MCP_HTTP_PORT / MCP_HTTP_TOKEN → 常量
+  appendSwitch('allow-file-access-from-files')   本地页面的相对资源 / <script type="module"> / fetch
   IS_MCP_STDIO 时追加 --disable-logging(否则 Chromium 日志会污染 stdio 协议帧)
+  app.setDesktopName(APP_DESKTOP_NAME)  ← Linux:Wayland app_id / X11 WM_CLASS,必须早于 ready
+  collectOpenTargets(process.argv, …)     命令行带来的文件 / URL(stdio 模式恒为空)
   acquireSingletonLock()          ← 必须早于 ready(stdio 模式不抢锁)
+  app.on('second-instance')       聚焦已有窗口 + 把 argv 里的目标开成新标签(tabs 未就绪时只聚焦)
 
 whenReady():
   1. applyBrowserIdentity()       显示名→bow / userData 钉回 mcp-browser / UA 全局签名
@@ -110,11 +120,11 @@ whenReady():
      registerAll(BUILTIN_PLUGINS)               读 plugins.json 的 disabled
      installHooks()                             NetHookHost.install() —— 必须先于窗口创建
      await activateEnabled()                    ← 此刻还没有窗口、没有 TabManager、没有标签
-  6. app.on('web-contents-created')  外链处理:http(s) 走新标签,其余 shell.openExternal
+  6. app.on('web-contents-created')  外链处理:http(s) 与 file: 走新标签,其余 shell.openExternal
   7. createWindow() → TabManager → OverlayManager
   8. kernel.setTabProvider / setPageApi / setBroadcaster / setUiHost   注入运行时依赖
   9. tabs.on(...) → kernel.emitEvent('tab:navigated' | 'tab:created' | 'tab:closed' | 'tab:activated')
- 10. chrome did-finish-load 且没有标签 → 打开设置里的主页
+ 10. chrome did-finish-load 且没有标签 → 先开命令行目标(initialTargets),否则开设置里的主页
  11. registerIpc(tabs, mainWindow, overlay, kernel)
  12. startMcpServer() (仅 stdio)
      kernel.attachMcpHttpDeps({tabs, kernel})
@@ -407,6 +417,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `adblock` | — | ui, net, content, mcp | `getState` `listRules` `setEnabled` `resetCount` `addNetworkRule` `updateNetworkRule` `removeNetworkRule` `addCosmeticRule` `updateCosmeticRule` `removeCosmeticRule` `removeCosmeticFlag` `replaceUserRules` `importRules` `exportRules` `resetDefaults` `addSubscription` `removeSubscription` `setSubscriptionEnabled` `refreshSubscriptions` `pickElement` | `adblock_stats` `adblock_list_rules` `adblock_add_rule` `adblock_remove_rule` `adblock_set_enabled` `adblock_import_rules` `adblock_subscribe` `adblock_refresh_subscriptions` | `onBeforeRequest`(拦子资源,跳过 `mainFrame`) | `cosmetic`(动态 CSS, dom-ready)+ `mark`(打 `data-bow-adblock` 标记) | — | — | on `tab:navigated` `tab:closed` `tab:activated`;emit `changed` `pick-done` | `adblock.json`(compact) |
 | `element-fullscreen` | — | ui, shortcut, mcp | `getState` `pickAndFullscreen` `exitFullscreen` | `browser_fullscreen_element` `browser_exit_fullscreen` | — | — | — | `Ctrl/Cmd+Shift+F` | on `tab:navigated` `tab:closed` `tab:activated`;emit `fullscreen-changed` `pick-done` | 无(纯内存) |
 | `mcp-http` | ✓ | ui, service | `getState` `setSettings` `restart` `toggle` | — | — | — | — | — | on `mcp-http:ready`(经 `service.onMcpHttpReady`)+ `mcpActivity.onChange`;emit `changed` | `mcp-http.json` |
+| `default-browser` | — | ui | `status` `register` `unregister` `openSettings` | — | — | — | — | — | — | 无(状态现读系统:Linux 读 `mimeapps.list`;Windows 先按 UserChoice 主键→备用键→`Software\Classes` 默认值读“记录”,再用 PowerShell 调 shell 的 `AssocQueryString` 拿“**实际生效者**”,两者不一致时以实际为准并标注记录已失效) |
 
 **渲染层侧**(`registry.ts` / 各插件 `ui.ts`)
 
@@ -418,6 +429,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `adblock` | — | `BlockElementButton` | — | `AdblockSettings` |
 | `element-fullscreen` | — | `ElementFullscreenButton` | — | — |
 | `mcp-http` | — | `McpStatusBadge` | — | `McpHttpSettings` |
+| `default-browser` | — | — | — | `DefaultBrowserSettings` |
 
 `SLOT_PLUGIN_ORDER.toolbar = ['bookmarks','mcp-http','adblock','element-fullscreen']`;
 `addressbar-trailing` 为空(保持注册顺序)。未列出的插件排在已列出者之后。
@@ -668,7 +680,7 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `tab:list` | — | `TabInfo[]` |
 | `tab:active` | — | `TabInfo \| null` |
 | `tab:activate-last-browsing` | — | `TabInfo \| null` |
-| `nav:go` | input | `{parsed, query?, url?, tabId}` |
+| `nav:go` | input | `{parsed, query?, url?, tabId}`(**本地路径存在时经 `navInput.ts` 识别为 `file://`**) |
 | `nav:url` | url | `{tabId}` |
 | `nav:back` / `nav:forward` | — | `boolean` |
 | `nav:reload` / `nav:stop` | — | `void` |
@@ -723,6 +735,10 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 ⚠️ 绝不要在 shell 里写 `MCP_HTTP=1 electron .` 这种内联赋值(Windows 不认);
 统一走 `scripts/open-bow.mjs` 或 `npm run mcp:http`。
 
+命令行开关(不是环境变量,但同属启动契约,改动需同步本节与 §2):`--allow-file-access-from-files`
+(本地页面之间可互访 → `<script type="module">` / `fetch` 在 `file://` 下可用)与 `app.setDesktopName(APP_DESKTOP_NAME)`
+(Linux 桌面身份,必须与内置插件 `default-browser` 写出的 `.desktop` 基名逐字一致)。
+
 ---
 
 ## 11. 构建、测试、脚本
@@ -739,11 +755,15 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `npm run mcp` / `mcp:http` | 经 `open-bow.mjs` 以 stdio / HTTP 模式启动 |
 | `npm run mcp:install [-- …]` | 把 MCP 配置 + skill 写进 pi(幂等、可回滚、非 JSON 直接中止) |
 
+> 桌面默认浏览器注册**不是脚本**,是内置插件 `default-browser`(设置页点一下;见 §5.8)。
+> 它把「写哪些文件 / 写哪些注册表项」放在 `src/plugins/default-browser/{linuxDesktop,windowsRegistry}.ts`
+> (纯逻辑,可在 Linux 上单测 Windows 分支),I/O 与平台分发在 `registration.ts`。
+
 关键脚本:
 
 | 脚本 | 职责 |
 | --- | --- |
-| `open-bow.mjs` | 跨平台拼环境变量再 spawn electron(解决 Windows 无内联赋值);支持 `--dry-run` |
+| `open-bow.mjs` | 跨平台拼环境变量再 spawn electron(解决 Windows 无内联赋值);支持 `--dry-run`;首个参数精确为 `stdio`/`http` 才算模式,其余参数原序透传为「打开目标」 |
 | `install-pi-mcp.mjs` | 写 `~/.pi/agent/mcp.json`(或 `--project`),支持 `--http` `--direct-core` `--direct-all` `--tool-prefix` `--no-skill` `--remove` `--dry-run`;`directTools` 核心 5 个 = `browser_navigate` `browser_snapshot` `browser_wait` `browser_click` `browser_eval` |
 | `dist.mjs` | 打包(含镜像注入) |
 | `verify-dist.mjs` + `lib/externalRequires.mjs` | 从 bundle 扫出运行时外部依赖,逐个核对是否进了 `app.asar`(缺一个就 `bow.exe` 一闪即退) |
@@ -765,8 +785,8 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
   ⚠️ 给主进程加新的 `tabs.*` / `wc.*` 调用时**必须同步补假实现**,否则测试会红得莫名其妙。
 - `tests/mcpServer.test.ts`(861 行)用 `InMemoryTransport` + 真实 `McpServer`/`Client` 握手,
   覆盖 instructions 下发、工具面与 schema、`waitUntil` 语义、失败一律 `isError`、内部页面边界、插件工具错误传播。
-- **当前基线(2026-09-17 实测)**:`npm test` → **27 个文件 / 404 个用例全绿**,约 3.8s(Duration 3.75s)。
-  27 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
+- **当前基线(2026-09-18 复测)**:`npm test` → **31 个文件 / 493 个用例全绿**,约 3.7s。
+  31 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
   `fakeWc.ts`、`fakeKernel.ts`。
 
 | 测试文件 | 行数 | 用例 | 测试文件 | 行数 | 用例 |
@@ -783,7 +803,8 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `pluginBoundaries.test.ts` | 47 | 3 | `elementFullscreenScript.test.ts` | 68 | 6 |
 
 其余:`ua`(5)、`pluginMatch`(13)、`settingsNav`(4)、`modalStack`(3)、`bundleScan`(4)、
-`adblockPickerScript`(4)、`elementFullscreenPlugin`(3)。合计 404。
+`adblockPickerScript`(4)、`elementFullscreenPlugin`(3)、`localFile`(6)、`navInput`(9)、`openArgs`(14)、
+`defaultBrowser`(60)。合计 493。
 
 ---
 
@@ -796,7 +817,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | 1 | README:294 「`Ctrl+D` 收藏当前页」;`StarButton.vue:57` tooltip 也写「收藏当前页 (Ctrl+D)」 | **全仓库没有任何 Ctrl+D 处理**:`matchTabHotkey`(`shared/shortcuts.ts`)不认 `d`,`App.vue` 的 `onKeydown` 只处理 Ctrl+R | **该快捷键完全不可用**;页面聚焦时渲染层收不到按键,必须装进主进程 |
 | 2 | README 「广告/追踪拦截是参考插件」 | `main/plugins/builtin.ts` 把 `adblock` 并入 `BUILTIN_PLUGINS`;`PluginRegistry.list()` 对所有插件硬编码 `builtin: true` | `PluginInfo.builtin` 无区分能力;措辞误导 |
 | 3 | README 「Electron(≥ 33,…)」 | `package.json` = `electron: ^44.3.0`;`contentHooks.ts` 注释明确以 Electron 44 行为(44 下 `getType()` 无法区分 WebContentsView)为前提 | 升级/兼容判断会看错 |
-| 4 | README 「tests/ vitest 单元测试(url 解析、内部页面、设置导航、书签树、历史、模糊建议、插件注册表/匹配/边界)」 | 实际 **27 个测试文件 / 404 个用例**(已实测),另有 `adblock` 61 例、`mcpServer` 59 例、`mcpWait` 27 例、`mcpHttp*`×3、`mcpActivity`、`bundleScan`、`singleInstance`、`ua`、`shortcuts`、`elementFullscreen*`×2、`modalStack` 等 | 低估了测试面 |
+| 4 | README 「tests/ vitest 单元测试(url 解析、内部页面、设置导航、书签树、历史、模糊建议、插件注册表/匹配/边界)」 | 实际 **31 个测试文件 / 493 个用例**(已实测),另有 `adblock` 61 例、`mcpServer` 59 例、`mcpWait` 27 例、`mcpHttp*`×3、`mcpActivity`、`bundleScan`、`singleInstance`、`ua`、`shortcuts`、`elementFullscreen*`×2、`modalStack` 等 | 低估了测试面 |
 | 5 | README 扩展点表 6 行 | `PLUGIN_CAPABILITY_LABELS` 有 7 项,缺 `service`(后台服务;mcp-http 在用) | 新增服务型插件时找不到指引 |
 | 6 | README 「数据存储」清单 | 缺 `<userData>/mcp-http.json`(MCP HTTP 端口/令牌) | 排查端点问题时少一处线索 |
 | 7 | README 「手动使用快捷键」清单 | 缺 `Ctrl+数字`(1..8 切标签、9 取最后一个,`tabShortcuts.ts` + `switchIndexForDigit` 实现) | 少一条已实现能力 |

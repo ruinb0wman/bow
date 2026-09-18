@@ -25,6 +25,7 @@ npm run test:mcp   # 真机冒烟测试(自己拉起浏览器)
 npm run test:mcp:http  # 真机冒烟测试(连已常驻的 HTTP 浏览器)
 node scripts/open-bow.mjs http --dry-run   # 只看 HTTP 模式将注入的环境变量与端点
 npm run mcp:install -- --help   # 把浏览器 MCP 写进 pi 的配置(幂等、可回滚)
+node scripts/open-bow.mjs -- a.html https://x.com   # 启动并打开(文件管理器/终端用的就是这个形态)
 npm test           # 单元测试
 npm run typecheck  # 类型检查
 ```
@@ -69,6 +70,59 @@ node scripts/dist.mjs -- --win portable # 试别的 target
 普通启动带单实例锁:重复双击只会把已有窗口带到前台,不会再开一个浏览器
 (否则两个实例都想占 MCP HTTP 端口)。**例外是 `MCP=stdio`** —— 那种模式下浏览器是 MCP 客户端的子进程,
 必须允许与常驻实例并存,否则子进程一启动就退出、客户端的 stdio 连接直接断(`npm run test:mcp` 也会莫名其妙失败)。
+
+## 设为默认浏览器 / 打开本地文件
+
+注册在**设置页里点一下**就行:`bow://settings`(工具栏齿轮)→ 左侧「插件设置 → 默认浏览器」。
+那里会显示**现在究竟是不是默认浏览器** —— 逐个目标(http 链接 / https 链接 / `.html` / `.htm` / `.xhtml`)
+列出系统当前把它交给谁 —— 并提供「注册为默认浏览器 / 撤销注册 / 刷新」三个按钮。
+
+| 平台 | 点「注册」后 bow 做了什么 | 还需要手动确认吗 |
+| --- | --- | --- |
+| Linux | 写 `~/.local/bin/bow` 包装脚本(dev)或直接指向 bow 二进制(打包)+ `~/.local/share/applications/com.ruinb0w.bow.desktop` + `~/.config/mimeapps.list` 的默认关联 | 不需要,点完即生效 |
+| Windows | 在 HKCU 里把 bow 注册成**候选**:`bowHTML` / `bowURL` 两个 ProgID、`…\.html` / `.htm` / `.xhtml\OpenWithProgids` 与它们的 `HKCU\Software\Classes\.<ext>` 默认值、`…\Applications\bow.exe`、`…\Clients\StartMenuInternet\bow\Capabilities` + `RegisteredApplications` | **需要**:系统不允许程序代改默认关联,注册完要去「设置 → 默认应用」点一次(设置页会把这两步列出来) |
+
+几件容易误会的事:
+
+- **状态是现读系统的,不是记自己写过什么** —— 设置页每行下面(鼠标悬停)可以看到这个结论是
+  从哪个键 / 哪一行读出来的:Linux 是 `~/.config/mimeapps.list` 的具体行,Windows 是具体注册表键
+  (如 `…\Shell\Associations\UrlAssociations\http\UserChoice → ProgId`)。
+- **Windows 上「记录」与「实际」可能不一致**,而且**以实际为准**:UserChoice 带 Hash 保护,
+  当那条记录失效(陈旧、被改写)时 Windows 会忽略它并按 HKCR 合并顺序回落到
+  `HKCU\Software\Classes\.<ext>`。所以插件除了读记录,还会调 shell 自己的
+  `AssocQueryString` 拿到「双击时到底用谁打开」;两者不一致的行会显示 `实际 xxx` 标记 +
+  一段说明(该记录已被忽略,建议重新选一次以刷新)。
+- **Windows 上「系统设置里显示 bow」不等于五项都是 bow**:系统判定默认浏览器看的是
+  `.htm(l)` 文件 + http(s) 协议这几项,所以插件会把**每一项**当前归谁列出来,非默认的那几行会直接
+  给出对应的改法(按文件类型 vs 按协议的操作路径不同)。
+- **停用插件 ≠ 撤销注册**:停用只是把界面收起来,系统里的关联仍在;要撤掉请点「撤销注册」
+  (Windows 上只删 bow 自己写的那些键/值 —— 撤销前会先 `reg query` 核对,别人写的默认值会保留)。
+- **Windows 上的「已注册,但系统当前用的是别的」是正常中间态**:注册只让 bow 进入候选列表,选不选由你决定。
+- **dev 模式注册的是包装脚本**(指向仓库里的 electron);打包版会直接指向 bow 二进制 —— 切换后点一次「更新注册」即可纠正。
+- Linux 上缺 xdg-utils 时,bow 自己能被直接调用,但别的程序用 `xdg-open` 拉浏览器会失败(装 `xdg-utils` 可解);设置页会提示这一条。
+- 注册是**幂等**的:重复点只会更新自己那几行 / 那几个键;改动 `mimeapps.list` 前会留一份 `.bow.bak`。
+
+### 打开本地文件的三条路径(两个平台一致)
+
+| 入口 | 形态 | 说明 |
+| --- | --- | --- |
+| 文件管理器 | Linux:桌面条目的 `%U`;Windows:注册表命令里的 `"%1"` | 第二个进程只把参数交给常驻实例 → **新开标签**,不顶掉当前页 |
+| 终端 | `bow a.html` / `bow.exe C:\x\a.html` / `node scripts/open-bow.mjs -- a.html https://x.com` | 只有第一个参数是 `stdio`/`http` 时才当模式,其余原序透传给 electron |
+| 地址栏 | `/tmp/a.html`、`~/a.html`、`./a.html`、`C:\x\a.html`、`\\server\share\a.html`、`file:///…` | 路径**存在**才算文件;否则维持原规则(`file.html` → `https://file.html`,不存在的路径 → 搜索) |
+
+细节与边界:
+
+- 启动时加了 `--allow-file-access-from-files`:本地页面的相对图片 / CSS / `<script type="module">` 才能加载
+  (不加时 Chromium 会以 CORS 拒掉 `file://` 下的模块脚本,`fetch()` 同理)。
+- 参数判定是「逐个分类」而不是「按位置取」:Windows 盘符 `C:\…` 同时长得像「协议 C:」,所以本地路径必须
+  先于 scheme 判定(`src/main/openArgs.ts` 的 `classifyArg`,有回归测试看住顺序)。
+- 目录参数、不存在的路径、`mailto:` 等其它协议一律忽略并记一条日志(普通启动写 stdout,MCP 模式写
+  `<userData>/browser.log`),不会静默开出空白页。
+- Windows 只认原生路径形态(`C:\…`、`file:///C:/…`、`\\server\share\…`);从 Git Bash 手敲
+  `/c/Users/x/a.html` 是 MSYS 路径语义,不会被当成 Windows 路径。
+- `file://` 访问**不**记入浏览历史(历史插件按 `isHttpUrl` 过滤),地址栏建议里也不会出现。
+- MCP 的 `browser_navigate` / `browser_new_tab` **仍然只接受 http/https**:本地文件只能由人打开,
+  AI 读不到任意本地文件。
 
 ## 给 AI 工具配置 MCP
 
@@ -320,7 +374,7 @@ npm run test:mcp:http
 
 ## 插件体系
 
-书签、历史、CORS 放行、元素全屏、MCP HTTP 服务都是内置插件;广告/追踪拦截是参考插件。插件是**仓库内编译期模块**(无动态代码执行),
+书签、历史、CORS 放行、元素全屏、MCP HTTP 服务、默认浏览器都是内置插件;广告/追踪拦截是参考插件。插件是**仓库内编译期模块**(无动态代码执行),
 可在「设置页 → 插件管理」里运行时启停(无需重启),状态持久化到 `plugins.json`;停用时内核自动回收其 IPC、
 建议源、MCP 工具、网络钩子与已注入 CSS。
 
