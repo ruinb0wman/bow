@@ -3,6 +3,14 @@
 export const BROWSER_NAME = 'bow'
 
 /**
+ * Linux 桌面集成标识(`app.setDesktopName` 的值,也是已安装 .desktop 文件的基名)。
+ * 三处必须逐字一致:这里、`package.json` 的 `build.appId`、
+ * `src/plugins/default-browser/linuxDesktop.ts` 生成的 `~/.local/share/applications/<id>.desktop`。
+ * 不一致的后果:Wayland `app_id` / X11 `WM_CLASS` 对不上 .desktop 文件 → 图标与窗口分组错乱。
+ */
+export const APP_DESKTOP_NAME = 'com.ruinb0w.bow'
+
+/**
  * 把 Electron 真实默认 UA(appName/appVersion + Electron 令牌)改写为 bow 签名:
  * - 删除 `Electron/<version>` 令牌(网站据此识别 Electron)
  * - 把 `<appName>/<appVersion>` 产品令牌替换为 `bow/<appVersion>`

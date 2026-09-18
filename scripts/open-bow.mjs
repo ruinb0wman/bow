@@ -11,7 +11,12 @@
  *   node scripts/open-bow.mjs stdio      # 等价于 MCP=stdio electron .
  *   node scripts/open-bow.mjs http       # 等价于 MCP_HTTP=1 electron .(常驻 HTTP MCP 服务)
  *   node scripts/open-bow.mjs            # 普通启动(不开启 MCP)
+ *   node scripts/open-bow.mjs -- a.html https://x.com   # 启动并打开(文件管理器/`bow` 包装脚本传参)
  *   node scripts/open-bow.mjs http --dry-run   # 只打印将要设置的环境变量与命令
+ *
+ * 参数规则单看一条就够:**只有第一个参数精确等于 stdio / http 才算模式**,
+ * 其余参数(含 `--` 之后的全部)都是要打开的文件 / URL,原序透传给 electron。
+ * 所以 `open-bow.mjs my.html` 不会报「未知模式」。
  *
  * 环境变量:
  *   MCP_HTTP_PORT      HTTP 模式端口,默认 8765
@@ -28,12 +33,12 @@ import { fileURLToPath } from 'node:url'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const argv = process.argv.slice(2)
 const dryRun = argv.includes('--dry-run')
-const mode = (argv.find((a) => !a.startsWith('--')) ?? '').toLowerCase()
-
-if (mode && mode !== 'stdio' && mode !== 'http') {
-  console.error(`✗ 未知模式 "${mode}";可用:stdio / http /(留空表示普通启动)`)
-  process.exit(1)
-}
+/** 只有第一个参数精确等于 stdio / http 才算「模式」(不再用「第一个非 -- 开头」探测,否则文件路径会被当模式) */
+const MODES = ['stdio', 'http']
+const first = (argv[0] ?? '').toLowerCase()
+const mode = MODES.includes(first) ? first : ''
+/** 其余参数去掉启动器自己的开关与 `--` 分隔符后,原序作为打开目标透传给 electron */
+const targets = (mode ? argv.slice(1) : argv).filter((a) => a !== '--' && a !== '--dry-run')
 
 /** 解析 electron 可执行文件:优先 BOW_ELECTRON,其次 electron 包导出的真实路径,最后 .bin 垫片 */
 async function resolveElectron() {
@@ -66,7 +71,11 @@ if (mode === 'stdio') {
   if (env.MCP_HTTP_TOKEN) injected.MCP_HTTP_TOKEN = '(已设置,值不回显)'
 }
 
-const args = ['.', ...(process.env.BOW_ELECTRON_ARGS?.split(' ').filter(Boolean) ?? [])]
+const args = [
+  '.',
+  ...targets,
+  ...(process.env.BOW_ELECTRON_ARGS?.split(' ').filter(Boolean) ?? [])
+]
 const bin = await resolveElectron()
 
 if (dryRun) {

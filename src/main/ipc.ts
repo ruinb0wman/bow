@@ -1,7 +1,7 @@
 /** 渲染层(Vue UI)与主进程的 IPC 桥:核心 chrome 交互 + 插件调用面 */
 
 import { BrowserWindow, ipcMain } from 'electron'
-import { resolveNavigation } from '@shared/url'
+import { defaultNavInputDeps, resolveNavigationWithFiles } from './navInput'
 import type { OverlayContent, OverlayEvent, Settings, TabInfo } from '@shared/types'
 import type { TabManager } from './tabManager'
 import type { OverlayManager } from './overlay'
@@ -44,7 +44,8 @@ export function registerIpc(
   ipcMain.handle('tab:activate-last-browsing', () => tabs.activateLastBrowsing())
 
   ipcMain.handle('nav:go', (_e, input: string) => {
-    const res = resolveNavigation(input, getSettingsStore().get().searchEngine)
+    // 本地文件路径(存在的)在这里被识别成 file://,其余输入行为与原先完全一致
+    const res = resolveNavigationWithFiles(input, getSettingsStore().get().searchEngine, defaultNavInputDeps())
     if (!res) {
       const tab = tabs.ensureActive()
       return { parsed: null, tabId: tab.id, url: tab.url }

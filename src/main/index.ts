@@ -10,8 +10,10 @@ import { loadRendererEntry } from './rendererEntry'
 import { startMcpServer, CORE_MCP_TOOL_NAMES } from './mcp'
 import { applyBrowserIdentity } from './ua'
 import { acquireSingletonLock, focusFirstWindow } from './singleInstance'
+import { collectOpenTargets, defaultOpenTargetDeps } from './openArgs'
 import { PluginKernel } from './plugins/kernel'
 import { BUILTIN_PLUGINS } from './plugins/builtin'
+import { APP_DESKTOP_NAME } from '@shared/ua'
 import { IS_MCP, IS_MCP_STDIO, IS_MCP_HTTP, MCP_HTTP_PORT, MCP_HTTP_TOKEN, log, logError } from './logger'
 
 function createWindow(): BrowserWindow {
@@ -43,11 +45,30 @@ let overlay: OverlayManager
 let kernel: PluginKernel
 
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
+// 本地 html 的相对资源(图片 / CSS / 普通脚本)本来就能加载,但 <script type="module"> 与 fetch
+// 会被 Chromium 的 file:// opaque origin 拦掉。这个开关只放宽 file:// 文档之间的互访,
+// http(s) 页面加载 file:// 依旧被拒。
+app.commandLine.appendSwitch('allow-file-access-from-files')
 
 if (IS_MCP_STDIO) {
   // stdio 模式下禁止 Chromium 往 stdout 打日志,避免破坏协议帧
   app.commandLine.appendSwitch('disable-logging')
 }
+
+// Linux 桌面集成标识:必须与已安装的 .desktop 文件基名逐字一致
+// (由内置插件「默认浏览器」写在 ~/.local/share/applications/com.ruinb0w.bow.desktop),否则
+// Wayland app_id / X11 WM_CLASS 对不上 —— 图标与窗口分组会飘。Electron 要求该调用发生在 ready 之前,
+// 所以它不能和 whenReady 里的 applyBrowserIdentity() 放一起。
+if (process.platform === 'linux') app.setDesktopName(APP_DESKTOP_NAME)
+
+// 命令行带来的打开目标(文件管理器「用 bow 打开」/ 终端 `bow x.html`)。
+// stdio 模式下 argv 是 MCP 客户端拼的,绝不能当文件打开;dev 是 `electron . <args>`,
+// 打包后是 `bow <args>`,所以 skip 随 app.isPackaged 变。
+const initialTargets = IS_MCP_STDIO
+  ? []
+  : collectOpenTargets(process.argv, app.isPackaged ? 1 : 2, defaultOpenTargetDeps(), {
+      onSkip: (arg, reason) => log('忽略启动参数', arg, reason)
+    })
 
 // 必须在 app ready 之前取锁。第二个实例拿到锁失败后会触发已有实例的 second-instance,
 // 由后者把窗口带到前台,自己则直接退出(不创建窗口)。
@@ -55,8 +76,15 @@ const hasSingletonLock = acquireSingletonLock({
   isStdio: IS_MCP_STDIO,
   requestLock: () => app.requestSingleInstanceLock()
 })
-app.on('second-instance', () => {
+app.on('second-instance', (_e, argv, workingDirectory) => {
   focusFirstWindow(BrowserWindow.getAllWindows())
+  // 第二个进程只负责传递意图(它自己随即退出):把 argv 里的 URL / 文件补开成新标签,
+  // 而不是顶掉用户当前正在看的页面。tabs 还没建好(极早到达)时只聚焦。
+  if (IS_MCP_STDIO || !tabs) return
+  const targets = collectOpenTargets(argv, app.isPackaged ? 1 : 2, defaultOpenTargetDeps(workingDirectory), {
+    onSkip: (arg, reason) => log('忽略启动参数', arg, reason)
+  })
+  for (const target of targets) tabs.create(target)
 })
 
 app.whenReady().then(async () => {
@@ -82,10 +110,11 @@ app.whenReady().then(async () => {
   kernel.installHooks()
   await kernel.activateEnabled()
 
-  // 外链默认走系统浏览器,页面内 target=_blank 由 TabManager 接管为新标签
+  // 外链:http(s) 与本地文件由 TabManager 接管为新标签,其它协议(邮件等)才交给系统处理程序
   app.on('web-contents-created', (_e, contents) => {
     contents.setWindowOpenHandler(({ url }) => {
-      if (/^https?:/i.test(url)) {
+      // http(s) 与本地文件都进标签页;其它协议走系统默认处理程序(shell.openExternal)
+      if (/^(https?|file):/i.test(url)) {
         tabs.create(url)
         return { action: 'deny' }
       }
@@ -167,11 +196,14 @@ app.whenReady().then(async () => {
   tabs.on('tabs-changed', () => overlay.raise())
 
   mainWindow.webContents.on('did-finish-load', () => {
-    // 首个标签加载主页
-    if (tabs.listTabs().length === 0) {
-      const homepage = getSettingsStore().get().homepage
-      tabs.create(homepage)
+    // 首个标签:优先打开命令行 / 文件管理器传来的目标(每个目标一个标签),否则开主页。
+    // 放在这里而不是更早,是为了保证 registerIpc() 已挂好 tabs-changed 广播。
+    if (tabs.listTabs().length > 0) return
+    if (initialTargets.length > 0) {
+      for (const target of initialTargets) tabs.create(target)
+      return
     }
+    tabs.create(getSettingsStore().get().homepage)
   })
 
   mainWindow.webContents.on('will-navigate', (e) => {
