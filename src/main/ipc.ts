@@ -7,6 +7,7 @@ import type { TabManager } from './tabManager'
 import type { OverlayManager } from './overlay'
 import type { PluginKernel } from './plugins/kernel'
 import { getSettingsStore } from './stores'
+import { CLOSE_CONFIRM_OVERLAY_ID, confirmWindowClose } from './closeConfirm'
 import { log } from './logger'
 
 export function registerIpc(
@@ -111,6 +112,11 @@ export function registerIpc(
     }
     if (ev.event === 'close-request') {
       overlay.show(null)
+      return true
+    }
+    // 关闭窗口确认框:取消走上面的通用 close-request,只有确认需要主进程放行 close
+    if (ev.id === CLOSE_CONFIRM_OVERLAY_ID && ev.event === 'confirm') {
+      confirmWindowClose(mainWindow)
       return true
     }
     await kernel.routeOverlayEvent(ev.id, ev.event, ev.args)

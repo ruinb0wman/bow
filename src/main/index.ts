@@ -2,6 +2,7 @@ import { app, BrowserWindow, shell } from 'electron'
 import { join } from 'node:path'
 import { TabManager } from './tabManager'
 import { OverlayManager } from './overlay'
+import { installCloseConfirm } from './closeConfirm'
 import { registerIpc } from './ipc'
 import { initStores, getSettingsStore } from './stores'
 import { setupDevTools } from './devtools'
@@ -126,6 +127,8 @@ app.whenReady().then(async () => {
   const mainWindow = createWindow()
   tabs = new TabManager(mainWindow)
   overlay = new OverlayManager(mainWindow, tabs)
+  // 多标签时先弹确认框再关窗口(Alt+F4 / 自绘关闭按钮都汇聚到 close 事件)
+  installCloseConfirm(mainWindow, tabs, overlay)
 
   // 窗口重新获得 OS 焦点:把键盘焦点交还活动标签页,避免 Electron 默认恢复到 chrome webContents(地址栏)
   const focusActivePage = (): void => {

@@ -41,6 +41,7 @@ src/
     tabShortcuts.ts              标签快捷键(Ctrl+T/W/L/,/数字/Shift+T)全局拦截
     tabManager.ts                TabManager:每标签一个 WebContentsView + 内部页面标签 + 布局
     overlay.ts                   OverlayManager:常驻透明顶层视图,按 placement 布局
+    closeConfirm.ts              关闭窗口确认:多标签时拦下 close 事件,改用应用内确认框
     actions.ts                   注入式页面操作原语(snapshot/click/type/scroll/pressKey/screenshot)+ waitForLoad
     ipc.ts                       chrome UI ↔ 主进程的 IPC 面(标签/导航/设置/浮层/插件)
     stores.ts                    JsonStore(原子写)+ 核心 settings.json
@@ -72,7 +73,7 @@ src/
     settings.html + src/settings/       设置页(bow://settings 内部标签页)
     src/plugins/registry.ts             PLUGIN_UI 注册表 + SLOT_PLUGIN_ORDER(渲染层唯一登记点)
     src/plugins/slots.ts                collectSlot 纯函数(插槽合并顺序,可单测)
-    src/components/                     SuggestPanel(地址栏下拉)/ ModalShell(弹层壳 + Esc 栈顶)
+    src/components/                     SuggestPanel(地址栏下拉)/ CloseConfirmModal(关闭窗口确认)/ ModalShell(弹层壳 + Esc 栈顶)
     src/lib/                            avatar(字母头像)/ openFolder(批量后台开标签)/ modalStack
   shared/                        三端共享纯逻辑(无 electron / DOM)
     types.ts        跨端类型(TabInfo/Settings/Suggestion/Overlay*/ActionResult…)
@@ -125,6 +126,7 @@ whenReady():
      await activateEnabled()                    ← 此刻还没有窗口、没有 TabManager、没有标签
   6. app.on('web-contents-created')  外链处理:http(s) 与 file: 走新标签,其余 shell.openExternal
   7. createWindow() → TabManager → OverlayManager
+     installCloseConfirm(mainWindow, tabs, overlay)   拦 close:≥2 个标签时先弹应用内确认框
   8. kernel.setTabProvider / setPageApi / setBroadcaster / setUiHost   注入运行时依赖
   9. tabs.on(...) → kernel.emitEvent('tab:navigated' | 'tab:created' | 'tab:closed' | 'tab:activated')
  10. chrome did-finish-load 且没有标签 → 先开命令行目标(initialTargets),否则开设置里的主页
@@ -174,12 +176,22 @@ Electron 的合成顺序:`contentView` 的子视图按加入顺序从底到顶;*
 | 方向 | 通道 | 用途 |
 | --- | --- | --- |
 | chrome → 主进程 → overlay | `ui:overlay` → `overlay:show` | 显示/更新/关闭浮层(`OverlayShowMessage`,含 `meta.bandTop`) |
-| overlay → 主进程 → chrome/插件 | `ui:overlay-event` | `ev.id === 'suggest'` 转发 chrome;`ev.event === 'close-request'` 主进程直接关;其余 `kernel.routeOverlayEvent()` |
+| overlay → 主进程 → chrome/插件 | `ui:overlay-event` | `ev.id === 'suggest'` 转发 chrome;`ev.id === 'confirm-close'` 且 `event === 'confirm'` → `closeConfirm.confirmWindowClose()`;`ev.event === 'close-request'` 主进程直接关;其余 `kernel.routeOverlayEvent()` |
 
 `kernel.routeOverlayEvent()` 用正则 `/^plugin:([^:]+):/` 从浮层 id 里解析插件,调用其注册的
 `overlay-event(overlayId, event, args)` 方法。**浮层 id 的格式是有功能的约定**,不是命名风格。
 
 Overlay 视图崩溃会自动重建(`recreate()`),且若当时正开着浮层会重新打开。
+
+**窗口关闭拦截(多标签确认)** 也走这条通道:主进程的 `close` 处理里 ≥2 个标签就 `e.preventDefault()` +
+`overlay.show({id:'confirm-close', placement:'full', payload:{tabCount}})`(状态在 `main/closeConfirm.ts`);
+取消走上表的 `close-request`,确认就是那个 `confirm-close` 分支。两个刻意的设计:
+
+- **确认框已经开着时再次触发关闭(Alt+F4 / 窗口管理器)直接放行** —— overlay 页面加载失败(dev server 未起等)
+  时遮罩画不出来、按钮点不到,这是唯一不自锁的出口(`overlay.currentId` 是主进程状态,不依赖渲染成功)。
+- **不新增 IPC 通道、不动 preload**:浮层组件用 `overlay-event` 和宿主说话,与插件浮层一致(代价是 `ipc.ts`
+  要为 `confirm-close` 开一个核心分支,与 `suggest` 同位置);`window:close`(自绘关闭按钮)与 `Alt+F4`(不经 IPC)
+  都汇聚到窗口的 `close` 事件,所以只需在这一处拦。
 
 ---
 
@@ -635,7 +647,7 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
   chrome 侧只保留 Ctrl+R。
 - 标签关闭兜底:关掉最后一个标签时自动补一个 `about:blank`(与 `tabShortcuts.ts` 的 close 分支一致)。
 
-`OverlayApp.vue`:注册表 = 核心 `{suggest: SuggestPanel}` + 已启用插件的 `overlays`;
+`OverlayApp.vue`:注册表 = 核心 `{suggest: SuggestPanel, 'confirm-close': CloseConfirmModal}` + 已启用插件的 `overlays`;
 组件契约 = `payload` prop + `band-top` prop + `overlay-event` emit。
 `ModalShell.vue` 用模块级 `MODAL_STACK` 保证只有栈顶弹层响应 Esc(必须是模块级 —— `<script setup>` 顶层每实例执行一次)。
 
@@ -697,14 +709,14 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `settings:get` | — | `Settings` |
 | `settings:set` | patch | `Settings` |
 | `ui:overlay` | `OverlayContent \| null` | `true` |
-| `ui:overlay-event` | `OverlayEvent` | `true` |
+| `ui:overlay-event` | `OverlayEvent` | `true`(`confirm-close` 的 `confirm` 由 `closeConfirm.ts` 处理:置位后放行关闭;取消走通用 `close-request`) |
 | `ui:chrome-height` | height | `true` |
 | `plugins:list` | — | `PluginInfo[]` |
 | `plugins:set-enabled` | id, enabled | `PluginInfo[]` |
 | `plugins:invoke` | id, method, args[] | `unknown` |
 | `plugins:overlay-event` | overlayId, event, args | `boolean` |
 | `plugins:suggest` | input | `{rows, suggestions}` |
-| `window:minimize` / `window:maximize` / `window:close` | — | `void` |
+| `window:minimize` / `window:maximize` / `window:close` | — | `void`(≥2 标签时被 `closeConfirm.ts` 拦下,先弹确认框) |
 
 `send`(主进程 → 渲染层):
 
@@ -795,8 +807,8 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
   ⚠️ 给主进程加新的 `tabs.*` / `wc.*` 调用时**必须同步补假实现**,否则测试会红得莫名其妙。
 - `tests/mcpServer.test.ts`(861 行)用 `InMemoryTransport` + 真实 `McpServer`/`Client` 握手,
   覆盖 instructions 下发、工具面与 schema、`waitUntil` 语义、失败一律 `isError`、内部页面边界、插件工具错误传播。
-- **当前基线(2026-09-18 复测)**:`npm test` → **35 个文件 / 573 个用例全绿**,约 3.7s。
-  35 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
+- **当前基线(2026-09-18 复测)**:`npm test` → **36 个文件 / 598 个用例全绿**,约 3.7s。
+  36 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
   `fakeWc.ts`、`fakeKernel.ts`。
 
 | 测试文件 | 行数 | 用例 | 测试文件 | 行数 | 用例 |
@@ -814,15 +826,15 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 
 其余:`ua`(5)、`pluginMatch`(13)、`settingsNav`(4)、`modalStack`(3)、`bundleScan`(4)、
 `adblockPickerScript`(4)、`elementFullscreenPlugin`(3)、`localFile`(6)、`navInput`(9)、`openArgs`(14)、
-`defaultBrowser`(60)。合计 **573**。
+`defaultBrowser`(60)、`closeConfirm`(6)。合计 **598**。
 
 设备检查插件的三个测试文件(它们不在上表里:代码量不大,但每一条都在钉外部格式):
 
 | 测试文件 | 行数 | 用例 | 铉住的是什么 |
 | --- | --- | --- | --- |
-| `deviceInspect.test.ts` | 425 | 38 | adb 输出格式、`/proc/net/unix` 列、`/json` 字段、前端 URL 形态、失败文案 |
-| `deviceInspectTargets.test.ts` | 434 | 20 | 转发池(换端口重试 / 回收 / 中继挂掉要回收转发)、套接字探活自愈、整链路发现(假 adb + 假 HTTP) |
-| `deviceInspectRelay.test.ts` | 236 | 12 | **真 TCP 链路**:带 Origin 的握手到设备侧时 Origin 已消失、首部之后双向透传、超限断开 |
+| `deviceInspect.test.ts` | 565 | 49 | adb 输出格式、`/proc/net/unix` 列、`/json` 字段、前端 URL 形态、失败文案 |
+| `deviceInspectTargets.test.ts` | 608 | 28 | 转发池(换端口重试 / 回收 / 中继挂掉要回收转发)、套接字探活自愈、整链路发现(假 adb + 假 HTTP) |
+| `deviceInspectRelay.test.ts` | 237 | 12 | **真 TCP 链路**:带 Origin 的握手到设备侧时 Origin 已消失、首部之后双向透传、超限断开 |
 | `deviceInspectCdp.test.ts` | 226 | 10 | 与**真实**本地 WebSocket 服务端对打:握手不带 Origin、id 匹配、超时、对端断开 |
 
 ---
@@ -940,6 +952,16 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
     就绑不上(`cannot bind listener` / **10048**)。实测随机端口失败率约 30%,而插件只重试 3 次(≈2.7% 全败),告警文案是
     「端口转发失败」。可选修法:重试仍失败后**改用 `adb forward --list` 里已存在的同一个套接字的转发**
     (`shared.parseForwardList` 已写好但没有调用方 —— 它现在是诊断用;注意只是「借用」,不要去删用户手建的转发)。
+
+**关闭窗口确认**(`main/closeConfirm.ts`,测试:`tests/closeConfirm.test.ts`)
+
+29. 三条不变式:①只拦窗口不拦标签页(`Ctrl+W` / 标签 × 不受影响);
+    ②`overlay.currentId === 'confirm-close'` 时再次触发关闭**必须放行** —— overlay 页面加载失败时
+    遮罩画不出来、按钮点不到,不放行就再也关不掉窗口(这也是「第二次点关闭才生效」的原因);
+    ③系统关机/注销在 Windows 走 `query-session-end`/`session-end`、Linux 走 SIGTERM,
+    **不要**为此加 `before-quit` 拦截(那才会真的挡住注销)。
+30. 计数口径是 `tabs.listTabs().length`(含 `bow://settings` 与 DevTools 前端标签),
+    与「普通网页标签数」不是一个口径 —— 改判据时先想清楚哪一个是想要的。
     Bow 侧规避:改用与 bow 同侧的原生 adb(设置里填 Windows `platform-tools\adb.exe` 路径)。
 
 ---

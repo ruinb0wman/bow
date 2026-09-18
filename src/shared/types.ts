@@ -51,19 +51,25 @@ export type OverlayPlacement = 'full' | 'below-chrome'
 
 /**
  * 核心 Overlay 内容标识(渲染层组件注册表的 key)。
- * 约定:`suggest` = 地址栏建议下拉;设置等浏览器自有页面已改为内部标签页(bow://settings),
- * 不再占用浮层。
+ * 约定:`suggest` = 地址栏建议下拉;`confirm-close` = 关闭窗口确认(多标签时);
+ * 设置等浏览器自有页面已改为内部标签页(bow://settings),不再占用浮层。
  */
-export type CoreOverlayContentId = 'suggest'
+export type CoreOverlayContentId = 'suggest' | 'confirm-close'
 
 /** 插件浮层 id 约定:`plugin:<pluginId>:<panelId>` */
 export type PluginOverlayContentId = `plugin:${string}`
 
 export type OverlayContentId = CoreOverlayContentId | PluginOverlayContentId
 
+/** 关闭窗口确认浮层:标签数按主进程拦下 close 时的快照(见 main/closeConfirm.ts) */
+export interface CloseConfirmPayload {
+  tabCount: number
+}
+
 /** 核心内容 id 的类型化 payload;插件浮层 payload 由插件自定义(unknown) */
 export interface OverlayContentMap {
   suggest: SuggestPayload
+  'confirm-close': CloseConfirmPayload
 }
 
 export type OverlayPayload<K extends OverlayContentId> = K extends keyof OverlayContentMap
