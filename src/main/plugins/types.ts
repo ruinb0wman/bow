@@ -52,7 +52,14 @@ export interface PluginPageApi {
    * 目前只有设备检查插件在用。插件**不自己拼** `devtools://` 地址 —— 前端入口与 `ws=` 参数形态
    * 由内核统一(见 `@shared/devtools`),否则这两处会各自漂移,而写错的表现只是「白屏」。
    */
-  openDevToolsTab(wsUrl: string, title?: string, activate?: boolean): number
+  /**
+   * 把一个 CDP 前端地址接进 bow 的标签页(`inspector` 类标签:无 preload、不进历史、不被 MCP 操作)。
+   *
+   * 参数是**已经拼好的前端地址**而不是 ws 地址:前端不一定是 bow 自带的那份 ——
+   * 设备检查插件在设备版本与 Electron 不匹配时会用**设备指定的前端**(可能是 `https://…`),
+   * 那份地址只有插件知道。bow 自带那份的拼装仍在 `@shared/devtools`(唯一来源)。
+   */
+  openDevToolsTab(frontendUrl: string, title?: string, activate?: boolean): number
 }
 
 /**

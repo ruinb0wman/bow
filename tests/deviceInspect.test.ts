@@ -16,9 +16,17 @@ import {
   androidPackageFromVersion,
   browserNameFromVersion,
   DEFAULT_ADB_COMMAND,
+  effectiveStrategy,
+  firstSuggestedFrontendUrl,
+  FRONTEND_STORAGE_KEY_MIN_MAJOR,
+  frontendNotice,
   frontendUrlFor,
+  isWslAdb,
+  needsDeviceFrontend,
   normalizeSocketName,
+  normalizeStrategy,
   parseAdbSetting,
+  parseBrowserMajor,
   parseDevices,
   parseForwardList,
   parseSockets,
@@ -28,6 +36,7 @@ import {
   sortTargets,
   splitTargetKey,
   splitTokens,
+  suggestedFrontendUrl,
   targetKey,
   targetsFromJson,
   targetTypeLabel,
@@ -260,10 +269,50 @@ describe('ws 地址改写', () => {
     )
   })
 
-  it('device-bundled:从同一个转发端口取设备自带前端(同源豁免)', () => {
-    expect(frontendUrlFor('device-bundled', { wsUrl: 'ws://127.0.0.1:9301/devtools/page/ABC', localPort: 9301 })).toBe(
-      'http://127.0.0.1:9301/devtools/inspector.html?ws=127.0.0.1:9301/devtools/page/ABC'
+  it('device-suggested:用设备给的那份前端(ws 换成中继端口)', () => {
+    const ws = 'ws://127.0.0.1:9301/devtools/page/ABC'
+    const suggested = suggestedFrontendUrl(
+      'https://chrome-devtools-frontend.appspot.com/serve_rev/@2d64ccbb0716a9c780633f2f193d3cef31637892/inspector.html?ws=127.0.0.1:9222/devtools/page/ABC',
+      { wsUrl: ws, localPort: 9301 }
     )
+    expect(suggested).toBe(
+      'https://chrome-devtools-frontend.appspot.com/serve_rev/@2d64ccbb0716a9c780633f2f193d3cef31637892/inspector.html?ws=127.0.0.1:9301/devtools/page/ABC'
+    )
+    expect(frontendUrlFor('device-suggested', { wsUrl: ws, localPort: 9301, suggested })).toBe(suggested)
+  })
+
+  it('device-suggested:设备自带前端(相对地址)也能认', () => {
+    expect(
+      suggestedFrontendUrl('/devtools/inspector.html?ws=localhost:9222/devtools/page/ABC', {
+        wsUrl: 'ws://127.0.0.1:9301/devtools/page/ABC',
+        localPort: 9301
+      })
+    ).toBe('http://127.0.0.1:9301/devtools/inspector.html?ws=127.0.0.1:9301/devtools/page/ABC')
+  })
+
+  it('设备没给地址(或给的是垃圾)→ null,由调用方回退 bow 自带', () => {
+    const ws = 'ws://127.0.0.1:9301/devtools/page/ABC'
+    expect(suggestedFrontendUrl(undefined, { wsUrl: ws, localPort: 9301 })).toBeNull()
+    expect(suggestedFrontendUrl('', { wsUrl: ws, localPort: 9301 })).toBeNull()
+    expect(suggestedFrontendUrl('chrome-devtools://devtools/bundled/inspector.html', { wsUrl: ws, localPort: 9301 })).toBeNull()
+    expect(frontendUrlFor('device-suggested', { wsUrl: ws, localPort: 9301, suggested: null })).toBe(
+      'devtools://devtools/bundled/devtools_app.html?ws=127.0.0.1:9301/devtools/page/ABC'
+    )
+  })
+
+  it('firstSuggestedFrontendUrl:从 /json 里挑第一条可用的设备前端', () => {
+    const raw = [
+      { id: 'A', webSocketDebuggerUrl: 'ws://localhost:9222/devtools/page/A' },
+      {
+        id: 'B',
+        webSocketDebuggerUrl: 'ws://localhost:9222/devtools/page/B',
+        devtoolsFrontendUrl: 'https://chrome-devtools-frontend.appspot.com/serve_rev/@abc/inspector.html?ws=localhost:9222/devtools/page/B'
+      }
+    ]
+    expect(firstSuggestedFrontendUrl(raw, { localPort: 9301 })).toBe(
+      'https://chrome-devtools-frontend.appspot.com/serve_rev/@abc/inspector.html?ws=127.0.0.1:9301/devtools/page/B'
+    )
+    expect(firstSuggestedFrontendUrl(null, { localPort: 9301 })).toBeNull()
   })
 })
 
@@ -334,6 +383,91 @@ describe('targetsFromJson', () => {
   it('没有包名时不编造', () => {
     const [first] = targetsFromJson(payload, { ...ctx, package: undefined })
     expect(first.package).toBeUndefined()
+  })
+})
+
+describe('前端来源:版本判定', () => {
+  it('从 /json/version 的 Browser 串里取出主版本号', () => {
+    expect(parseBrowserMajor('Chrome/138.0.7204.179')).toBe(138)
+    expect(parseBrowserMajor('WebView/120.0.6099.230')).toBe(120)
+    expect(parseBrowserMajor('152')).toBe(152)
+    expect(parseBrowserMajor(undefined)).toBeUndefined()
+    expect(parseBrowserMajor('')).toBeUndefined()
+    expect(parseBrowserMajor('Chrome/unknown')).toBeUndefined()
+  })
+
+  it('Chromium 146 以下的设备必须用设备自带前端(否则取不到 storage key)', () => {
+    // 阈值本身的依据在 shared.ts 的注释里:140 无 Storage.getStorageKey、146 有
+    expect(FRONTEND_STORAGE_KEY_MIN_MAJOR).toBe(146)
+    expect(needsDeviceFrontend('Chrome/138.0.7204.179')).toBe(true)
+    expect(needsDeviceFrontend('Chrome/120.0.6099.43')).toBe(true)
+    expect(needsDeviceFrontend('Chrome/145.0.0.0')).toBe(true)
+    expect(needsDeviceFrontend('Chrome/146.0.7680.31')).toBe(false)
+    expect(needsDeviceFrontend('Chrome/152.0.7977.78')).toBe(false)
+    // 版本解析不出来时按「不需要」处理:不依赖设备提供前端资源
+    expect(needsDeviceFrontend(undefined)).toBe(false)
+    expect(needsDeviceFrontend('WebView/unknown')).toBe(false)
+  })
+
+  it('auto 按设备挑前端;显式指定时永远听用户的', () => {
+    expect(effectiveStrategy('auto', { browser: 'Chrome/138.0.7204.179' })).toBe('device-suggested')
+    expect(effectiveStrategy('auto', { browser: 'Chrome/152.0.7977.78' })).toBe('electron-bundled')
+    expect(effectiveStrategy('electron-bundled', { browser: 'Chrome/138.0.7204.179' })).toBe(
+      'electron-bundled'
+    )
+    expect(effectiveStrategy('device-suggested', { browser: 'Chrome/152.0.7977.78' })).toBe('device-suggested')
+  })
+
+  it('设备给的前端打不开时,auto 回退到 bow 自带(至少 Elements/Console 可用)', () => {
+    expect(
+      effectiveStrategy('auto', { browser: 'Chrome/138.0.7204.179', suggestedAvailable: false })
+    ).toBe('electron-bundled')
+    expect(
+      effectiveStrategy('auto', { browser: 'Chrome/138.0.7204.179', suggestedAvailable: true })
+    ).toBe('device-suggested')
+  })
+
+  it('持久化/设置里的脏值一律回落 auto,旧名字 device-bundled 归一到 device-suggested', () => {
+    expect(normalizeStrategy('auto')).toBe('auto')
+    expect(normalizeStrategy('device-suggested')).toBe('device-suggested')
+    expect(normalizeStrategy('device-bundled')).toBe('device-suggested')
+    expect(normalizeStrategy('electron-bundled')).toBe('electron-bundled')
+    expect(normalizeStrategy('nope')).toBe('auto')
+    expect(normalizeStrategy(undefined)).toBe('auto')
+    expect(normalizeStrategy(42)).toBe('auto')
+  })
+
+  it('只有真正走 WSL 的 adb 命令才算 WSL(否则「端口连不上」会误指镜像网络)', () => {
+    expect(isWslAdb('wsl adb')).toBe(true)
+    expect(isWslAdb('wsl.exe -d Ubuntu-24.04 adb')).toBe(true)
+    expect(isWslAdb('adb')).toBe(false)
+    expect(isWslAdb('C:\\platform-tools\\adb.exe')).toBe(false)
+    expect(isWslAdb('')).toBe(false)
+  })
+
+  it('面板解释文案的判定:只在「确实值得一提」时给非空结果', () => {
+    const old = 'Chrome/138.0.7204.179'
+    const modern = 'Chrome/152.0.7977.78'
+    // 自动模式真的换了前端 → 解释为什么
+    expect(frontendNotice('auto', { browser: old, effective: 'device-suggested' })).toBe(
+      'auto-switched-to-device'
+    )
+    // 想换但设备给的前端打不开 → 解释回退
+    expect(frontendNotice('auto', { browser: old, effective: 'electron-bundled' })).toBe(
+      'auto-fallback-to-electron'
+    )
+    // 用户强制设备指定但打不开 → 解释回退(不是静默无视)
+    expect(frontendNotice('device-suggested', { browser: old, effective: 'electron-bundled' })).toBe(
+      'forced-device-unavailable'
+    )
+    // 用户强制 bow 自带、设备又是老版本 → 提醒存储面板会空(用户的显式选择仍然尊重)
+    expect(frontendNotice('electron-bundled', { browser: old, effective: 'electron-bundled' })).toBe(
+      'electron-incompatible'
+    )
+    // 版本对得上 / 按用户选择换了设备前端 → 没什么可说的
+    expect(frontendNotice('auto', { browser: modern, effective: 'electron-bundled' })).toBeNull()
+    expect(frontendNotice('device-suggested', { browser: old, effective: 'device-suggested' })).toBeNull()
+    expect(frontendNotice('electron-bundled', { browser: modern, effective: 'electron-bundled' })).toBeNull()
   })
 })
 
@@ -419,7 +553,13 @@ describe('problemHint', () => {
     expect(hint.detail).toContain('release')
   })
 
-  it('转发端口连不上时点名 WSL2 镜像网络', () => {
-    expect(problemHint('port-unreachable').detail).toContain('Mirrored')
+  it('转发端口连不上时,原生 adb 先指向「目标进程已退出」,并提示刷新', () => {
+    const hint = problemHint('port-unreachable')
+    expect(hint.detail).toContain('刷新')
+    expect(hint.detail).not.toContain('Mirrored')
+  })
+
+  it('只有 adb 走 WSL 时才提 WSL2 镜像网络', () => {
+    expect(problemHint('port-unreachable', { wsl: true }).detail).toContain('Mirrored')
   })
 })

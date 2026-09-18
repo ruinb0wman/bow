@@ -15,11 +15,12 @@
  * 两个必须记住的前提(详见 .pi/plans/device-inspect.md):
  * 1. **adb 可能不在本机**:本机形态是 bow.exe 在 Windows、adb 在 WSL,所以设置里可以填复合命令
  *    (`wsl adb`)。默认按 `adb` → `wsl adb` 依次探测,探测结果只在内存里缓存(不落盘)。
- * 2. **打开前端标签页由内核完成**(`ctx.pages.openDevToolsTab`):插件不自己拼 `devtools://` 地址 ——
- *    前端入口与 `ws=` 参数形态的唯一来源是 `@shared/devtools`。
+ * 2. **打开前端标签页由内核完成**(`ctx.pages.openDevToolsTab`):插件把**算好的前端地址**交给内核,
+ *    不交给它 ws 地址 —— 前端不一定是 bow 自带的那份(见 `shared.effectiveStrategy`)。
+ *    两个不变式仍在:`@shared/devtools` 是 bow 自带前端地址的唯一拼装处;`ws=` 参数不带 scheme。
  */
 
-import { app } from 'electron'
+import { app, net } from 'electron'
 import { z } from 'zod'
 import type { PluginContext, PluginMain, PluginStorage } from '../../main/plugins/types'
 import { textContent, imageContent } from '../../main/plugins/mcpResult'
@@ -43,6 +44,8 @@ import {
 } from './targets'
 import {
   DEFAULT_ADB_COMMAND,
+  isWslAdb,
+  normalizeStrategy,
   parseAdbSetting,
   problemHint,
   socketLabel,
@@ -61,17 +64,66 @@ export interface InspectState {
   version: number
   /** 置空 = 自动探测(Windows 上依次试 `adb`、`wsl adb`) */
   adbCommand: string
-  /** DevTools 前端来源:bow 自带(Electron)/ 设备自带(同源豁免的兜底) */
+  /**
+   * DevTools 前端来源,三选一(默认 `auto`)。
+   * 为什么需要 `auto`:前端与设备的 CDP 版本必须对得上 —— bow 自带的前端是 Chromium 152 的,
+   * 它在旧设备上取不到 storage key,Application 面板的 Local Storage / IndexedDB 会静默全空。
+   * 判定规则见 `shared.effectiveStrategy()`(`device-suggested` = 用设备给的那份前端,
+   * 即 `chrome://inspect` 的做法)。
+   */
   strategy: FrontendStrategy
   /** 上一次运行留下的转发,用于启动清理与端口复用 */
   forwards: ForwardRecord[]
 }
 
+/** 当前状态文件版本;v1 → v2 只是把前端来源默认值换成 `auto` */
+const STATE_VERSION = 2
+
 const DEFAULT_STATE: InspectState = {
-  version: 1,
+  version: STATE_VERSION,
   adbCommand: '',
-  strategy: 'electron-bundled',
+  strategy: 'auto',
   forwards: []
+}
+
+/**
+ * 「设备给的前端入口能不能打开」的探活必须走 **Chromium 的网络栈**。
+ *
+ * 为什么不能用 `nodeHttpDeps` 默认的 undici:它不认系统代理(`http_proxy` 也不认),
+ * 而随后真正加载那个页面的**标签页是 Chromium 在请求**。设备给的前端很可能在
+ * `chrome-devtools-frontend.appspot.com`(实测 vivo 系统 WebView 就是),在需要代理的机器上
+ * 用 undici 探会「打不开」—— 那就白白回退到 bow 自带前端(存储面板依旧空),而实际上标签页是能打开的。
+ * 探活用 GET + 丢掉 body(只取状态码),不读内容。
+ */
+function electronFrontendStatus(
+  url: string,
+  timeoutMs: number
+): Promise<{ ok: boolean; status?: number; error?: string }> {
+  return new Promise((resolve) => {
+    let settled = false
+    const done = (value: { ok: boolean; status?: number; error?: string }): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
+    }
+    const timer = setTimeout(() => {
+      try {
+        request.abort()
+      } catch {
+        /* 已经结束 */
+      }
+      done({ ok: false, error: `探活超时(${timeoutMs}ms)` })
+    }, timeoutMs)
+    const request = net.request({ method: 'GET', url, redirect: 'follow' })
+    request.on('response', (response) => {
+      response.on('data', () => {}) // 排空 body:只需要状态码,不要为一个 HTML 保留连接
+      response.on('end', () => done({ ok: true, status: response.statusCode }))
+      response.on('error', (error) => done({ ok: false, error: error.message }))
+    })
+    request.on('error', (error) => done({ ok: false, error: error.message }))
+    request.end()
+  })
 }
 
 function createDeviceInspectPlugin(): PluginMain {
@@ -150,7 +202,7 @@ function createDeviceInspectPlugin(): PluginMain {
   /** 跑一次完整发现;所有 IPC / MCP 入口都经过它,保证「看到的」与「点开的」是同一份数据 */
   async function snapshot(context: PluginContext): Promise<InspectSnapshot> {
     const state = store!.get()
-    const strategy: FrontendStrategy = state.strategy ?? 'electron-bundled'
+    const strategy: FrontendStrategy = normalizeStrategy(state.strategy)
     const resolved = await resolveCommand(state.adbCommand ?? '')
     if (!resolved.ok) {
       const hint = problemHint('no-adb', { detail: resolved.error })
@@ -181,7 +233,7 @@ function createDeviceInspectPlugin(): PluginMain {
       { strategy }
     )
 
-    const notices = noticesOf(report)
+    const notices = noticesOf(report, { wsl: isWslAdb(resolved.command) })
     const targetCount = targetsOfDevices(report.devices).length
     return {
       ok: targetCount > 0,
@@ -196,11 +248,11 @@ function createDeviceInspectPlugin(): PluginMain {
   }
 
   /** 把报告里的问题摊平成给用户/AI 看的指引(文案统一来自 shared.problemHint) */
-  function noticesOf(report: DiscoverReport): InspectNotice[] {
+  function noticesOf(report: DiscoverReport, ctx: { wsl: boolean } = { wsl: false }): InspectNotice[] {
     const out: InspectNotice[] = []
     const push = (problem: DiscoverProblem, scope: string, detail?: string, fatal = false): void => {
       if (out.some((n) => n.problem === problem && n.scope === scope)) return
-      out.push({ problem, scope, ...problemHint(problem, { serial: scope, detail }), fatal })
+      out.push({ problem, scope, ...problemHint(problem, { serial: scope, detail, wsl: ctx.wsl }), fatal })
     }
     if (report.problem) push(report.problem, '全局', report.detail, true)
     for (const device of report.devices) {
@@ -254,7 +306,9 @@ function createDeviceInspectPlugin(): PluginMain {
     const { target } = picked
     const label = target.title || target.url || target.id
     const suffix = target.package ? ` — ${target.package}` : ''
-    const tabId = context.pages.openDevToolsTab(target.wsUrl, `[检查] ${label}${suffix}`, activate)
+    // 用**目标自己算好的前端地址**:设备版本与 bow 自带前端不匹配时它是设备指定的那份
+    // (见 shared.effectiveStrategy);不再把 ws 地址交给内核去拼,否则永远只能得到 bow 自带前端
+    const tabId = context.pages.openDevToolsTab(target.frontendUrl, `[检查] ${label}${suffix}`, activate)
     return {
       ok: true,
       tabId,
@@ -294,7 +348,19 @@ function createDeviceInspectPlugin(): PluginMain {
 
     activate(context: PluginContext): void {
       store = context.storage<InspectState>({ file: 'device-inspect.json', defaults: DEFAULT_STATE })
-      http = nodeHttpDeps()
+      http = nodeHttpDeps({ getStatus: (url, timeoutMs) => electronFrontendStatus(url, timeoutMs) })
+
+      // v1 → v2:前端来源多了一个 `auto`。v1 里只有两个值,'electron-bundled' 就是当时的**默认值**
+      // (那时无法区分「用户显式选的」与「没动过」),所以迁到 auto 才能把老设备的修复真正打开;
+      // 显式选过 device-bundled 的保持「设备指定」(v2 里它改名叫 device-suggested)。
+      const persisted = store.get()
+      const migrated = normalizeStrategy(persisted.strategy)
+      if ((persisted.version ?? 1) < STATE_VERSION) {
+        store.set({ version: STATE_VERSION, strategy: migrated === 'electron-bundled' ? 'auto' : migrated })
+        context.log('device-inspect 状态升级到 v' + STATE_VERSION, '前端来源=', store.get().strategy)
+      } else if (migrated !== persisted.strategy) {
+        store.set({ strategy: migrated }) // 只是旧名字(device-bundled)
+      }
 
       // 上次运行(可能是被强杀)留下的转发在这里回收;不阻塞激活,失败只记日志
       void (async () => {
@@ -316,12 +382,12 @@ function createDeviceInspectPlugin(): PluginMain {
       )
       context.ipc.handle('getSettings', () => {
         const state = store!.get()
-        return { adbCommand: state.adbCommand, strategy: state.strategy }
+        return { adbCommand: state.adbCommand, strategy: normalizeStrategy(state.strategy) }
       })
       context.ipc.handle('setSettings', async (patch: { adbCommand?: string; strategy?: FrontendStrategy }) => {
         const next = store!.set({
           ...(typeof patch.adbCommand === 'string' ? { adbCommand: patch.adbCommand } : {}),
-          ...(patch.strategy ? { strategy: patch.strategy } : {})
+          ...(patch.strategy ? { strategy: normalizeStrategy(patch.strategy) } : {})
         })
         // 换 adb 或换前端策略后:已建立的转发与探测结果都不再可信,全部作废
         const previous = pool
@@ -331,7 +397,7 @@ function createDeviceInspectPlugin(): PluginMain {
         sessions.clear()
         await previous?.releaseAll()
         context.ipc.emit('changed')
-        return { adbCommand: next.adbCommand, strategy: next.strategy }
+        return { adbCommand: next.adbCommand, strategy: normalizeStrategy(next.strategy) }
       })
       context.ipc.handle('checkAdb', async (command?: string) => {
         const target = String(command ?? store!.get().adbCommand ?? '').trim()
@@ -397,6 +463,8 @@ function createDeviceInspectPlugin(): PluginMain {
                 port: socket.port,
                 package: socket.package,
                 browser: socket.browser,
+                // 实际生效的前端来源(设置选 auto 时可能与设置值不同),AI 据此判断面板空白的版本原因
+                frontendStrategy: socket.frontendStrategy,
                 problem: socket.problem,
                 targets: socket.targets.map((target) => ({
                   targetKey: target.key,

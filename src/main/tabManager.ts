@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import type { TabInfo } from '@shared/types'
 import { INTERNAL_PAGES, internalPageUrl, parseInternalUrl } from '@shared/internalPages'
 import type { InternalPageId } from '@shared/internalPages'
-import { devtoolsFrontendUrl, isDevToolsFrontendUrl } from '@shared/devtools'
+import { isDevToolsFrontendUrl } from '@shared/devtools'
 import { loadRendererEntry } from './rendererEntry'
 import { log, logError } from './logger'
 
@@ -41,6 +41,16 @@ interface TabRecord {
   kind: TabKind
   /** 内部页面 id(bow://settings 等);kind==='internal' 时非空 */
   internalId: InternalPageId | null
+}
+
+/** `https://host/path` → `https://host`;非 http(s)(含 `devtools://`)或者解析不出来 → null */
+function originOf(url: string): string | null {
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.origin : null
+  } catch {
+    return null
+  }
 }
 
 export class TabManager extends EventEmitter {
@@ -216,15 +226,20 @@ export class TabManager extends EventEmitter {
   /**
    * 打开一个「远程调试」标签页:把某个 CDP 目标(手机上的 WebView / Chrome 页面)接进 DevTools 前端。
    *
+   * 参数是**已经拼好的前端地址**(由调用方拼,见 `PluginPageApi.openDevToolsTab` 的注释):
+   * 既可能是 bow 自带的 `devtools://devtools/bundled/devtools_app.html?ws=…`,
+   * 也可能是设备自己指定的 `https://chrome-devtools-frontend.appspot.com/serve_rev/<rev>/inspector.html?ws=…`
+   * (设备检查插件的 `device-suggested` 策略;那份前端与设备版本一致,Application 面板才有数据)。
+   *
    * 与 create() 的差别都是刻意的:
    * - **不给 preload** —— 前端不是我们的页面,`window.browserAPI` 绝不能出现在里面;
    * - 不登记内容注入、不发布 `tab-navigated`(否则历史里会冒出 devtools:// 条目);
    * - `info.internal = true` → 不进「最近浏览标签」记忆、不被 MCP 页面工具当成操作目标;
    * - 标题不被页面 `<title>` 覆盖(前端固定叫 DevTools,会盖掉「[检查] 商品详情」这种更有用的信息);
-   * - 只允许 `devtools://` 内部导航(前端自身刷新),其它地址一律拦掉。
+   * - 只允许前端自己的导航(`devtools://` 或与入口同源的地址,例如它自己去取某个模块/刷新),其它一律拦掉。
    */
-  createInspectorTab(wsUrl: string, title?: string, activate = true): TabInfo {
-    const frontend = devtoolsFrontendUrl(wsUrl)
+  createInspectorTab(frontend: string, title?: string, activate = true): TabInfo {
+    const allowedOrigin = originOf(frontend)
     const id = this.nextId++
     const view = new WebContentsView({
       webPreferences: {
@@ -256,7 +271,7 @@ export class TabManager extends EventEmitter {
       logError('DevTools 前端加载失败', id, code, description, validatedUrl)
     })
     wc.on('will-navigate', (e, target) => {
-      if (isDevToolsFrontendUrl(target)) return
+      if (isDevToolsFrontendUrl(target) || (allowedOrigin !== null && originOf(target) === allowedOrigin)) return
       e.preventDefault()
       log('DevTools 前端标签阻止导航', id, target)
     })
@@ -269,7 +284,7 @@ export class TabManager extends EventEmitter {
     this.emit('tabs-changed')
     this.layout()
     this.emit('tab-created', { ...info, active: activate })
-    log('创建 DevTools 前端标签', id, wsUrl)
+    log('创建 DevTools 前端标签', id, frontend)
     return { ...info, active: activate }
   }
 

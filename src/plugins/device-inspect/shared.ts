@@ -41,10 +41,119 @@ export interface DevtoolsSocket {
 }
 
 export type FrontendStrategy =
-  /** bow 自带的 DevTools 前端(`devtools://devtools/bundled/devtools_app.html`)—— 首选 */
+  /**
+   * 自动(默认):按设备 Chromium 版本挑前端,见 `effectiveStrategy()`。
+   * 存在的理由:前端与设备的 CDP 版本必须对得上,否则有些面板会静默空白
+   * (最典型的是 bow 自带前端在旧设备上取不到 storage key → Application 面板全空)。
+   */
+  | 'auto'
+  /** bow 自带的 DevTools 前端(`devtools://devtools/bundled/devtools_app.html`)—— 本地加载,最快 */
   | 'electron-bundled'
-  /** 设备自己打包的前端(`http://127.0.0.1:<转发端口>/devtools/inspector.html`)—— 同源豁免,见计划 §1.3 */
-  | 'device-bundled'
+  /**
+   * 「设备指定」的前端:照搬设备 `/json` 里每个目标的 `devtoolsFrontendUrl`,只把 `ws=` 换成我们的中继端口。
+   * 这就是 `chrome://inspect` 的做法,两种形态(实测 2026-09-18):
+   * - 设备打包了前端资源 → 设备给相对地址 `/devtools/inspector.html`(Android Chrome / 部分 WebView);
+   * - 不打包 → 设备给 `https://chrome-devtools-frontend.appspot.com/serve_rev/<设备自己的 revision>/inspector.html`
+   *   (vivo 系统 WebView 就是这种:它的 `/devtools/inspector.html` 实测 404)。
+   * 两种都是**与设备版本一致**的前端,所以 Application 面板才有数据。
+   */
+  | 'device-suggested'
+
+/** 已经落地的前端来源(不含 auto):`frontendUrlFor()` 只接受这个类型,避免把 auto 漏到拼 URL 的地方 */
+export type ResolvedFrontendStrategy = Exclude<FrontendStrategy, 'auto'>
+
+/** 设置里可选的值(注意 `device-bundled` 是旧名,`normalizeStrategy` 会把它归一到 `device-suggested`) */
+export const FRONTEND_STRATEGIES: FrontendStrategy[] = ['auto', 'electron-bundled', 'device-suggested']
+
+/** 外部输入(设置、持久化文件、IPC)里的策略字符串 → 合法值;不认识的一律回落到自动 */
+export function normalizeStrategy(value: unknown): FrontendStrategy {
+  if (value === 'device-bundled') return 'device-suggested' // v2 之前的旧名
+  return typeof value === 'string' && (FRONTEND_STRATEGIES as string[]).includes(value)
+    ? (value as FrontendStrategy)
+    : 'auto'
+}
+
+/**
+ * bow 自带前端(Electron 44 = Chromium 152)要求的 `Storage.getStorageKey` 在设备上的最低版本。
+ *
+ * 为什么必须是这个命令:Chromium 152 的前端(`front_end/core/sdk/ResourceTreeModel.ts`)用
+ * `Storage.getStorageKey` 取 storage key,而 Local Storage / Session Storage / IndexedDB 三个节点
+ * **只**由 storage key 驱动(`DOMStorageModel` / `IndexedDBModel` + `StorageBucketsModel` 的
+ * `setStorageBucketTracking({storageKey})`)。命令不存在时前端的 storage key 集合恒为空,三个节点
+ * 全空 —— 表现为「indexeddb / localstorage 看不到」,而页面里的数据其实都在。
+ *
+ * 版本边界(实测 `content/browser/devtools/protocol/storage_handler.h`,即 `Storage::Backend` 的 override):
+ * - 138.0.7204.179 / 140.0.7339.80:只有 `GetStorageKeyForFrame`(旧命令)
+ * - 146.0.7680.31:多了 `GetStorageKey(std::optional frame_id)`,且 pdl 已把旧命令标成
+ *   「Deprecated. Please use Storage.getStorageKey instead.」
+ *
+ * 真机复现(vivo V2536A 系统 WebView `Chrome/138.0.7204.179`,2026-09-18 直接发 CDP):
+ * `Storage.getStorageKey` → `'Storage.getStorageKey' wasn't found`;而同一时刻
+ * `Storage.getStorageKeyForFrame` → `http://tauri.localhost/`、`DOMStorage.getDOMStorageItems` →
+ * `[["i18nextLng","zh-CN"]]`、`IndexedDB.requestDatabaseNames` → `["exp-v7"]`。
+ * 即:数据都在设备上,只是 bow 自带的前端拿不到 storage key。
+ *
+ * 真实引入点落在 141~146 之间(没有逐版核对),这里取**已验证存在的最小版本**当阈值:
+ * 偏保守的代价只是 141~145 的设备多走一次「设备指定前端」,不会误伤老设备。
+ */
+export const FRONTEND_STORAGE_KEY_MIN_MAJOR = 146
+
+/** `Chrome/138.0.7204.179` / `WebView/120.0.6099.230` → 138 / 120;解析不出来返回 undefined */
+export function parseBrowserMajor(browser: string | undefined | null): number | undefined {
+  const text = typeof browser === 'string' ? browser : ''
+  const tail = text.includes('/') ? text.slice(text.lastIndexOf('/') + 1) : text
+  const match = /\d+/.exec(tail)
+  return match ? Number(match[0]) : undefined
+}
+
+/**
+ * 设备是否必须用「设备指定的前端」——即 bow 自带前端要的 CDP 命令在设备上不存在。
+ * 版本解析不出来时按「不需要」处理:宁可用本地前端(至少不依赖网络/设备提供前端)。
+ */
+export function needsDeviceFrontend(browser: string | undefined | null): boolean {
+  const major = parseBrowserMajor(browser)
+  return major !== undefined && major < FRONTEND_STORAGE_KEY_MIN_MAJOR
+}
+
+/**
+ * 设置里的策略 + 设备情况 → **实际**要用的前端来源。
+ *
+ * `auto` 的规则:设备 Chromium 早于 `FRONTEND_STORAGE_KEY_MIN_MAJOR` 且设备确实给了可用前端地址
+ * (`suggestedAvailable !== false`)→ 用设备指定的那份;否则用 bow 自带的。
+ * 显式指定(bow 自带 / 设备指定)时永远听用户的。
+ */
+export function effectiveStrategy(
+  requested: FrontendStrategy,
+  ctx: { browser?: string; suggestedAvailable?: boolean }
+): ResolvedFrontendStrategy {
+  if (requested !== 'auto') return requested
+  if (!needsDeviceFrontend(ctx.browser)) return 'electron-bundled'
+  return ctx.suggestedAvailable === false ? 'electron-bundled' : 'device-suggested'
+}
+
+/** `effectiveStrategy()` 的判定结果解释(UI 据此告诉用户「为什么换/没换成设备前端」) */
+export type FrontendNotice =
+  /** auto 因为设备太老,自动切到了设备指定的前端(正常修正) */
+  | 'auto-switched-to-device'
+  /** auto 想用设备指定的前端,但拿不到/打不开 → 回退 bow 自带 */
+  | 'auto-fallback-to-electron'
+  /** 用户强制设备指定,但拿不到/打不开 → 回退 bow 自带 */
+  | 'forced-device-unavailable'
+  /** 设备太老却只能用 bow 自带前端 → Application 面板的存储节点会是空的 */
+  | 'electron-incompatible'
+
+/** 前端来源的可见解释;返回 null = 没有值得一提的(绝大多数情况) */
+export function frontendNotice(
+  requested: FrontendStrategy,
+  ctx: { browser?: string; effective: ResolvedFrontendStrategy }
+): FrontendNotice | null {
+  const old = needsDeviceFrontend(ctx.browser)
+  if (ctx.effective === 'device-suggested') {
+    return requested === 'auto' && old ? 'auto-switched-to-device' : null
+  }
+  if (requested === 'device-suggested') return 'forced-device-unavailable'
+  return old ? (requested === 'auto' ? 'auto-fallback-to-electron' : 'electron-incompatible') : null
+}
 
 /** 一条 /json 原始目标(只声明我们真正读的字段,其余字段原样保留) */
 export interface RawTarget {
@@ -95,6 +204,8 @@ export interface SocketReport {
   package?: string
   /** 设备侧浏览器版本串(`Chrome/120.0.6099.43`) */
   browser?: string
+  /** 这个套接字实际用了哪个前端(设置里选 auto 时可能与设置值不同,UI 据此解释) */
+  frontendStrategy?: ResolvedFrontendStrategy
   targets: DeviceTarget[]
   problem?: DiscoverProblem
   detail?: string
@@ -179,6 +290,15 @@ export function parseAdbSetting(setting: string | null | undefined): AdbCommand 
   const tokens = splitTokens(setting ?? '')
   if (tokens.length === 0) return { ...DEFAULT_ADB_COMMAND, prefix: [] }
   return { file: tokens[0], prefix: tokens.slice(1) }
+}
+
+/**
+ * adb 命令是否走 WSL(Windows 侧填 `wsl adb` 的那种)。
+ * 决定「转发端口连不上」该往哪个方向排查:WSL 才谈镜像网络,原生 adb 更像目标进程已退出。
+ */
+export function isWslAdb(command: string | null | undefined): boolean {
+  const first = splitTokens(String(command ?? ''))[0] ?? ''
+  return /^wsl(\.exe)?$/i.test(first)
 }
 
 /** 拼出完整参数表(执行端只做 `spawn(cmd.file, argv)`) */
@@ -354,26 +474,57 @@ export function rewriteWsUrl(wsUrl: string, targetId: string, localPort: number)
   return `ws://127.0.0.1:${localPort}${wsPathOf(wsUrl, targetId)}`
 }
 
-/** 设备自带前端的相对入口(`chrome://inspect` 用的就是它;与策略名 `device-bundled` 对应) */
-export const DEVICE_BUNDLED_FRONTEND_ENTRY = 'devtools/inspector.html'
+/**
+ * 设备给的 `devtoolsFrontendUrl` → 我们能在 bow 里打开的前端地址;**拿不到返回 null**。
+ *
+ * 设备只会给两种(见 chromium `devtools_http_handler.cc::GetFrontendURLInternal`):
+ * - 相对路径 `/devtools/inspector.html?ws=…` —— 设备自己打包了前端;
+ * - 绝对 https `https://chrome-devtools-frontend.appspot.com/serve_rev/<设备 revision>/inspector.html?ws=…`
+ *   —— 设备不打包(实测 vivo 系统 WebView 就是这种),靠 appspot 上同一 revision 的前端。
+ *
+ * 两种都必须把 `ws=` 换成**本地中继地址**:前端页面一定带 `Origin`,设备的 Origin 校验只有
+ * 中继能过(别指望「同源豁免」:Android 的 devtools 服务在 unix 套接字上,`server_ip_address_`
+ * 为 null,`is_same_origin` 恒为 false —— 实测结论见 `relay.ts` 顶部)。
+ */
+export function suggestedFrontendUrl(
+  devtoolsFrontendUrl: string | undefined | null,
+  args: { wsUrl: string; localPort: number }
+): string | null {
+  const raw = typeof devtoolsFrontendUrl === 'string' ? devtoolsFrontendUrl.trim() : ''
+  if (!raw) return null
+  let base: string | null = null
+  if (raw.startsWith('/')) {
+    base = `http://127.0.0.1:${args.localPort}${raw}`
+  } else {
+    try {
+      const parsed = new URL(raw)
+      // 只要 http(s);`chrome-devtools://devtools/...` 这种旧写法不能直接 loadURL
+      if (parsed.protocol === 'https:' || parsed.protocol === 'http:') base = raw
+    } catch {
+      base = null
+    }
+  }
+  if (!base) return null
+  // 字符串替换而不是 URL 重拼:`ws=` 的值保持设备原样(`host:port/path`,不做百分号编码 ——
+  // 前端取的是一段 host+path 字面量,编码成 `127.0.0.1%3A9301` 会连不上)
+  const ws = wsParamOf(args.wsUrl)
+  return /[?&]ws=/.test(base)
+    ? base.replace(/([?&])ws=[^&]*/, `$1ws=${ws}`)
+    : `${base}${base.includes('?') ? '&' : '?'}ws=${ws}`
+}
 
 /**
  * 目标 → 可直接打开的 DevTools 前端地址。
  *
- * 两种策略**都指向本机中继端口**(见 `relay.ts`):浏览器页面一定带 `Origin`,而设备的 Origin 校验
- * 只有中继能过。特别提醒:**别指望「同源豁免」** —— Android 的 devtools 服务在 unix 套接字上,
- * `server_ip_address_` 为 null,`is_same_origin` 恒为 false(实测结论见 relay.ts 顶部)。
- *
- * - `electron-bundled`:用 bow(Electron)自带的前端,不依赖设备提供前端资源(默认);
- * - `device-bundled`:从设备自己的 CDP 端点取前端(经同一个中继),前端版本与设备完全一致。
+ * - `electron-bundled`:用 bow(Electron)自带的前端,不依赖设备也不依赖网络(默认);
+ * - `device-suggested`:用设备指定的那份(`suggested`);拿不到就直接回退 bow 自带的 ——
+ *   宁可用一份版本不匹配的前端(至少 Elements/Console 可用),也不要白屏。
  */
 export function frontendUrlFor(
-  strategy: FrontendStrategy,
-  args: { wsUrl: string; localPort: number }
+  strategy: ResolvedFrontendStrategy,
+  args: { wsUrl: string; localPort: number; suggested?: string | null }
 ): string {
-  if (strategy === 'device-bundled') {
-    return `http://127.0.0.1:${args.localPort}/${DEVICE_BUNDLED_FRONTEND_ENTRY}?ws=${wsParamOf(args.wsUrl)}`
-  }
+  if (strategy === 'device-suggested' && args.suggested) return args.suggested
   return devtoolsFrontendUrl(args.wsUrl)
 }
 
@@ -382,7 +533,8 @@ export interface TargetContext {
   socket: string
   localPort: number
   package?: string
-  strategy: FrontendStrategy
+  /** 已经由 `effectiveStrategy()` 落地的策略(不接受 auto) */
+  strategy: ResolvedFrontendStrategy
 }
 
 export function targetKey(serial: string, socket: string, targetId: string): string {
@@ -412,6 +564,7 @@ export function targetsFromJson(raw: unknown, ctx: TargetContext): DeviceTarget[
     if (!id) continue
     const rawWs = typeof target.webSocketDebuggerUrl === 'string' ? target.webSocketDebuggerUrl : ''
     const wsUrl = rewriteWsUrl(rawWs, id, ctx.localPort)
+    const suggested = suggestedFrontendUrl(target.devtoolsFrontendUrl, { wsUrl, localPort: ctx.localPort })
     out.push({
       key: targetKey(ctx.serial, ctx.socket, id),
       id,
@@ -421,11 +574,32 @@ export function targetsFromJson(raw: unknown, ctx: TargetContext): DeviceTarget[
       title: typeof target.title === 'string' ? target.title : '',
       url: typeof target.url === 'string' ? target.url : '',
       wsUrl,
-      frontendUrl: frontendUrlFor(ctx.strategy, { wsUrl, localPort: ctx.localPort }),
+      frontendUrl: frontendUrlFor(ctx.strategy, { wsUrl, localPort: ctx.localPort, suggested }),
       package: ctx.package
     })
   }
   return sortTargets(out)
+}
+
+/**
+ * 探活用:从 `/json` 里挑出**第一个**「设备指定的前端地址」。
+ * 同一个套接字下各目标的入口只有 page id 不同,所以拿一条探活就够(真正拼 URL 仍逐目标算)。
+ */
+export function firstSuggestedFrontendUrl(raw: unknown, args: { localPort: number }): string | null {
+  if (!Array.isArray(raw)) return null
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const target = item as RawTarget
+    const id = typeof target.id === 'string' ? target.id : ''
+    if (!id) continue
+    const rawWs = typeof target.webSocketDebuggerUrl === 'string' ? target.webSocketDebuggerUrl : ''
+    const suggested = suggestedFrontendUrl(target.devtoolsFrontendUrl, {
+      wsUrl: rewriteWsUrl(rawWs, id, args.localPort),
+      localPort: args.localPort
+    })
+    if (suggested) return suggested
+  }
+  return null
 }
 
 /** 交互型目标优先(page/webview/iframe),worker 类靠后 —— 与 chrome://inspect 的观感一致 */
@@ -546,7 +720,7 @@ export interface ProblemHint {
  * 写在这里而不是散在 Vue 里,是因为「看不到我的页面」的绝大多数原因就这几种,
  * 文案必须一致(否则用户与 AI 看到的是两套说法)。
  */
-export function problemHint(problem: DiscoverProblem, ctx: { serial?: string; socket?: string; detail?: string } = {}): ProblemHint {
+export function problemHint(problem: DiscoverProblem, ctx: { serial?: string; socket?: string; detail?: string; wsl?: boolean } = {}): ProblemHint {
   const tail = ctx.detail ? `\n(${ctx.detail})` : ''
   switch (problem) {
     case 'no-adb':
@@ -591,7 +765,11 @@ export function problemHint(problem: DiscoverProblem, ctx: { serial?: string; so
       return {
         title: '转发端口连不上',
         detail:
-          '转发是在 WSL 里建的、而 bow 在 Windows 上跑,需要 WSL2 镜像网络(`.wslconfig` 的 `networkingMode=Mirrored`)两边才共享 127.0.0.1。' +
+          '最常见的原因是目标进程被系统冻结(应用被切到后台 / 屏幕锁了,进程还活着但 devtools 服务不响应)' +
+          '或已退出 —— 把应用切到前台、解开屏幕再刷新一次。' +
+          (ctx.wsl
+            ? '\n一直连不上时:转发是在 WSL 里建的、而 bow 在 Windows 上跑,需要 WSL2 镜像网络(`.wslconfig` 的 `networkingMode=Mirrored`)两边才共享 127.0.0.1。'
+            : '') +
           tail
       }
   }

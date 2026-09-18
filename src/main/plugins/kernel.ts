@@ -465,7 +465,7 @@ class PluginContextImpl implements PluginContext {
     activeTabId: () => this.kernel.pages.activeTabId(),
     focus: (tabId) => this.kernel.pages.focus(tabId),
     execute: (tabId, code, opts) => this.kernel.pages.execute(tabId, code, opts),
-    openDevToolsTab: (wsUrl, title, activate) => this.kernel.pages.openDevToolsTab(wsUrl, title, activate)
+    openDevToolsTab: (frontendUrl, title, activate) => this.kernel.pages.openDevToolsTab(frontendUrl, title, activate)
   }
 
   readonly tabs: PluginTabApi = {

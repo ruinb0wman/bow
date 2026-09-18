@@ -78,7 +78,10 @@ function fakeAdb(options: FakeAdbOptions = {}): FakeAdb {
 }
 
 /** 按 URL 后缀配置响应的假 HTTP(值可以是结果,也可以是抛错标识) */
-function fakeHttp(routes: Record<string, HttpJsonResult>): HttpDeps & { requests: string[] } {
+function fakeHttp(
+  routes: Record<string, HttpJsonResult>,
+  statuses: Record<string, number> = {}
+): HttpDeps & { requests: string[] } {
   const requests: string[] = []
   return {
     requests,
@@ -88,6 +91,15 @@ function fakeHttp(routes: Record<string, HttpJsonResult>): HttpDeps & { requests
         if (url.endsWith(suffix)) return Promise.resolve(result)
       }
       return Promise.resolve({ ok: false, kind: 'network', error: 'ECONNREFUSED' })
+    },
+    getStatus: (url) => {
+      requests.push(url)
+      // 用 includes 而不是 endsWith:探活 URL 末尾是中继的 ws 参数(`?ws=…`),后缀匹配不上
+      for (const [suffix, status] of Object.entries(statuses)) {
+        if (url.includes(suffix)) return Promise.resolve({ ok: true, status })
+      }
+      // 没配过 = 设备/appspot 上没这份前端(真实形态就是 404 / 连不上)
+      return Promise.resolve({ ok: false, error: 'ECONNREFUSED' })
     }
   }
 }
@@ -348,19 +360,147 @@ describe('probeSocket', () => {
     expect(result.port).toBe(RELAY_OF(9301))
   })
 
-  it('device-bundled 策略下前端地址指向同一个转发端口', async () => {
+  it('device-suggested 策略:用设备给的那份前端,ws 指向中继端口', async () => {
+    const http = fakeHttp(
+      { '/json/version': { ok: true, json: VERSION_JSON }, '/json': { ok: true, json: TARGETS_WITH_SUGGESTION } },
+      { [APPSTOP_FRONTEND]: 200 }
+    )
+    const result = await probeSocket(probeDeps({ http }), {
+      serial: 'R58M1',
+      socket: SOCKET,
+      strategy: 'device-suggested'
+    })
+    expect(result.frontendStrategy).toBe('device-suggested')
+    expect(result.targets[0].frontendUrl).toBe(
+      `https://chrome-devtools-frontend.appspot.com/serve_rev/@2d64ccbb0716a9c780633f2f193d3cef31637892/inspector.html?ws=127.0.0.1:${RELAY_OF(9301)}/devtools/page/T2`
+    )
+  })
+})
+
+// ---------------------------------------------------------------- 前端来源(版本 skew)
+
+/** 用户真机上的那一串(Chromium 138 的 WebView):没有 Storage.getStorageKey,存储面板会全空 */
+const OLD_VERSION_JSON = { Browser: 'Chrome/138.0.7204.179', 'Android-Package': 'com.ruinb0w.exp1.debug' }
+const NEW_VERSION_JSON = { Browser: 'Chrome/152.0.7977.78', 'Android-Package': 'com.example.new' }
+
+/** 真机上 vivo 系统 WebView 给的就是这个(appspot + 设备自己的 revision);它的 `/devtools/*` 是 404 */
+const APPSTOP_FRONTEND = 'chrome-devtools-frontend.appspot.com/serve_rev/@2d64ccbb0716a9c780633f2f193d3cef31637892'
+const TARGETS_WITH_SUGGESTION = TARGETS_JSON.map((t) => ({
+  ...t,
+  devtoolsFrontendUrl: `https://${APPSTOP_FRONTEND}/inspector.html?ws=localhost:9222/devtools/page/${t.id}`
+}))
+
+describe('前端来源:auto 按设备挑(修复 Application 面板空白)', () => {
+  it('旧设备 + 设备给的前端能打开 → 用设备指定那份(版本一致)', async () => {
+    const http = fakeHttp(
+      { '/json/version': { ok: true, json: OLD_VERSION_JSON }, '/json': { ok: true, json: TARGETS_WITH_SUGGESTION } },
+      { [APPSTOP_FRONTEND]: 200 }
+    )
+    const result = await probeSocket(probeDeps({ http }), {
+      serial: 'R58M1',
+      socket: SOCKET,
+      strategy: 'auto'
+    })
+    expect(result.frontendStrategy).toBe('device-suggested')
+    expect(result.targets[0].frontendUrl).toContain('chrome-devtools-frontend.appspot.com/serve_rev/@2d64ccbb')
+  })
+
+  it('旧设备 + 设备给的前端打不开(404)→ 回退 bow 自带,不把 404 页面当 DevTools 打开', async () => {
+    const http = fakeHttp(
+      { '/json/version': { ok: true, json: OLD_VERSION_JSON }, '/json': { ok: true, json: TARGETS_WITH_SUGGESTION } },
+      { [APPSTOP_FRONTEND]: 404 }
+    )
+    const result = await probeSocket(probeDeps({ http }), {
+      serial: 'R58M1',
+      socket: SOCKET,
+      strategy: 'auto'
+    })
+    expect(result.frontendStrategy).toBe('electron-bundled')
+    expect(result.targets[0].frontendUrl).toBe(
+      `devtools://devtools/bundled/devtools_app.html?ws=127.0.0.1:${RELAY_OF(9301)}/devtools/page/T2`
+    )
+  })
+
+  it('设备连前端地址都没给 → 直接用 bow 自带,不为它多打一次请求', async () => {
     const http = fakeHttp({
-      '/json/version': { ok: true, json: VERSION_JSON },
-      '/json': { ok: true, json: TARGETS_JSON }
+      '/json/version': { ok: true, json: OLD_VERSION_JSON },
+      '/json': { ok: true, json: TARGETS_JSON } // 夹具里没有 devtoolsFrontendUrl
     })
     const result = await probeSocket(probeDeps({ http }), {
       serial: 'R58M1',
       socket: SOCKET,
-      strategy: 'device-bundled'
+      strategy: 'auto'
     })
-    expect(result.targets[0].frontendUrl).toBe(
-      `http://127.0.0.1:${RELAY_OF(9301)}/devtools/inspector.html?ws=127.0.0.1:${RELAY_OF(9301)}/devtools/page/T2`
+    expect(result.frontendStrategy).toBe('electron-bundled')
+    expect(http.requests.some((url) => url.includes('inspector.html'))).toBe(false)
+  })
+
+  it('新设备(版本对得上)→ 继续用 bow 自带前端,且**不**为它多打一次请求', async () => {
+    const http = fakeHttp({
+      '/json/version': { ok: true, json: NEW_VERSION_JSON },
+      '/json': { ok: true, json: TARGETS_WITH_SUGGESTION }
+    })
+    const result = await probeSocket(probeDeps({ http }), {
+      serial: 'R58M1',
+      socket: SOCKET,
+      strategy: 'auto'
+    })
+    expect(result.frontendStrategy).toBe('electron-bundled')
+    expect(http.requests.some((url) => url.includes('inspector.html'))).toBe(false)
+  })
+
+  it('显式指定就以指定为准(自动模式的判定不覆盖用户选择)', async () => {
+    const http = fakeHttp(
+      { '/json/version': { ok: true, json: OLD_VERSION_JSON }, '/json': { ok: true, json: TARGETS_WITH_SUGGESTION } },
+      { [APPSTOP_FRONTEND]: 200 }
     )
+    const result = await probeSocket(probeDeps({ http }), {
+      serial: 'R58M1',
+      socket: SOCKET,
+      strategy: 'electron-bundled'
+    })
+    expect(result.frontendStrategy).toBe('electron-bundled')
+    expect(http.requests.some((url) => url.includes('inspector.html'))).toBe(false)
+  })
+
+  it('「设备给的前端能不能打开」只探一次:面板 8s 一轮的轮询不会反复打它', async () => {
+    const http = fakeHttp(
+      { '/json/version': { ok: true, json: OLD_VERSION_JSON }, '/json': { ok: true, json: TARGETS_WITH_SUGGESTION } },
+      { [APPSTOP_FRONTEND]: 200 }
+    )
+    const deps = probeDeps({ http })
+    await probeSocket(deps, { serial: 'R58M1', socket: SOCKET, strategy: 'auto' })
+    await probeSocket(deps, { serial: 'R58M1', socket: SOCKET, strategy: 'auto' })
+    expect(http.requests.filter((url) => url.includes('inspector.html'))).toHaveLength(1)
+  })
+
+  it('探测超时不算结论:先保守用 bow 自带,下次刷新探到 200 再换设备指定前端', async () => {
+    let available = false
+    const http: HttpDeps = {
+      getJson: async (url) =>
+        url.endsWith('/json/version')
+          ? { ok: true, json: OLD_VERSION_JSON }
+          : { ok: true, json: TARGETS_WITH_SUGGESTION },
+      getStatus: async () =>
+        available ? { ok: true, status: 200 } : { ok: false, error: 'TimeoutError: The operation was aborted' }
+    }
+    const deps = probeDeps({ http })
+    const first = await probeSocket(deps, { serial: 'R58M1', socket: SOCKET, strategy: 'auto' })
+    expect(first.frontendStrategy).toBe('electron-bundled')
+    available = true
+    const second = await probeSocket(deps, { serial: 'R58M1', socket: SOCKET, strategy: 'auto' })
+    expect(second.frontendStrategy).toBe('device-suggested')
+  })
+
+  it('设备明确返回 404 时记住这个结论,不再反复探', async () => {
+    const http = fakeHttp(
+      { '/json/version': { ok: true, json: OLD_VERSION_JSON }, '/json': { ok: true, json: TARGETS_WITH_SUGGESTION } },
+      { [APPSTOP_FRONTEND]: 404 }
+    )
+    const deps = probeDeps({ http })
+    await probeSocket(deps, { serial: 'R58M1', socket: SOCKET, strategy: 'auto' })
+    await probeSocket(deps, { serial: 'R58M1', socket: SOCKET, strategy: 'auto' })
+    expect(http.requests.filter((url) => url.includes('inspector.html'))).toHaveLength(1)
   })
 })
 

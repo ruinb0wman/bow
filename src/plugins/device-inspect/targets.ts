@@ -21,6 +21,8 @@ import { startRelay, type Relay } from './relay'
 import {
   androidPackageFromVersion,
   browserNameFromVersion,
+  effectiveStrategy,
+  firstSuggestedFrontendUrl,
   targetsFromJson,
   type AdbDevice,
   type DeviceReport,
@@ -30,6 +32,7 @@ import {
   type DiscoverReport,
   type ForwardRecord,
   type FrontendStrategy,
+  type ResolvedFrontendStrategy,
   type SocketReport
 } from './shared'
 
@@ -46,6 +49,14 @@ export interface HttpJsonResult {
 
 export interface HttpDeps {
   getJson(url: string, timeoutMs: number): Promise<HttpJsonResult>
+  /** 只看状态码(用于探「设备有没有自带前端资源」);失败时 `ok: false` */
+  getStatus(url: string, timeoutMs: number): Promise<HttpStatusResult>
+}
+
+export interface HttpStatusResult {
+  ok: boolean
+  status?: number
+  error?: string
 }
 
 /** 区分「端口没人监听」与「连接被对端掐断」—— 这两者对应完全不同的排查方向 */
@@ -55,7 +66,7 @@ export function classifyFetchError(message: string): 'network' | 'stale' {
     : 'network'
 }
 
-export function nodeHttpDeps(): HttpDeps {
+export function nodeHttpDeps(overrides: Partial<HttpDeps> = {}): HttpDeps {
   return {
     getJson: async (url, timeoutMs) => {
       try {
@@ -72,7 +83,22 @@ export function nodeHttpDeps(): HttpDeps {
         const message = describeError(error)
         return { ok: false, kind: classifyFetchError(message), error: message }
       }
-    }
+    },
+    getStatus: async (url, timeoutMs) => {
+      try {
+        const response = await fetch(url, {
+          signal: AbortSignal.timeout(timeoutMs),
+          cache: 'no-store',
+          headers: { accept: 'text/html' }
+        })
+        // 只关心状态码:把 body 丢掉,不要为了一份 html 把整包读进内存
+        await response.body?.cancel().catch(() => {})
+        return { ok: true, status: response.status }
+      } catch (error) {
+        return { ok: false, error: describeError(error) }
+      }
+    },
+    ...overrides
   }
 }
 
@@ -111,7 +137,7 @@ export interface SocketPorts {
 }
 
 export class ForwardPool {
-  private live = new Map<string, SocketPorts & { relayHandle: Relay }>()
+  private live = new Map<string, SocketPorts & { relayHandle: Relay; suggestedFrontend?: boolean }>()
 
   constructor(private deps: ForwardPoolDeps) {}
 
@@ -191,6 +217,30 @@ export class ForwardPool {
     return { ok: false, error: 'adb forward / 本地中继连续失败(端口可能被占用,或设备已断开)' }
   }
 
+  /**
+   * 「设备指定的前端能不能打开」——**按套接字只探一次**(结果给 `effectiveStrategy()` 用)。
+   *
+   * 之所以要探:这件事没有可靠的本地判据 —— 设备给的地址可能是它自带的前端(本地),
+   * 也可能是 appspot 上它那个 revision 的前端(需要外网:实测 vivo 系统 WebView 就是这种)。
+   * 探测走回调注入:转发池只管生命周期,不管 HTTP(与 `allocatePort` / `createRelay` 同一套路)。
+   * 回调返回 `undefined` = 没探出结论(超时/连不上),此时**不缓存**,下一次发现会再探;
+   * 只有确定的结论(200 或 404)才记住。缓存挂在活着的转发条目上,转发一失效就会重新探。
+   */
+  async ensureSuggestedFrontend(
+    serial: string,
+    socket: string,
+    probe: () => Promise<boolean | undefined>
+  ): Promise<boolean> {
+    const entry = this.live.get(socketId(serial, socket))
+    if (!entry) return false
+    if (entry.suggestedFrontend === undefined) {
+      const result = await probe()
+      if (result === undefined) return false // 探不出来就先按最保守的来(本地前端一定能加载)
+      entry.suggestedFrontend = result
+    }
+    return entry.suggestedFrontend
+  }
+
   private allocate(): Promise<number> {
     const custom = this.deps.allocatePort
     if (custom) return custom([...this.live.values()].map((p) => p.forward))
@@ -235,6 +285,8 @@ export interface ProbeResult {
   port?: number
   package?: string
   browser?: string
+  /** 实际采用的 DevTools 前端来源(设置里选 auto 时可能与设置值不同) */
+  frontendStrategy?: ResolvedFrontendStrategy
   targets: DeviceTarget[]
   problem?: DiscoverProblem
   detail?: string
@@ -295,11 +347,21 @@ export async function probeSocket(
     }
 
     const version = await deps.http.getJson(`${endpoint}/json/version`, 5_000)
+    const browser = browserNameFromVersion(version.json)
+    // 设备自己给的前端地址(设备自带 / appspot 按它的 revision),取一条探活就行
+    const suggested = firstSuggestedFrontendUrl(json.json, { localPort: opened.relay })
+    const frontendStrategy = await resolveFrontendStrategy(deps, {
+      serial,
+      socket: socket.name,
+      requested: strategy,
+      browser,
+      suggested
+    })
     const targets = targetsFromJson(json.json, {
       serial,
       socket: socket.name,
       localPort: opened.relay,
-      strategy,
+      strategy: frontendStrategy,
       package: androidPackageFromVersion(version.json)
     })
     if (targets.length === 0) {
@@ -310,7 +372,8 @@ export async function probeSocket(
       ok: true,
       port: opened.relay,
       package: androidPackageFromVersion(version.json),
-      browser: browserNameFromVersion(version.json),
+      browser,
+      frontendStrategy,
       targets
     }
   }
@@ -319,6 +382,28 @@ export async function probeSocket(
 }
 
 /* SocketReport / DeviceReport / DiscoverReport 的类型定义在 ./shared(渲染层也要用,不能被 node 依赖拖下去) */
+
+/**
+ * 设置里的策略 + 设备情况 → **实际**前端来源。
+ *
+ * 只有真的要用「设备指定的前端」时才去探一次它能不能打开 —— 现代设备(版本对得上)不会多出任何请求。
+ * 探测结果按套接字缓存,见 `ensureSuggestedFrontend`。
+ */
+async function resolveFrontendStrategy(
+  deps: DiscoverDeps,
+  args: { serial: string; socket: string; requested: FrontendStrategy; browser?: string; suggested: string | null }
+): Promise<ResolvedFrontendStrategy> {
+  const wanted = effectiveStrategy(args.requested, { browser: args.browser })
+  if (wanted !== 'device-suggested') return wanted
+  // 设备连前端地址都没给(极少):直接回退,不用探
+  if (!args.suggested) return 'electron-bundled'
+  const available = await deps.pool.ensureSuggestedFrontend(args.serial, args.socket, async () => {
+    const result = await deps.http.getStatus(args.suggested as string, 8_000)
+    // 有明确状态码才有结论(404 = 设备/appspot 上没这份前端);网络层失败返回 undefined,下次刷新再探
+    return result.ok ? result.status === 200 : undefined
+  })
+  return available ? 'device-suggested' : 'electron-bundled'
+}
 
 /**
  * 完整发现流程。`listSockets` 由调用方注入(它需要按设备串号走 adb shell),
@@ -377,6 +462,7 @@ export async function discover(
         port: probe.port,
         package: probe.package,
         browser: probe.browser,
+        frontendStrategy: probe.frontendStrategy,
         targets: probe.targets,
         problem: probe.problem,
         detail: probe.detail

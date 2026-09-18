@@ -272,7 +272,7 @@ interface PluginUiContribution {
 | `content.inject` | `(spec) => void` | 移除规则并 `removeInsertedCSS` 所有已注入 key |
 | `content.refresh` | `(tabId?) => void` | 只重跑 CSS(不重跑 JS),用于规则变更后的即时反馈 |
 | `pages.activeTabId/focus/execute` | `execute(tabId, code, {timeoutMs=10000})` | 不回收(内核持有) |
-| `pages.openDevToolsTab` | `(wsUrl, title?, activate?) => number` | 不回收(内核持有)。把 CDP 目标接进 DevTools 前端标签页(设备检查插件用);`devtools://` 地址由 `@shared/devtools` 统一拼 |
+| `pages.openDevToolsTab` | `(frontendUrl, title?, activate?) => number` | 不回收(内核持有)。把 CDP 前端接进标签页(设备检查插件用)。参数是**已拼好的前端地址**:可能是 `@shared/devtools` 拼的 bow 自带那份,也可能是设备指定的 `https://…`(见 `device-inspect/shared.effectiveStrategy`);标签只允许 `devtools://` 或与入口同源的导航 |
 | `tabs.list/getActive` | `() => TabInfo[] / TabInfo \| null` | 只读;数据源是 `TabManager` |
 | `service.onMcpHttpReady` | `(cb) => void` | 订阅 `MCP_HTTP_READY_EVENT` |
 | `service.mcpHttp.start/stop/restart/status` | 见 §6.5 | 内核持有监听;`stop()` 固定以 `source:'plugin'` 调用 |
@@ -672,7 +672,7 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `cors.json` | `{enabled, whitelist}` | 首次从 `settings.json` 的 `corsBypassEnabled/corsWhitelist` 迁移(幂等) | cors |
 | `adblock.json` | `AdblockConfig v3`(compact) | 经 `migrateConfig()` 生成,默认值仅占位 `{version:0}` | adblock |
 | `mcp-http.json` | `{port, token}` | `{port:8765, token:''}` | mcp-http |
-| `device-inspect.json` | `{adbCommand, strategy, forwards[]}` | `{adbCommand:'', strategy:'electron-bundled', forwards:[]}`;`forwards` 是端口转发记录(adb 侧的转发登记在 adb server 里,靠它回收) | device-inspect |
+| `device-inspect.json` | `{version, adbCommand, strategy, forwards[]}` | `{version:2, adbCommand:'', strategy:'auto', forwards:[]}`;`strategy` 三选一(`auto`/`electron-bundled`/`device-suggested`,见 `shared.effectiveStrategy()`;旧名 `device-bundled` 会被归一成 `device-suggested`);v1 → v2 只把默认值换成 `auto`;`forwards` 是端口转发记录(adb 侧的转发登记在 adb server 里,靠它回收) | device-inspect |
 | `browser.log` | 日志(MCP 模式) | — | logger |
 
 ---
@@ -915,6 +915,32 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
     唯一的拼装处在 `@shared/devtools`。
 25. 验证这类功能时注意 **`out/` 是旧产物**:`electron .` 加载的是 `out/main/index.js`,
     改完主进程代码不 `npm run build` 就会拿旧行为做实验(本人踩过:中继没生效,却以为是链路有问题)。
+26. **DevTools 前端与设备的 CDP 版本必须对得上,否则面板会静默空白**。bow 自带的前端是 Electron 自带的
+    那一份(`@shared/devtools`),它跟着 Electron 升级、可能比手机新好几代。最典型的例子:Chromium 152 的前端用
+    `Storage.getStorageKey` 取 storage key(实验性命令,146 才出现,140 及之前只有 `getStorageKeyForFrame`),
+    而 Application 面板的 Local storage / Session storage / IndexedDB **只**由 storage key 驱动
+    (`DOMStorageModel` 靠 `StorageKeyManager.storageKeys()`,`IndexedDBModel` 靠 `StorageBucketsModel` 的
+    `setStorageBucketTracking({storageKey})`)。旧设备上三个节点全空,但页面里数据都在 ——
+    真机对照(WebView `Chrome/138.0.7204.179`):`Storage.getStorageKey` 报 *wasn't found*,
+    而 `getStorageKeyForFrame` / `DOMStorage.getDOMStorageItems` / `IndexedDB.requestDatabaseNames` 都正常返回。
+    这就是「bow 里看不到 indexeddb/localstorage、chrome://inspect 却能看到」的原因:chrome://inspect 拿的是
+    **与设备版本一致**的前端 —— `devtools_http_handler.cc::GetFrontendURLInternal()` 要么给设备自带的
+    `/devtools/inspector.html`,要么给 appspot 上 `serve_rev/<设备自己的 revision>` 那份。
+    因此前端来源的默认值是 `auto`:设备 Chromium < 146 时用**设备指定的**那份(先探活,失败回退 bow 自带),
+    否则用 bow 自带。判定与回退的唯一实现在 `plugins/device-inspect/shared.ts`(`effectiveStrategy` / `needsDeviceFrontend`);
+    探活必须走 Electron `net`(Chromium 网络栈)而不是 Node `fetch` —— 后者不认系统代理,会把 appspot 误判成打不开。
+27. **「端口连得上但服务不响应」通常是目标被系统冻结,不是端口问题**。Android 会冻结后台应用的进程:
+    套接字还在、TCP 握手也能成,但 devtools 服务不应答(`/json` 超时/连接被关)→ `classifyFetchError` 归类为
+    `port-unreachable`。因此 `problemHint('port-unreachable')` 先让用户「把应用切到前台/解开屏幕再刷新」,
+    **只有 adb 确实是 `wsl …`(`isWslAdb`)时才提** WSL2 镜像网络 —— 本机 adb 是 Windows 原生 `adb.exe` 时那句提示是误导。
+    验证这类功能时先 `adb shell input keyevent KEYCODE_WAKEUP` + `am start -n <pkg>/<activity>`,
+    必要时 `adb shell svc power stayon true`(完事 `false` 还原):否则会出现「刚才还好、几秒后就超时」。
+28. **`wsl adb` 拓扑下端口分配会错配(已知缺口)**。端口是 WSL 里 `bind(0)` 选的,而监听建在 Windows 的 adb server 上:
+    WSL 挑中的端口可能落在 **Windows 的保留端口段**(Hyper-V/WSL 会占掉大段动态端口),Windows 侧 `adb forward`
+    就绑不上(`cannot bind listener` / **10048**)。实测随机端口失败率约 30%,而插件只重试 3 次(≈2.7% 全败),告警文案是
+    「端口转发失败」。可选修法:重试仍失败后**改用 `adb forward --list` 里已存在的同一个套接字的转发**
+    (`shared.parseForwardList` 已写好但没有调用方 —— 它现在是诊断用;注意只是「借用」,不要去删用户手建的转发)。
+    Bow 侧规避:改用与 bow 同侧的原生 adb(设置里填 Windows `platform-tools\adb.exe` 路径)。
 
 ---
 

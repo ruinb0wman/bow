@@ -470,16 +470,50 @@ MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生
 3. **应用开启了 WebView 调试**:debug 包默认开;release 包必须让开发调用 `WebView.setWebContentsDebuggingEnabled(true)`,否则套接字根本不存在。Chrome 则打开任意标签页即可。
 4. **跨 WSL 时要镜像网络**:转发建在 WSL 的 netns 里,Windows 侧访问 `127.0.0.1:<端口>` 依赖 WSL2 镜像网络(`.wslconfig` 的 `networkingMode=Mirrored`)。不通时提示语会直接点名这一条。
 
+**排查：列表里没目标 / 一直连不上**（两个我实测碰到过的真原因，面板提示也按这两条写）：
+
+- **应用被切到后台 / 屏幕锁了 → 「转发端口连不上」**。Android 会把后台应用的进程冻结：这时候套接字还在、TCP 也连得上，
+  但 devtools 服务**不响应**（表现是请求超时，不是连接被拒）。把应用切到前台再刷新一次就好；
+  长时间盯着一个页面调试时，先 `adb shell input keyevent KEYCODE_WAKEUP` + `adb shell svc power stayon true`
+  （验证完 `svc power stayon false` 还原）。
+- **`wsl adb` 时可能反复「端口转发失败」**。这种拓扑下 **adb 与 bow 不在同一个网络命名空间**：端口是 WSL 里 `bind(0)` 选的，
+  而真正监听的是 Windows 侧的 adb server —— WSL 挑的端口可能落在 **Windows 的保留端口段**（Hyper-V/WSL 会占掉大段动态端口），
+  于是在 Windows 侧绑不上（adb 报 `cannot bind listener` / 错误码 **10048**）。插件会对每个套接字重试 3 个随机端口，
+  可多刷新几次；最稳的是改用**与 bow 同侧**的 adb（Windows 原生 `platform-tools\adb.exe`，设置里填它的路径）。
+  已知缺口与可选修法见 `docs/ARCHITECTURE.md` §13#28。
+
 **为什么必须由 bow 代理(而不是让前端直连设备)**:Chromium 的调试端点会对**带 `Origin` 头**的 WebSocket 握手做白名单校验,白名单唯一来源是 `--remote-allow-origins`,手机上加不了;而浏览器里的 devtools 前端**一定**带 `Origin: devtools://devtools`。更关键的是:**Android 上连「同源豁免」都不存在** —— 它的 devtools 服务挂在 unix 抽象套接字上,`server_ip_address_` 为 null,所以 `is_same_origin` 恒为 false。
 
 因此 bow 在本地为每个套接字起一个**剥 Origin 的 TCP 中继**(`relay.ts`,~90 行、无依赖):前端连本机中继 → 中继删掉 `Origin` 头 → 转发到 `adb forward` 端口。WS 握手就是一个 HTTP 请求,所以只改首部即可,**不需要实现 WebSocket 帧编解码**。
 
 ⚠️ 主进程自己的 CDP 客户端(Node 的 `WebSocket` 握手不带 Origin,已实测)本来就不受这限制,`device_eval` / `device_screenshot` 只是复用了同一个 `ws` 地址。
 
-**前端来源两种策略**(设置里可切;两者都经中继):
+**前端来源三种策略**(设置里可切;三者都经中继):
 
-- `bow 自带`(默认):`devtools://devtools/bundled/devtools_app.html` —— 用 Electron 自带的前端,不依赖设备提供前端资源;
-- `设备自带`:`http://127.0.0.1:<中继端口>/devtools/inspector.html` —— 从设备自己的 CDP 端点取前端,版本与设备完全一致(设备未打包前端资源时会 404)。
+- `bow 自带`(默认策略下的快路径):`devtools://devtools/bundled/devtools_app.html` —— 用 Electron 自带的前端,不依赖网络也最快;
+- `设备指定`:照搬设备 `/json` 里每个目标的 `devtoolsFrontendUrl`,只把 `ws=` 换成 bow 的中继端口 ——
+  **`chrome://inspect` 走的就是这一条**。设备只给两种形态(实测):
+  - 设备打包了前端资源 → 相对地址 `/devtools/inspector.html`(Android Chrome);
+  - 不打包 → `https://chrome-devtools-frontend.appspot.com/serve_rev/<设备自己的 revision>/inspector.html`
+    (vivo 系统 WebView 实测:`/devtools/inspector.html` 返回 **404**,它给的就是 appspot 那份)。
+- `自动`(默认):设备 Chromium 低于 **146** 时用「设备指定」(先探一下那个地址能不能打开,打不开就回退 bow 自带),否则用 bow 自带。
+
+**为什么需要按版本挑前端**:前端与设备的 CDP 版本必须对得上,否则有些面板会**静默空白**。
+bow 自带的前端是 Electron 44(Chromium 152)的,它取 storage key 用的是 `Storage.getStorageKey`,
+而 Local storage / Session storage / IndexedDB 三个节点**只**由 storage key 驱动
+(`DOMStorageModel` 靠 `StorageKeyManager.storageKeys()`,`IndexedDBModel` 靠 `StorageBucketsModel` 的
+`Storage.setStorageBucketTracking({storageKey})`)。这个命令是近期才加的实验性命令:
+实测 `138.0.7204.179` 与 `140.0.7339.80` 只有旧的 `Storage.getStorageKeyForFrame`,`146.0.7680.31` 才有新的。
+在 Chromium 138 的真机(WebView)上直接发 CDP 的对照结果很干净:
+`Storage.getStorageKey` → `'Storage.getStorageKey' wasn't found`,而同一时刻
+`Storage.getStorageKeyForFrame` → `http://tauri.localhost/`、`DOMStorage.getDOMStorageItems` → `[["i18nextLng","zh-CN"]]`、
+`IndexedDB.requestDatabaseNames` → `["exp-v7"]` —— **数据都在设备上**,只是 bow 自带的前端拿不到 storage key;
+那种组合下 bow 的前端会在 console 里直接打出 `Request Storage.getStorageKey failed`(同一批 skew 还有
+`Autofill.enable` / `Network.emulateNetworkConditionsByRule` / `CSS.getEnvironmentVariables` 等)。
+版本判定、回退与解释文案的唯一实现分别在 `plugins/device-inspect/shared.ts`(`effectiveStrategy` / `frontendNotice`)。
+
+⚠️ 「设备指定」那份可能是**外网地址**(appspot)。探活走的是 **Chromium 的网络栈**(Electron `net`),
+与随后真正加载它的标签页同一套代理设置 —— 用 Node 的 `fetch` 探会因不认系统代理而误判为「打不开」。
 
 **转发与中继的回收**:`adb forward` 登记在 adb server 进程里,bow 退出不会自动清。插件在停用、退出、以及下次激活时都会清理(还有面板里的「回收全部转发」按钮);中继监听随插件停用/退出一起关闭。只清理**自己记录过的**转发 —— 不会去动你手动建的 `adb forward`。
 

@@ -8,7 +8,14 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Check, Copy, RefreshCw, Smartphone, Wifi, X } from 'lucide-vue-next'
 import ModalShell from '@renderer/components/ModalShell.vue'
-import { socketLabel, targetTypeLabel, type FrontendStrategy, type InspectSnapshot } from '../shared'
+import {
+  frontendNotice,
+  socketLabel,
+  targetTypeLabel,
+  type FrontendNotice,
+  type FrontendStrategy,
+  type InspectSnapshot
+} from '../shared'
 
 defineOptions({ inheritAttrs: false })
 
@@ -22,7 +29,7 @@ const notice = ref('')
 const error = ref('')
 const showSettings = ref(false)
 const adbDraft = ref('')
-const strategyDraft = ref<FrontendStrategy>('electron-bundled')
+const strategyDraft = ref<FrontendStrategy>('auto')
 const wirelessAddress = ref('')
 const wirelessCode = ref('')
 const copied = ref('')
@@ -107,7 +114,13 @@ async function saveSettings(): Promise<void> {
 async function switchStrategy(strategy: FrontendStrategy): Promise<void> {
   strategyDraft.value = strategy
   await api.plugins.invoke('device-inspect', 'setSettings', { strategy })
-  flash(strategy === 'device-bundled' ? '已切到「设备自带前端」' : '已切到「bow 自带前端」')
+  flash(
+    strategy === 'auto'
+      ? '已切到「自动」(按设备版本挑前端)'
+      : strategy === 'device-suggested'
+        ? '已切到「设备指定前端」'
+        : '已切到「bow 自带前端」'
+  )
   await refresh()
 }
 
@@ -154,6 +167,49 @@ async function wireless(kind: 'pair' | 'connect'): Promise<void> {
   }
 }
 
+const strategyLabel = (strategy: FrontendStrategy): string =>
+  strategy === 'auto' ? '自动' : strategy === 'device-suggested' ? '设备指定' : 'bow 自带'
+
+/** 解释文案只写在这里;判定逻辑在 shared.frontendNotice(纯函数、有单测) */
+const FRONTEND_NOTICE_TEXT: Record<FrontendNotice, (browser: string) => string> = {
+  'auto-switched-to-device': (browser) =>
+    `设备是 ${browser}:bow 自带前端(Chromium 152)在这种老设备上取不到 storage key → Application 面板的 Local Storage / IndexedDB 会是空的,已自动改用设备指定的前端(与设备版本一致,chrome://inspect 用的就是它)`,
+  'auto-fallback-to-electron': (browser) =>
+    `设备是 ${browser},但它给的前端地址打不开(设备没打包前端资源且 appspot 上的那份取不到),已回退 bow 自带 —— 这种组合下 Application 面板的存储节点会是空的`,
+  'forced-device-unavailable': () =>
+    '设备给的前端地址打不开(设备没打包前端资源且 appspot 上的那份取不到),已回退到 bow 自带前端',
+  'electron-incompatible': (browser) =>
+    `设备是 ${browser}(低于 Chromium 146),bow 自带前端取不到 storage key → Application 面板的 Local Storage / IndexedDB 会是空的;建议把前端来源改成「设备指定」`
+}
+
+/**
+ * 实际生效的前端与设置不一致(或虽一致但设备版本对不上)时给一行解释。
+ * 最典型的场景:设备 Chromium 太老,bow 自带前端取不到 storage key → Application 面板的
+ * Local Storage / IndexedDB 会静默空白,所以自动切到与设备版本一致的设备自带前端。
+ */
+const frontendNotes = computed(() => {
+  const snapshot = state.value
+  if (!snapshot) return []
+  const out: Array<{ key: string; scope: string; text: string }> = []
+  for (const group of snapshot.devices) {
+    for (const socket of group.sockets) {
+      if (!socket.frontendStrategy) continue
+      const notice = frontendNotice(snapshot.strategy, {
+        browser: socket.browser,
+        effective: socket.frontendStrategy
+      })
+      if (!notice) continue
+      const scope = `${group.device.serial} · ${socketLabel(socket.socket, socket.package)}`
+      out.push({
+        key: `${scope}|${notice}`,
+        scope,
+        text: FRONTEND_NOTICE_TEXT[notice](socket.browser ?? '未知版本')
+      })
+    }
+  }
+  return out
+})
+
 /** 摊平成「目标 + 所属上下文」的行模型,便于在模板里一层 v-for 渲染 */
 const rows = computed(() => {
   const out: Array<{
@@ -164,6 +220,7 @@ const rows = computed(() => {
     socket: string
     socketLabel: string
     package?: string
+    browser: string
     type: string
     title: string
     url: string
@@ -180,6 +237,7 @@ const rows = computed(() => {
           socket: socket.socket.name,
           socketLabel: socketLabel(socket.socket, socket.package),
           package: socket.package,
+          browser: socket.browser ?? '',
           type: targetTypeLabel(target.type),
           title: target.title || '(无标题)',
           url: target.url,
@@ -236,7 +294,7 @@ onBeforeUnmount(() => {
         <span v-if="state.adb.configured" class="dvi-tag">手动指定</span>
         <span v-else class="dvi-tag">自动探测</span>
         <span class="dvi-kv">前端:</span>
-        <span class="dvi-tag">{{ state.strategy === 'device-bundled' ? '设备自带' : 'bow 自带' }}</span>
+        <span class="dvi-tag">{{ strategyLabel(state.strategy) }}</span>
         <span v-if="state.forwards.length" class="dvi-kv">已转发 {{ state.forwards.length }} 个端口</span>
       </div>
 
@@ -260,20 +318,32 @@ onBeforeUnmount(() => {
           <div class="dvi-row">
             <button
               class="btn"
-              :class="{ primary: strategyDraft === 'electron-bundled' }"
-              @click="switchStrategy('electron-bundled')"
+              :class="{ primary: strategyDraft === 'auto' }"
+              @click="switchStrategy('auto')"
             >
-              bow 自带(默认)
+              自动(推荐)
             </button>
             <button
               class="btn"
-              :class="{ primary: strategyDraft === 'device-bundled' }"
-              @click="switchStrategy('device-bundled')"
+              :class="{ primary: strategyDraft === 'device-suggested' }"
+              @click="switchStrategy('device-suggested')"
             >
-              设备自带(连不上时试)
+              设备指定
+            </button>
+            <button
+              class="btn"
+              :class="{ primary: strategyDraft === 'electron-bundled' }"
+              @click="switchStrategy('electron-bundled')"
+            >
+              bow 自带
             </button>
           </div>
         </div>
+        <p class="dvi-hint">
+          前端必须与设备 Chromium 版本对得上:版本差异会让 Application 面板(IndexedDB / Local storage)
+          静默空白。自动模式 = 设备是 Chromium 146 以下时用「设备指定的前端」(设备自带的,或它指定 revision 的
+          appspot 那份),否则用 bow 自带;设备给的前端打不开时自动回退 bow 自带。
+        </p>
         <p class="dvi-hint">
           手机侧 adb 在 WSL 里时填 <code class="dvi-code">wsl adb</code>;端口转发建在 WSL 中,
           Windows 侧要能访问 <code class="dvi-code">127.0.0.1</code> 需 WSL2 镜像网络
@@ -304,6 +374,11 @@ onBeforeUnmount(() => {
             <div class="dvi-alert-detail">{{ item.detail }}</div>
           </div>
 
+          <div v-for="item in frontendNotes" :key="`fe-${item.key}`" class="dvi-alert info">
+            <div class="dvi-alert-title">前端来源<span class="dvi-kv"> · {{ item.scope }}</span></div>
+            <div class="dvi-alert-detail">{{ item.text }}</div>
+          </div>
+
           <div v-if="rows.length === 0 && state.notices.length === 0" class="dvi-empty">
             没有发现可调试的 WebView / Chrome。常见原因:应用是 release 包且没有调用
             <code class="dvi-code">WebView.setWebContentsDebuggingEnabled(true)</code>;或页面还没加载过。
@@ -318,6 +393,7 @@ onBeforeUnmount(() => {
               <div class="dvi-target-url" :title="row.url">{{ row.url }}</div>
               <div class="dvi-target-meta">
                 {{ row.device }}<template v-if="row.model"> · {{ row.model }}</template> · {{ row.socketLabel }}
+                <template v-if="row.browser"> · {{ row.browser }}</template>
               </div>
             </div>
             <div class="dvi-target-actions">
@@ -459,6 +535,11 @@ onBeforeUnmount(() => {
 .dvi-alert.fatal {
   border-left-color: #b5523a;
   background: #2e2724;
+}
+
+.dvi-alert.info {
+  border-left-color: #3a6ea5;
+  background: #242a2e;
 }
 
 .dvi-alert-title {
