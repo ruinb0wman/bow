@@ -11,6 +11,8 @@ export interface TabInfo {
   crashed: boolean
   /** 内部页面标签(如 bow://settings):只承载浏览器自有页面,不允许就地导航到普通站点 */
   internal?: boolean
+  /** DevTools 前端标签(远程调试用,devtools://…):与内部页面一样不是「可浏览页面」,但不给 preload */
+  inspector?: boolean
 }
 
 export type BookmarkNode =

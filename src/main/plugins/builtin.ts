@@ -8,6 +8,7 @@ import adblock from '@plugins/adblock/main'
 import elementFullscreen from '@plugins/element-fullscreen/main'
 import mcpHttp from '@plugins/mcp-http/main'
 import defaultBrowser from '@plugins/default-browser/main'
+import deviceInspect from '@plugins/device-inspect/main'
 
 export const BUILTIN_PLUGINS: PluginMain[] = [
   history,
@@ -16,5 +17,7 @@ export const BUILTIN_PLUGINS: PluginMain[] = [
   adblock,
   elementFullscreen,
   mcpHttp,
-  defaultBrowser
+  defaultBrowser,
+  // 放末尾:不参与网络钩子链与地址栏建议源的次序(它只贡献 UI 与 MCP 工具)
+  deviceInspect
 ]

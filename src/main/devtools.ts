@@ -11,6 +11,7 @@
 import { app, Menu, webContents } from 'electron'
 import type { WebContents } from 'electron'
 import { isDevToolsHotkey } from '@shared/shortcuts'
+import { isDevToolsFrontendUrl } from '@shared/devtools'
 import { log } from './logger'
 
 /** 找出正在被 wc 检查的 webContents(即 wc 是它的 DevTools 前端) */
@@ -53,14 +54,20 @@ export function setupDevTools(): void {
     contents.on('before-input-event', (event, input) => {
       if (!isDevToolsHotkey(input)) return
       // preventDefault 会同时阻止页面 keydown/keyup 与菜单快捷键
-      event.preventDefault()
       const inspected = findInspectedBy(contents)
       if (inspected) {
         // 焦点在 DevTools 窗口内:按同一快捷键关闭它
+        event.preventDefault()
         if (!inspected.isDestroyed()) inspected.closeDevTools()
         log('关闭 DevTools(独立窗口)', 'devtools-frontend')
         return
       }
+      // 远程调试标签(设备检查插件打开的 devtools:// 前端页面)自己就是调试器界面:
+      // 给它再叠一层 Electron 本地 DevTools 只会套娃,所以这里**不拦截**、把按键让给页面。
+      // 注意顺序:必须先走上面的 findInspectedBy(Electron 自己的 DevTools 前端 URL 也是 devtools://,
+      // 但那种情况下 contents 是「别人」的 devtoolsWebContents,由上面那一支负责关闭)。
+      if (isDevToolsFrontendUrl(contents.getURL())) return
+      event.preventDefault()
       toggleDetachedDevTools(contents)
     })
   })

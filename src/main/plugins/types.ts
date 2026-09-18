@@ -46,6 +46,13 @@ export interface PluginPageApi {
   activeTabId(): number | null
   focus(tabId: number): void
   execute(tabId: number, code: string, opts?: { timeoutMs?: number }): Promise<unknown>
+  /**
+   * 打开一个「远程调试」标签页:把 CDP 目标(`ws://host:port/devtools/page/<id>`)接进 DevTools 前端。
+   *
+   * 目前只有设备检查插件在用。插件**不自己拼** `devtools://` 地址 —— 前端入口与 `ws=` 参数形态
+   * 由内核统一(见 `@shared/devtools`),否则这两处会各自漂移,而写错的表现只是「白屏」。
+   */
+  openDevToolsTab(wsUrl: string, title?: string, activate?: boolean): number
 }
 
 /**

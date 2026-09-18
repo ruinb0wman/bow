@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import type { TabInfo } from '@shared/types'
 import { INTERNAL_PAGES, internalPageUrl, parseInternalUrl } from '@shared/internalPages'
 import type { InternalPageId } from '@shared/internalPages'
+import { devtoolsFrontendUrl, isDevToolsFrontendUrl } from '@shared/devtools'
 import { loadRendererEntry } from './rendererEntry'
 import { log, logError } from './logger'
 
@@ -25,10 +26,20 @@ export interface PageTracker {
   track(wc: WebContents): void
 }
 
+/**
+ * 标签种类。三种互斥 —— 不能只靠 `info.internal` 一个布尔值表达,因为三者的约束不一样:
+ * - `page`:普通网页/本地文件,参与历史、内容注入与 MCP 页面操作;
+ * - `internal`:`bow://` 内部页面(设置页),**持有应用 preload**,只允许载入同一个内部 URL;
+ * - `inspector`:远程调试的 DevTools 前端(`devtools://…`),**不给 preload、不进历史、不被 MCP 操作**,
+ *   URL 由主进程按 CDP 目标拼出来(见 createInspectorTab)。
+ */
+export type TabKind = 'page' | 'internal' | 'inspector'
+
 interface TabRecord {
   view: WebContentsView
   info: TabInfo
-  /** 内部页面 id(bow://settings 等);null 表示普通网页标签 */
+  kind: TabKind
+  /** 内部页面 id(bow://settings 等);kind==='internal' 时非空 */
   internalId: InternalPageId | null
 }
 
@@ -136,6 +147,8 @@ export class TabManager extends EventEmitter {
 
   create(url?: string, activate = true): TabInfo {
     const internalId = url ? parseInternalUrl(url) : null
+    // create() 只造 page / internal;第三种(inspector)有自己的入口,见 createInspectorTab()
+    const kind: TabKind = internalId ? 'internal' : 'page'
     const id = this.nextId++
     const view = new WebContentsView({
       webPreferences: {
@@ -149,8 +162,8 @@ export class TabManager extends EventEmitter {
       }
     })
     const wc = view.webContents
-    // 内部页面不登记内容注入(避免插件 <all_urls> 规则注入浏览器自有 UI)
-    if (!internalId) this.pageTracker?.track(wc)
+    // 只有普通网页标签登记内容注入(内部页面与 DevTools 前端都不该被插件规则注入)
+    if (kind === 'page') this.pageTracker?.track(wc)
     const info: TabInfo = {
       id,
       url: internalId ? internalPageUrl(internalId) : 'about:blank',
@@ -162,12 +175,109 @@ export class TabManager extends EventEmitter {
       crashed: false,
       ...(internalId ? { internal: true } : {})
     }
-    this.views.set(id, { view, info, internalId })
+    this.views.set(id, { view, info, kind, internalId })
 
     wc.on('page-title-updated', (_e, title) => {
       info.title = title || (internalId ? INTERNAL_PAGES[internalId].title : '新标签页')
       this.publish(id)
     })
+    this.wireLifecycle(wc, id, info, '标签页')
+    const onNavigate = (): void => {
+      this.syncNavigation(id)
+      this.publish(id)
+    }
+    // 主框架导航 → 发布 tab-navigated 事件(历史由插件订阅);SPA 内 hash 变化不发布
+    // 内部页面使用 file:// 或 dev server URL,不对外暴露为可记录的历史
+    wc.on('did-navigate', (_e, url) => {
+      if (kind === 'page') this.emit('tab-navigated', { tabId: id, url, title: wc.getTitle() || url })
+      onNavigate()
+    })
+    wc.on('did-navigate-in-page', onNavigate)
+    if (kind === 'internal') {
+      // 内部页面标签只允许载入内部 URL(否则 preload 会曝露给任意站点)
+      wc.on('will-navigate', (e, target) => {
+        if (parseInternalUrl(target) === internalId) return
+        e.preventDefault()
+        log('内部页面标签阻止导航', id, target)
+      })
+    }
+
+    this.window.contentView.addChildView(view)
+    if (activate) this.activate(id, true)
+    if (kind === 'internal') loadRendererEntry(wc, INTERNAL_PAGES[internalId!].entry)
+    else if (kind === 'page' && url) this.navigate(id, url)
+    this.emit('tabs-changed')
+    this.layout()
+    this.emit('tab-created', { ...info, active: activate })
+    log('创建标签', id, url ?? '(blank)')
+    return { ...info, active: activate }
+  }
+
+  /**
+   * 打开一个「远程调试」标签页:把某个 CDP 目标(手机上的 WebView / Chrome 页面)接进 DevTools 前端。
+   *
+   * 与 create() 的差别都是刻意的:
+   * - **不给 preload** —— 前端不是我们的页面,`window.browserAPI` 绝不能出现在里面;
+   * - 不登记内容注入、不发布 `tab-navigated`(否则历史里会冒出 devtools:// 条目);
+   * - `info.internal = true` → 不进「最近浏览标签」记忆、不被 MCP 页面工具当成操作目标;
+   * - 标题不被页面 `<title>` 覆盖(前端固定叫 DevTools,会盖掉「[检查] 商品详情」这种更有用的信息);
+   * - 只允许 `devtools://` 内部导航(前端自身刷新),其它地址一律拦掉。
+   */
+  createInspectorTab(wsUrl: string, title?: string, activate = true): TabInfo {
+    const frontend = devtoolsFrontendUrl(wsUrl)
+    const id = this.nextId++
+    const view = new WebContentsView({
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        javascript: true,
+        webSecurity: true
+      }
+    })
+    const wc = view.webContents
+    const info: TabInfo = {
+      id,
+      url: frontend,
+      title: title?.trim() || 'DevTools',
+      loading: true,
+      canGoBack: false,
+      canGoForward: false,
+      active: false,
+      crashed: false,
+      internal: true,
+      inspector: true
+    }
+    this.views.set(id, { view, info, kind: 'inspector', internalId: null })
+    this.wireLifecycle(wc, id, info, 'DevTools 前端标签')
+    // 前端加载失败不会抛到我们这里(loadURL 的 rejection 只给一部分错误),
+    // 单独记一条带错误码的日志:排查「白屏」时 browser.log 是第一现场
+    wc.on('did-fail-load', (_e, code, description, validatedUrl) => {
+      logError('DevTools 前端加载失败', id, code, description, validatedUrl)
+    })
+    wc.on('will-navigate', (e, target) => {
+      if (isDevToolsFrontendUrl(target)) return
+      e.preventDefault()
+      log('DevTools 前端标签阻止导航', id, target)
+    })
+
+    this.window.contentView.addChildView(view)
+    if (activate) this.activate(id, true)
+    void wc.loadURL(frontend).catch((e) => {
+      logError('DevTools 前端加载失败', id, frontend, String(e))
+    })
+    this.emit('tabs-changed')
+    this.layout()
+    this.emit('tab-created', { ...info, active: activate })
+    log('创建 DevTools 前端标签', id, wsUrl)
+    return { ...info, active: activate }
+  }
+
+  /**
+   * 三种标签共用的生命周期接线:加载态、崩溃态、销毁后的簿记。
+   * create() 与 createInspectorTab() 都必须接这一套 —— 漏了就会出现「标签关了还占着 activeId」。
+   */
+  private wireLifecycle(wc: WebContents, id: number, info: TabInfo, label: string): void {
     wc.on('did-start-loading', () => {
       info.loading = true
       this.publish(id)
@@ -176,22 +286,11 @@ export class TabManager extends EventEmitter {
       info.loading = false
       this.publish(id)
     })
-    const onNavigate = (): void => {
-      this.syncNavigation(id)
-      this.publish(id)
-    }
-    // 主框架导航 → 发布 tab-navigated 事件(历史由插件订阅);SPA 内 hash 变化不发布
-    // 内部页面使用 file:// 或 dev server URL,不对外暴露为可记录的历史
-    wc.on('did-navigate', (_e, url) => {
-      if (!internalId) this.emit('tab-navigated', { tabId: id, url, title: wc.getTitle() || url })
-      onNavigate()
-    })
-    wc.on('did-navigate-in-page', onNavigate)
     wc.on('render-process-gone', (_e, details) => {
       info.crashed = true
       info.loading = false
       this.publish(id)
-      logError('标签页崩溃', id, details.reason)
+      logError(`${label}崩溃`, id, details.reason)
     })
     wc.on('destroyed', () => {
       this.views.delete(id)
@@ -203,31 +302,19 @@ export class TabManager extends EventEmitter {
       this.emit('tabs-changed')
       this.layout()
     })
-    if (internalId) {
-      // 内部页面标签只允许载入内部 URL(否则 preload 会曝露给任意站点)
-      wc.on('will-navigate', (e, target) => {
-        if (parseInternalUrl(target) === internalId) return
-        e.preventDefault()
-        log('内部页面标签阻止导航', id, target)
-      })
-    }
-
-    this.window.contentView.addChildView(view)
-    if (activate) this.activate(id, true)
-    if (internalId) loadRendererEntry(wc, INTERNAL_PAGES[internalId].entry)
-    else if (url) this.navigate(id, url)
-    this.emit('tabs-changed')
-    this.layout()
-    this.emit('tab-created', { ...info, active: activate })
-    log('创建标签', id, url ?? '(blank)')
-    return { ...info, active: activate }
   }
 
   /** 刷新 info 中的 URL / 前进后退能力(内部页面固定为对外 URL,且不可后退) */
   private syncNavigation(id: number): void {
     const hit = this.views.get(id)
     if (!hit) return
-    const { info, internalId } = hit
+    const { info, kind, internalId } = hit
+    // DevTools 前端标签的 URL 由主进程设置(devtools://…),不做同步也不可前进后退
+    if (kind === 'inspector') {
+      info.canGoBack = false
+      info.canGoForward = false
+      return
+    }
     if (internalId) {
       info.url = internalPageUrl(internalId)
       info.canGoBack = false
@@ -284,8 +371,11 @@ export class TabManager extends EventEmitter {
   close(id: number): { ok: boolean } {
     const hit = this.views.get(id)
     if (!hit) return { ok: false }
-    this.closedStack.push({ ...hit.info })
-    if (this.closedStack.length > 10) this.closedStack.shift()
+    // DevTools 前端标签不进恢复栈:它的意义随目标(可能已消失)与转发(已回收)一起失效
+    if (hit.kind !== 'inspector') {
+      this.closedStack.push({ ...hit.info })
+      if (this.closedStack.length > 10) this.closedStack.shift()
+    }
     if (this.lastBrowsingId === id) this.lastBrowsingId = null
     this.emit('tab-closed', { ...hit.info })
     this.emit('tabs-changed')
@@ -315,6 +405,8 @@ export class TabManager extends EventEmitter {
   navigate(id: number, url: string): boolean {
     const hit = this.views.get(id)
     if (!hit) return false
+    // DevTools 前端标签是「钉死」的:地址栏输入不会把调试器本身导航走(见 openUrl 会另开标签)
+    if (hit.kind === 'inspector') return false
     const internal = parseInternalUrl(url)
     if (hit.internalId) {
       if (internal !== hit.internalId) return false
@@ -330,7 +422,7 @@ export class TabManager extends EventEmitter {
   /** 打开/聚焦内部页面标签(单例:已存在则仅激活) */
   openInternal(page: InternalPageId): TabInfo {
     for (const rec of this.views.values()) {
-      if (rec.internalId !== page) continue
+      if (rec.kind !== 'internal' || rec.internalId !== page) continue
       this.activate(rec.info.id)
       return { ...rec.info, active: true }
     }

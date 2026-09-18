@@ -65,7 +65,10 @@ const EMPTY_TABS: PluginTabApi = { list: () => [], getActive: () => null }
 const EMPTY_PAGE_API: PluginPageApi = {
   activeTabId: () => null,
   focus: () => {},
-  execute: () => Promise.reject(new Error('页面执行 API 尚未就绪'))
+  execute: () => Promise.reject(new Error('页面执行 API 尚未就绪')),
+  openDevToolsTab: () => {
+    throw new Error('页面执行 API 尚未就绪')
+  }
 }
 
 export class PluginKernel {
@@ -461,7 +464,8 @@ class PluginContextImpl implements PluginContext {
   readonly pages: PluginPageApi = {
     activeTabId: () => this.kernel.pages.activeTabId(),
     focus: (tabId) => this.kernel.pages.focus(tabId),
-    execute: (tabId, code, opts) => this.kernel.pages.execute(tabId, code, opts)
+    execute: (tabId, code, opts) => this.kernel.pages.execute(tabId, code, opts),
+    openDevToolsTab: (wsUrl, title, activate) => this.kernel.pages.openDevToolsTab(wsUrl, title, activate)
   }
 
   readonly tabs: PluginTabApi = {

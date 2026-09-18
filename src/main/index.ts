@@ -173,7 +173,9 @@ app.whenReady().then(async () => {
           }
         )
       })
-    }
+    },
+    // 远程调试标签(设备检查插件用):内核负责拼 devtools:// 前端地址,插件只给 CDP 目标
+    openDevToolsTab: (wsUrl, title, activate) => tabs.createInspectorTab(wsUrl, title, activate ?? true).id
   })
   kernel.setBroadcaster((channel, payload) => {
     if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)

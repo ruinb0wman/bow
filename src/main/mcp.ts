@@ -90,8 +90,17 @@ export const MCP_INSTRUCTIONS = `这是一个真实的多标签浏览器窗口(�
 - 定位可点 / 可输入元素 → browser_snapshot
 - 判断样式、布局、视觉效果 → browser_screenshot;要看滚动到视口外的内容就传 fullPage: true
 
+手机调试(device_*)
+- 这类工具作用于**通过 adb 连着的手机页面**(Android 应用里的 WebView / Chrome),与 browser_*(作用于 bow 自己的标签页)是两回事。
+- 先 device_list_targets 拿 targetKey;有多个目标时必须显式指定 targetKey(省略只在「恰好一个目标」时生效,不做猜测)。
+- 想让人看真实 DevTools 界面 → device_inspect(在标签页里打开);想自己取数据 → device_eval / device_screenshot。
+- 看不到目标通常是两类原因:设备未授权(去手机屏幕上点「允许 USB 调试」),或应用是 release 包且没调用
+  WebView.setWebContentsDebuggingEnabled(true)。device_list_targets 的 notices 里会给出具体指引。
+
 边界
 - bow:// 内部页面标签不支持页面类工具,会被明确拒绝。
+- browser_list_tabs 里 inspector: true 的标签是「远程调试用的 DevTools 前端」,同样属于浏览器自身页面,不支持页面类工具。
+- device_eval / device_screenshot 需要设备可达:跨 WSL 时转发端口依赖 WSL2 镜像网络(networkingMode=Mirrored)。
 - browser_screenshot 默认只截当前视口;fullPage: true 截整页(输出分辨率 = 文档 CSS 尺寸 × devicePixelRatio,与普通截图一致)。整页截图需要临时附加调试器,该标签开着 DevTools 会失败;页面过高(设备像素超过 16000)会明确报错,改用 browser_scroll 分段。无 GPU 的环境可能返回黑帧,不要反复重试。
 - browser_navigate / browser_search 传 tabId 时作用于指定标签(指向内部页面标签会被拒绝);省略则作用于活动标签。
 - 插件被停用后,它贡献的工具(如 adblock_*)会从工具列表消失,这不是故障;可在 bow://settings 的「插件管理」重新启用。
@@ -130,7 +139,7 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
     if (tabId != null) {
       const hit = tabs.getView(tabId)
       if (!hit) return { view: null, fail: `标签 ${tabId} 不存在` }
-      if (hit.info.internal) return { view: null, fail: `标签 ${tabId} 是浏览器内部页面,不支持页面操作` }
+      if (hit.info.internal) return { view: null, fail: `标签 ${tabId} 是浏览器内部页面(设置 / DevTools 前端),不支持页面操作` }
       return { view: hit, fail: null }
     }
     let hit = tabs.getActiveBrowsingView()
@@ -491,7 +500,9 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
         loading: t.loading,
         active: t.active,
         crashed: t.crashed,
-        internal: !!t.internal
+        internal: !!t.internal,
+        // DevTools 前端标签(远程调试):同样是「浏览器自身页面」,这里多给一个标记方便 AI 区分
+        ...(t.inspector ? { inspector: true } : {})
       }))
     })
   })

@@ -12,6 +12,7 @@ import adblockUi from '@plugins/adblock/ui'
 import elementFullscreenUi from '@plugins/element-fullscreen/ui'
 import mcpHttpUi from '@plugins/mcp-http/ui'
 import defaultBrowserUi from '@plugins/default-browser/ui'
+import deviceInspectUi from '@plugins/device-inspect/ui'
 
 export const PLUGIN_UI: PluginUiContribution[] = [
   bookmarksUi,
@@ -20,7 +21,8 @@ export const PLUGIN_UI: PluginUiContribution[] = [
   adblockUi,
   elementFullscreenUi,
   mcpHttpUi,
-  defaultBrowserUi
+  defaultBrowserUi,
+  deviceInspectUi
 ]
 
 /**
