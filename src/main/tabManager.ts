@@ -353,6 +353,9 @@ export class TabManager extends EventEmitter {
   activate(id: number, silent = false): void {
     const hit = this.views.get(id)
     if (!hit) return
+    // 窗口销毁中:没有可显示的目标,且后续的 send/layout 都会撞在已销毁对象上
+    // (触发路径:窗口关闭 → 各标签 webContents 依次 destroyed → activateLastVisible)
+    if (this.window.isDestroyed()) return
     if (this.activeId === id) return
     this.activeId = id
     // 内部页面标签不参与「最近浏览标签」记忆
@@ -491,6 +494,10 @@ export class TabManager extends EventEmitter {
   }
 
   layout(): void {
+    // 窗口销毁过程中各标签 view 的 webContents 会依次 `destroyed`,`wireLifecycle` 的处理器
+    // 仍会走到 activateLastVisible() → 这里 —— 对已销毁的窗口取尺寸会抛
+    // `Object has been destroyed`(每个标签一条)。见 docs/ARCHITECTURE.md §10。
+    if (this.window.isDestroyed()) return
     const [w, h] = this.window.getContentSize()
     const top = this.chromeHeight
     const viewH = Math.max(0, h - top)

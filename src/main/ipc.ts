@@ -15,20 +15,27 @@ export function registerIpc(
   overlay: OverlayManager,
   kernel: PluginKernel
 ): void {
-  const sendTabsList = (): void => {
-    mainWindow.webContents.send('tab:list-changed', tabs.listTabs())
+  /**
+   * 向 chrome 发消息。**不能无条件 send**:窗口关闭时各标签的 webContents 会依次 `destroyed`,
+   * 而 `TabManager.wireLifecycle` 在那些处理器里仍会 `emit('tabs-changed' | 'tab-updated')` ——
+   * 此时窗口(或它自己的 webContents)已经没了,直接 send 会每标签抛一条 `Object has been destroyed`。
+   */
+  const sendToChrome = (channel: string, payload?: unknown): void => {
+    if (mainWindow.isDestroyed()) return
+    const wc = mainWindow.webContents
+    if (!wc || wc.isDestroyed()) return
+    wc.send(channel, payload)
   }
+  const sendTabsList = (): void => sendToChrome('tab:list-changed', tabs.listTabs())
   /** 同时通知 chrome、overlay 与内部页面标签(如设置页,设置变更/插件事件) */
   const broadcast = (channel: string, payload: unknown): void => {
-    if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)
+    sendToChrome(channel, payload)
     overlay.send(channel, payload)
     tabs.broadcastToInternal(channel, payload)
   }
   const sendSettings = (settings: Settings): void => broadcast('settings:changed', settings)
 
-  tabs.on('tab-updated', (tab) => {
-    if (!mainWindow.isDestroyed()) mainWindow.webContents.send('tab:updated', tab)
-  })
+  tabs.on('tab-updated', (tab) => sendToChrome('tab:updated', tab))
   tabs.on('tabs-changed', sendTabsList)
 
   ipcMain.handle('tab:create', (_e, url?: string, activate = true): TabInfo => tabs.create(url, activate))
@@ -99,7 +106,7 @@ export function registerIpc(
   // - 其余按浮层 id 路由给所属插件 main(约定注册 overlay-event 方法)。
   ipcMain.handle('ui:overlay-event', async (_e, ev: OverlayEvent) => {
     if (ev.id === 'suggest') {
-      if (!mainWindow.isDestroyed()) mainWindow.webContents.send('overlay-event', ev)
+      sendToChrome('overlay-event', ev)
       return true
     }
     if (ev.event === 'close-request') {
