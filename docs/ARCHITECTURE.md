@@ -95,7 +95,7 @@ src/
     ua.ts           bowUserAgent() 纯函数
     devtools.ts     DevTools 前端 URL 构造(tabManager 与设备检查插件共用的唯一来源)
     adblock.ts      广告规则模型/解析/索引/匹配/迁移(v3),~1400 行
-tests/            vitest 39 个测试文件(730 个用例)+ 3 个测试替身(fakeTabs/fakeWc/fakeKernel)
+tests/            vitest 39 个测试文件(740 个用例)+ 3 个测试替身(fakeTabs/fakeWc/fakeKernel)
 scripts/          构建与运维脚本(见 §11)
 docs/             本文件 + opencode-session-header.md
 .pi/skills/bow-browser/SKILL.md      给 AI 的能力索引(由 mcp:install 同步到 ~/.pi/agent/skills/)
@@ -186,7 +186,8 @@ Electron 的合成顺序:`contentView` 的子视图按加入顺序从底到顶;*
   渲染层不重算(`App.vue` 只是 `v-for` 画出 `dividers`,坐标就是窗口内容坐标);
   ③**新建标签永远是新建一个组,`activate()` 不拆任何组** —— 所以新建 tab3 不会弄丢已有的分屏;
   ④`Ctrl+Shift+方向` 分屏时**每次都嵌套一层**(新窗格吃掉被分窗格一半),`Alt+Shift+方向` 从叶子
-  **由内向外**找第一个「轴匹配且能朝该方向扩」的祖先改它的 `ratio`。
+  **由内向外**找第一层「轴与箭头一致」的分隔条,把它**朝箭头方向**推一步(只动最内层;`ratio` 夹到
+  `RATIO_MIN..RATIO_MAX`,夹紧就不再向外找)。
   组变化通过 `groups-changed` 事件 → `groups:changed` 通道只发给 chrome(面板数据由 chrome 组装下发)。
 
 ### overlay 的两种消息流(别搞混)
@@ -786,7 +787,7 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `groups:get` | — | `TabGroupInfo[]`(`{id, tabIds, focus, panes, dividers}`;几何只给活动组算) |
 | `groups:activate` | groupId | `TabGroupInfo[]`(激活该组**聚焦的**窗格) |
 | `groups:split` | `PaneDir` | `TabGroupInfo[]`(在聚焦窗格上分屏并新建空白标签;键盘入口在主进程,这条供渲染层兜底与 E2E) |
-| `groups:resize` | `PaneDir` | `TabGroupInfo[]`(朝该方向扩张聚焦窗格;到边界则不变) |
+| `groups:resize` | `PaneDir` | `TabGroupInfo[]`(把聚焦窗格最内层同轴的分隔条朝该方向推一步;夹紧或无同轴祖先时不变) |
 | `groups:ungroup` | — | `TabGroupInfo[]`(把当前组的 N 个窗格拆成相邻 N 个单标签组) |
 | `layouts:list` | — | `LayoutPreset[]`(已归一化) |
 | `layouts:save` | name? | `LayoutPreset[]`(当前组 ≥2 窗格才存;名字默认「布局 N」) |
@@ -910,7 +911,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
   ⚠️ 给主进程加新的 `tabs.*` / `wc.*` 调用时**必须同步补假实现**,否则测试会红得莫名其妙。
 - `tests/mcpServer.test.ts`(861 行)用 `InMemoryTransport` + 真实 `McpServer`/`Client` 握手,
   覆盖 instructions 下发、工具面与 schema、`waitUntil` 语义、失败一律 `isError`、内部页面边界、插件工具错误传播。
-- **当前基线(2026-09-19 复测,内部页进历史 + 可收藏 + Ctrl+Shift+E + Ctrl+W 关终端窗格改动后)**:`bun run test` → **39 个文件 / 732 个用例全绿**,约 3.7s。
+- **当前基线(2026-09-19 复测,分屏调大小方向语义改成「推分隔条」后)**:`bun run test` → **39 个文件 / 740 个用例全绿**,约 3.7s。
   39 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
   `fakeWc.ts`、`fakeKernel.ts`。
 
@@ -929,9 +930,9 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 
 其余:`ua`(5)、`pluginMatch`(13)、`settingsNav`(4)、`modalStack`(3)、`bundleScan`(6)、
 `adblockPickerScript`(4)、`elementFullscreenPlugin`(3)、`localFile`(6)、`navInput`(9)、`openArgs`(14)、
-`defaultBrowser`(60)、`closeConfirm`(6)、`split`(50,嵌套分屏树 / 几何 / 原地换叶子 / 布局形状与归一化)、
+`defaultBrowser`(60)、`closeConfirm`(6)、`split`(53,嵌套分屏树 / 几何 / 原地换叶子 / 布局形状与归一化)、
 `groups`(26,树版组记账 + 原地换叶子)、`terminalShared`(39,纯逻辑:设置规范化 /
-平台预设 / spawn 参数 / 环境变量清洗 / 回放缓冲 / PATH 查找 / 参数文本 / 复制粘贴键位)。合计 **732**。
+平台预设 / spawn 参数 / 环境变量清洗 / 回放缓冲 / PATH 查找 / 参数文本 / 复制粘贴键位)。合计 **740**。
 
 设备检查插件的三个测试文件(它们不在上表里:代码量不大,但每一条都在钉外部格式):
 
@@ -1010,6 +1011,13 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
    Chromium 把 view 的 DIP 边界舍入到物理像素后,渲染层的 `innerWidth` 可能比 `rect.width` 大/小 1。
    几何正确性的判据应该是 **DIP 层面铺满无缝隙/不重叠**(`dividers` 与 `panes` 互相印证),
    而不是逼页面自己报回完全相同的数字。
+10. **分屏调大小的方向 = 分隔条移动的方向,不是窗格扩张的方向**(2026-09-19 修正)。第一版按「扩张」写
+    (`resizePane` 只接受「聚焦子树在可扩侧」的祖先:`inA && leading` / `inB && !leading`),结果**贴着窗口
+    外边界的那三个方向完全没反应** —— 左窗格按 ←、右窗格按 →、上窗格按 ↑、下窗格按 ↓ 都没有候选节点,
+    整棵树原样返回(用户报的「按了没反应」)。正解见 `@shared/split` 的 `resizePane`:由内向外找第一层
+    轴一致的分隔条,`ratio` 只按箭头方向走(`leading ? +step : -step`,与聚焦窗格在哪一侧无关)。
+    **夹紧后不要向上找**:外层同轴的箭头侧可能相反(`row(A | row(N|N2))` 里 N 按 ←,内层到底后若去推外层,
+    外层会把这支往左扩 ⇒ N 反而变宽)。
 5. IPC 不能传 Vue 响应式代理(结构化克隆),`App.vue` 的 `toPlainRows()` 就是为此。
 6. 内部页面标签持有 preload,**任何**让它能载入远程内容的改动都是安全漏洞(`will-navigate` 与 `navigate()` 双重拦截)。
 
