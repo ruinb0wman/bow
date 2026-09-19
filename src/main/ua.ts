@@ -9,9 +9,21 @@ import { BROWSER_NAME, bowUserAgent } from '@shared/ua'
 const LEGACY_APP_DIR = 'mcp-browser'
 
 /**
+ * 是否显式要求独立的 userData(`--user-data-dir=…` 或 `BOW_USER_DATA_DIR`)。
+ *
+ * 用途:E2E / 多实例调试。userData 一旦隔离,**单实例锁也跟着隔离** —— 否则测试实例会
+ * 撞上用户正在跑的实例直接退出(`requestSingleInstanceLock` 失败 → app.quit()),根本没法跑。
+ */
+function hasExplicitUserData(): boolean {
+  if (process.env['BOW_USER_DATA_DIR']?.trim()) return true
+  return process.argv.some((arg) => arg.startsWith('--user-data-dir'))
+}
+
+/**
  * 在创建任何窗口/WebContents 之前调用一次(置于 whenReady 最前):
  * - 显示名 → bow(任务栏 / DevTools 标题等应用本体标识)
  * - userData 钉回旧路径(→ ~/.config/mcp-browser 等),既有数据零迁移
+ *   (**显式指定 userData 时跳过**,见 hasExplicitUserData)
  * - app.userAgentFallback 全局替换为 bow 签名:同时生效于 HTTP 请求头、
  *   Service Worker 与页面侧 navigator.userAgent / appVersion / platform
  * 顺序要求:先取旧名再 setName;setPath('userData') 必须先于任何 getPath('userData')。
@@ -20,6 +32,8 @@ export function applyBrowserIdentity(): void {
   const legacyName = app.getName() // 改名前的原始名(mcp-browser)
   const version = app.getVersion()
   app.setName(BROWSER_NAME)
-  app.setPath('userData', join(app.getPath('appData'), LEGACY_APP_DIR))
+  if (!hasExplicitUserData()) {
+    app.setPath('userData', join(app.getPath('appData'), LEGACY_APP_DIR))
+  }
   app.userAgentFallback = bowUserAgent(app.userAgentFallback, legacyName, version)
 }

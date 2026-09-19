@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isDevToolsHotkey, matchHotkey, matchTabHotkey, switchIndexForDigit } from '../src/shared/shortcuts'
+import { isDevToolsHotkey, matchHotkey, matchTabHotkey, releasesToTerminal, switchIndexForDigit } from '../src/shared/shortcuts'
 import type { KeyInputLike } from '../src/shared/shortcuts'
 
 function input(patch: Partial<KeyInputLike> = {}): KeyInputLike {
@@ -135,6 +135,20 @@ describe('matchTabHotkey Tab 快捷键识别', () => {
     expect(matchTabHotkey(input({ type: 'keyUp', key: 't', code: 'KeyT', shift: false }))).toBe(null)
     expect(matchTabHotkey(input({ isAutoRepeat: true, key: 't', code: 'KeyT', shift: false }))).toBe(null)
     expect(matchTabHotkey(input({ isComposing: true, key: 't', code: 'KeyT', shift: false }))).toBe(null)
+  })
+})
+
+describe('releasesToTerminal 终端页的快捷键放行', () => {
+  it('Ctrl+W(删词)与 Ctrl+L(清屏)还给 shell', () => {
+    expect(releasesToTerminal(matchTabHotkey(input({ key: 'w', code: 'KeyW', shift: false }))!)).toBe(true)
+    expect(releasesToTerminal(matchTabHotkey(input({ key: 'l', code: 'KeyL', shift: false }))!)).toBe(true)
+  })
+
+  it('新建 / 恢复 / 设置 / 数字切换仍归浏览器', () => {
+    expect(releasesToTerminal(matchTabHotkey(input({ key: 't', code: 'KeyT', shift: false }))!)).toBe(false)
+    expect(releasesToTerminal(matchTabHotkey(input({ key: 't', code: 'KeyT' }))!)).toBe(false)
+    expect(releasesToTerminal(matchTabHotkey(input({ key: ',', code: 'Comma', shift: false }))!)).toBe(false)
+    expect(releasesToTerminal(matchTabHotkey(input({ key: '2', code: 'Digit2', shift: false }))!)).toBe(false)
   })
 })
 

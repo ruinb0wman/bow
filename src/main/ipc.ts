@@ -1,6 +1,6 @@
 /** 渲染层(Vue UI)与主进程的 IPC 桥:核心 chrome 交互 + 插件调用面 */
 
-import { BrowserWindow, ipcMain } from 'electron'
+import { BrowserWindow, clipboard, ipcMain } from 'electron'
 import { defaultNavInputDeps, resolveNavigationWithFiles } from './navInput'
 import type { OverlayContent, OverlayEvent, Settings, TabInfo } from '@shared/types'
 import { findSplitPreset, normalizeSplitPresets, splitLevelOf } from '@shared/split'
@@ -54,6 +54,16 @@ export function registerIpc(
   ipcMain.handle('tab:active', () => tabs.getActiveTabInfo())
   // 激活最近浏览的普通页面标签(设置页的「屏蔽元素」等需要回到真实页面执行)
   ipcMain.handle('tab:activate-last-browsing', () => tabs.activateLastBrowsing())
+  // 内部页面认领自己所属的标签:终端页据此把 node-pty 会话绑到 tabId(而不是「最后激活的标签」)
+  ipcMain.handle('tab:self', (e) => tabs.findTabIdByWebContents(e.sender))
+
+  // 剪贴板:内部页面统一走主进程。渲染层虽然也有 navigator.clipboard,但它的可用性取决于
+  // secure context 与 Electron 的权限回调,主进程这两条没有这些变数(终端复制粘贴需要它可靠)。
+  ipcMain.handle('clipboard:read-text', () => clipboard.readText())
+  ipcMain.handle('clipboard:write-text', (_e, text: string) => {
+    clipboard.writeText(typeof text === 'string' ? text : '')
+    return true
+  })
 
   // ---------- 标签组(标签栏一项 = 一个组;分屏组两个标签) ----------
   // 宽度预设存在 settings.json(设置页「常规」里增删改),由这里统一解析成档位再交给 TabManager。

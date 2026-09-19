@@ -62,6 +62,16 @@ export function matchTabHotkey(input: KeyInputLike): TabHotkey | null {
 }
 
 /**
+ * 当前活动标签是终端页(`bow://terminal`)时,这两个快捷键必须还给 shell:
+ * - `Ctrl+W` = 删除前一个词 —— 误拦会直接关掉终端标签、丢掉会话;
+ * - `Ctrl+L` = 清屏。
+ * 其余(新建/恢复/切换/设置/数字)在 shell 里没有对应语义,保持浏览器行为。
+ */
+export function releasesToTerminal(hotkey: TabHotkey): boolean {
+  return hotkey.action === 'close' || hotkey.action === 'focus-address'
+}
+
+/**
  * 插件热键规格:由插件通过 PluginContext.shortcuts 注册,主进程统一匹配。
  * 声明式描述便于单测与避免插件接触 Electron 输入事件。
  */

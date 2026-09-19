@@ -9,15 +9,27 @@
 
 export const INTERNAL_SCHEME = 'bow'
 
-export type InternalPageId = 'settings'
+export type InternalPageId = 'settings' | 'terminal'
 
 /** 设置页对外 URL(地址栏/标签/入口统一使用) */
 export const SETTINGS_URL = 'bow://settings'
 
-/** 内部页面登记:url/title/entry 由 @shared/internalPages 统一提供 */
+/** 终端页对外 URL(插件「终端」贡献的页面,插件 id 与页面 id 同名) */
+export const TERMINAL_URL = 'bow://terminal'
+
+/**
+ * 内部页面登记:url/title/entry 由 @shared/internalPages 统一提供。
+ * `singleton` 决定 `TabManager.openInternal()` 的语义:
+ * - true(设置页):已存在则只聚焦,重复打开不会堆出第二个设置标签;
+ * - false(终端页):每次打开都是新标签(每个终端标签一个独立 shell 会话)。
+ */
 export const INTERNAL_PAGES = {
-  settings: { url: SETTINGS_URL, title: '设置', entry: 'settings' }
-} as const satisfies Record<InternalPageId, { url: string; title: string; entry: string }>
+  settings: { url: SETTINGS_URL, title: '设置', entry: 'settings', singleton: true },
+  terminal: { url: TERMINAL_URL, title: '终端', entry: 'terminal', singleton: false }
+} as const satisfies Record<
+  InternalPageId,
+  { url: string; title: string; entry: string; singleton: boolean }
+>
 
 /** 是否为本应用内部页面 URL */
 export function isInternalUrl(url: string): boolean {

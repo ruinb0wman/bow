@@ -37,6 +37,23 @@ describe('产物自检:运行时外部依赖扫描', () => {
     expect(externalRequires(bundle)).toEqual(['@modelcontextprotocol/sdk', 'lodash', 'vue', 'zod'])
   })
 
+  it('动态 import() 也算运行时依赖(原生模块惰性加载就是这种形式)', () => {
+    const bundle = `
+      const mod = await import('node-pty');
+      const mod2 = await import("@xterm/xterm");
+      const local = await import('./local.js');
+    `
+    expect(externalRequires(bundle)).toEqual(['@xterm/xterm', 'node-pty'])
+  })
+
+  it('属性访问不算引用;字符串里的同形文本仍会被扫到(纯文本扫描的已知边界)', () => {
+    const bundle = `
+      obj.import("fake");
+      const s = "await import('also-fake')";
+    `
+    expect(externalRequires(bundle)).toEqual(['also-fake'])
+  })
+
   it('跳过相对路径、绝对路径、node: 内置与 electron', () => {
     const bundle = `
       import a from "./local.js";

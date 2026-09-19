@@ -181,6 +181,17 @@ export class TabManager extends EventEmitter {
     return this.views.get(id) ?? null
   }
 
+  /**
+   * 由 webContents 反查标签 id(内部页面的 `tab:self` 用它认领自己 —— 终端页据此把会话绑到 tabId 上)。
+   * 不是标签页的 webContents(chrome / overlay)返回 null。
+   */
+  findTabIdByWebContents(wc: WebContents): number | null {
+    for (const [id, rec] of this.views) {
+      if (rec.view.webContents === wc) return id
+    }
+    return null
+  }
+
   getActiveView(): TabRecord | null {
     return this.getActiveRecord()
   }
@@ -495,12 +506,18 @@ export class TabManager extends EventEmitter {
     return true
   }
 
-  /** 打开/聚焦内部页面标签(单例:已存在则仅激活) */
+  /**
+   * 打开/聚焦内部页面标签。`singleton`(由 `@shared/internalPages` 的登记表声明)决定语义:
+   * - true(设置页):已存在则仅激活,不堆出第二个;
+   * - false(终端页):**每次新建** —— 每个终端标签一个独立 shell 会话。
+   */
   openInternal(page: InternalPageId): TabInfo {
-    for (const rec of this.views.values()) {
-      if (rec.kind !== 'internal' || rec.internalId !== page) continue
-      this.activate(rec.info.id)
-      return { ...rec.info, active: true }
+    if (INTERNAL_PAGES[page].singleton) {
+      for (const rec of this.views.values()) {
+        if (rec.kind !== 'internal' || rec.internalId !== page) continue
+        this.activate(rec.info.id)
+        return { ...rec.info, active: true }
+      }
     }
     return this.create(internalPageUrl(page), true)
   }

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   INTERNAL_PAGES,
   SETTINGS_URL,
+  TERMINAL_URL,
   internalPageTitle,
   internalPageUrl,
   isInternalUrl,
@@ -49,5 +50,24 @@ describe('内部页面登记', () => {
     expect(internalPageUrl('settings')).toBe(SETTINGS_URL)
     expect(internalPageTitle('settings')).toBe('设置')
     expect(INTERNAL_PAGES.settings.entry).toBe('settings')
+  })
+
+  it('终端页也登记为内部页面(入口名与 id 同名)', () => {
+    expect(parseInternalUrl(TERMINAL_URL)).toBe('terminal')
+    expect(internalPageUrl('terminal')).toBe(TERMINAL_URL)
+    expect(internalPageTitle('terminal')).toBe('终端')
+    expect(INTERNAL_PAGES.terminal.entry).toBe('terminal')
+  })
+
+  it('singleton 决定 openInternal 的语义:设置页单例、终端可多开', () => {
+    expect(INTERNAL_PAGES.settings.singleton).toBe(true)
+    expect(INTERNAL_PAGES.terminal.singleton).toBe(false)
+  })
+
+  it('每个内部页面都有渲染入口名', () => {
+    for (const page of Object.values(INTERNAL_PAGES)) {
+      expect(page.entry.length).toBeGreaterThan(0)
+      expect(page.title.length).toBeGreaterThan(0)
+    }
   })
 })

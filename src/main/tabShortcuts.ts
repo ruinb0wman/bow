@@ -8,11 +8,18 @@
  */
 
 import { app } from 'electron'
-import { matchTabHotkey, switchIndexForDigit } from '@shared/shortcuts'
+import { matchTabHotkey, releasesToTerminal, switchIndexForDigit } from '@shared/shortcuts'
+import { parseInternalUrl } from '@shared/internalPages'
+import type { TabInfo } from '@shared/types'
 import type { TabManager } from './tabManager'
 import type { OverlayManager } from './overlay'
 import type { PluginKernel } from './plugins/kernel'
 import { log } from './logger'
+
+/** 活动标签是不是终端页(`bow://terminal`):决定 Ctrl+W / Ctrl+L 归 shell 还是归浏览器 */
+function isTerminalTab(tab: TabInfo | null): boolean {
+  return !!tab && parseInternalUrl(tab.url) === 'terminal'
+}
 
 /**
  * 聚焦地址栏:先把键盘焦点交给 chrome WebContents(否则渲染层的 el.focus() 只是改 DOM 状态、
@@ -38,6 +45,13 @@ export function setupTabShortcuts(
     contents.on('before-input-event', (event, input) => {
       const hk = matchTabHotkey(input)
       if (hk) {
+        // 终端里的 Ctrl+W(删词)/ Ctrl+L(清屏)必须落到 shell 上。
+        // 关键点是**不能 preventDefault**:渲染层收不到被 preventDefault 的按键,
+        // xterm 也就无法把这两个组合送进 pty。
+        if (releasesToTerminal(hk) && isTerminalTab(getTabs().getActiveTabInfo())) {
+          log('快捷键放行给终端', hk.action)
+          return
+        }
         // preventDefault 会同时阻止页面 keydown/keyup 与菜单快捷键
         event.preventDefault()
         const tabs = getTabs()

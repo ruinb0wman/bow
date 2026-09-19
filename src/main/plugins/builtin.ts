@@ -9,6 +9,7 @@ import elementFullscreen from '@plugins/element-fullscreen/main'
 import mcpHttp from '@plugins/mcp-http/main'
 import defaultBrowser from '@plugins/default-browser/main'
 import deviceInspect from '@plugins/device-inspect/main'
+import terminal from '@plugins/terminal/main'
 
 export const BUILTIN_PLUGINS: PluginMain[] = [
   history,
@@ -19,5 +20,7 @@ export const BUILTIN_PLUGINS: PluginMain[] = [
   mcpHttp,
   defaultBrowser,
   // 放末尾:不参与网络钩子链与地址栏建议源的次序(它只贡献 UI 与 MCP 工具)
-  deviceInspect
+  deviceInspect,
+  // 同上(只贡献 UI,且它带来的 bow://terminal 页面走内部页面那条独立通路)
+  terminal
 ]

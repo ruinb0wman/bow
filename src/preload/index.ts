@@ -29,6 +29,11 @@ export interface BrowserAPI {
   getActiveTab: () => Promise<TabInfo | null>
   // 激活最近浏览的普通页面标签(设置页的「屏蔽元素」等需要回到真实页面执行)
   activateLastBrowsingTab: () => Promise<TabInfo | null>
+  // 内部页面认领自己所属的标签 id(终端页据此绑定会话);不是标签页(null)的返回 null
+  getSelfTabId: () => Promise<number | null>
+  // 剪贴板(经主进程,避免 renderer 侧 clipboard 的权限/secure context 差异)
+  readClipboardText: () => Promise<string>
+  writeClipboardText: (text: string) => Promise<boolean>
   // 导航
   go: (input: string) => Promise<{ parsed: string | null; query?: string; url?: string; tabId: number }>
   goUrl: (url: string) => Promise<{ tabId: number }>
@@ -96,6 +101,9 @@ const api: BrowserAPI = {
   listTabs: () => ipcRenderer.invoke('tab:list'),
   getActiveTab: () => ipcRenderer.invoke('tab:active'),
   activateLastBrowsingTab: () => ipcRenderer.invoke('tab:activate-last-browsing'),
+  getSelfTabId: () => ipcRenderer.invoke('tab:self'),
+  readClipboardText: () => ipcRenderer.invoke('clipboard:read-text'),
+  writeClipboardText: (text) => ipcRenderer.invoke('clipboard:write-text', text),
   go: (input) => ipcRenderer.invoke('nav:go', input),
   goUrl: (url) => ipcRenderer.invoke('nav:url', url),
   back: () => ipcRenderer.invoke('nav:back'),
