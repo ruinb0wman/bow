@@ -192,27 +192,33 @@ describe('removePane', () => {
 describe('resizePane', () => {
   const simple = row(leaf(1), leaf(2))
 
-  it('→ 在左半:ratio 增大(左窗格变宽)', () => {
+  it('→ 在左半 / ← 在右半:分隔条朝箭头方向推 ⇒ 聚焦窗格变大', () => {
     expect(resizePane(simple, 1, 'right', 0.05)).toEqual(row(leaf(1), leaf(2), 0.55))
-  })
-
-  it('← 在右半:ratio 减小(右窗格变宽)', () => {
     expect(resizePane(simple, 2, 'left', 0.05)).toEqual(row(leaf(1), leaf(2), 0.45))
   })
 
-  it('贴边方向不动:→ 在右半 / ← 在左半 → 原样(引用不变)', () => {
-    expect(resizePane(simple, 2, 'right', 0.05)).toBe(simple)
-    expect(resizePane(simple, 1, 'left', 0.05)).toBe(simple)
+  it('贴窗口边界的那一侧也推得动:← 在左半 / → 在右半 ⇒ 聚焦窗格变小', () => {
+    expect(resizePane(simple, 1, 'left', 0.05)).toEqual(row(leaf(1), leaf(2), 0.45))
+    expect(resizePane(simple, 2, 'right', 0.05)).toEqual(row(leaf(1), leaf(2), 0.55))
   })
 
-  it('轴不匹配的方向不动', () => {
+  it('上下分屏同一套语义:↓ 在上半 / ↑ 在下半 ⇒ 变大;↑ 在上半 / ↓ 在下半 ⇒ 变小', () => {
+    const vertical = col(leaf(1), leaf(2))
+    expect(resizePane(vertical, 1, 'down', 0.05)).toEqual(col(leaf(1), leaf(2), 0.55))
+    expect(resizePane(vertical, 2, 'up', 0.05)).toEqual(col(leaf(1), leaf(2), 0.45))
+    expect(resizePane(vertical, 1, 'up', 0.05)).toEqual(col(leaf(1), leaf(2), 0.45))
+    expect(resizePane(vertical, 2, 'down', 0.05)).toEqual(col(leaf(1), leaf(2), 0.55))
+  })
+
+  it('轴不匹配的方向不动(左右并排里按 ↑/↓、上下堆叠里按 ←/→)', () => {
     expect(resizePane(simple, 1, 'down', 0.05)).toBe(simple)
+    expect(resizePane(simple, 2, 'up', 0.05)).toBe(simple)
     const vertical = col(leaf(1), leaf(2))
     expect(resizePane(vertical, 1, 'right', 0.05)).toBe(vertical)
-    expect(resizePane(vertical, 1, 'down', 0.05)).toEqual(col(leaf(1), leaf(2), 0.55))
+    expect(resizePane(vertical, 2, 'left', 0.05)).toBe(vertical)
   })
 
-  it('优先动**最靠近叶子**的那一层', () => {
+  it('永远动**最靠近叶子**的那一层', () => {
     const tree = row(leaf(1), col(leaf(2), leaf(3)))
     const next = resizePane(tree, 2, 'down', 0.05)
     expect(next).toEqual(row(leaf(1), col(leaf(2), leaf(3), 0.55)))
@@ -220,11 +226,18 @@ describe('resizePane', () => {
     expect(next.kind === 'split' && next.ratio).toBe(0.5)
   })
 
-  it('里层动不了时向上一层找可扩张的祖先', () => {
-    // 2 是内层 row 的右半(→ 动不了内层),但整个内层是外层的 a ⇒ 外层能向右扩
+  it('内层的轴不一致时才向上找同轴祖先', () => {
+    // 2 在内层 row 里(轴 row ≠ column),所以 ↑/↓ 只能动外层的 col
+    const tree = col(row(leaf(1), leaf(2)), leaf(3))
+    expect(resizePane(tree, 2, 'up', 0.05)).toEqual(col(row(leaf(1), leaf(2)), leaf(3), 0.45))
+    expect(resizePane(tree, 2, 'down', 0.05)).toEqual(col(row(leaf(1), leaf(2)), leaf(3), 0.55))
+  })
+
+  it('内层能动就不动外层(旧语义会向上找「可扩的祖先」)', () => {
+    // 2 是内层 row 的右半:按 → 推的是**内层**那条分隔条 ⇒ 2 变小、1 变大;外层 row 不参与
     const tree = row(row(leaf(1), leaf(2)), leaf(3))
     const next = resizePane(tree, 2, 'right', 0.05)
-    expect(next).toEqual(row(row(leaf(1), leaf(2)), leaf(3), 0.55))
+    expect(next).toEqual(row(row(leaf(1), leaf(2), 0.55), leaf(3)))
   })
 
   it('ratio 夹在 10%~90%', () => {
@@ -236,10 +249,22 @@ describe('resizePane', () => {
     )
   })
 
-  it('tabId 不在树里 / 到顶都动不了 → 原样', () => {
+  it('那条已推到极限 ⇒ 整棵树原样(不再向外找)', () => {
+    const tree = row(row(leaf(1), leaf(2), RATIO_MIN), leaf(3))
+    // 内层 row 的 ratio 已经是最小:←(把 1 推离分隔条)推不动 ⇒ 整棵树引用不变,外层 ratio 也不许被改
+    expect(resizePane(tree, 1, 'left', 0.05)).toBe(tree)
+  })
+
+  it('只重建「改动层 → 根」这一段,路径外的子树引用复用', () => {
+    const tree = row(leaf(1), col(leaf(2), leaf(3)))
+    const leftBefore = tree.kind === 'split' ? tree.a : null
+    const next = resizePane(tree, 2, 'down', 0.05)
+    expect(next).toEqual(row(leaf(1), col(leaf(2), leaf(3), 0.55)))
+    expect(next.kind === 'split' ? next.a : null).toBe(leftBefore)
+  })
+
+  it('tabId 不在树里 ⇒ 原样', () => {
     expect(resizePane(simple, 99, 'right', 0.05)).toBe(simple)
-    const nested = col(row(leaf(1), leaf(2)), leaf(3))
-    expect(resizePane(nested, 2, 'up', 0.05)).toBe(nested)
   })
 })
 

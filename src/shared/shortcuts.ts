@@ -96,7 +96,7 @@ export function releasesToTerminal(hotkey: TabHotkey): boolean {
   return hotkey.action === 'focus-address'
 }
 
-/** 分屏快捷键:`split` = Ctrl/Cmd+Shift+方向(在聚焦窗格上分屏);`resize` = Alt+Shift+方向(向该方向扩张) */
+/** 分屏快捷键:`split` = Ctrl/Cmd+Shift+方向(在聚焦窗格上分屏);`resize` = Alt+Shift+方向(把最内层那条同轴分隔条朝该方向推) */
 export interface SplitHotkey {
   kind: 'split' | 'resize'
   dir: PaneDir

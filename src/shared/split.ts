@@ -3,7 +3,7 @@
  *
  * 一个标签组 = 一棵 `LayoutNode` 树:叶子是一个标签(一个窗格),`split` 节点是一次分屏。
  * `Ctrl+Shift+方向` 在聚焦的那个叶子上**每次都嵌套一层**(新窗格吃掉被分窗格一半);
- * `Alt+Shift+方向` 从叶子向上找第一个「轴匹配且能朝该方向扩张」的祖先,改它的 `ratio`。
+ * `Alt+Shift+方向` 由内向外找第一层「轴与箭头一致」的分隔条,把它**朝箭头方向**推一步。
  *
  * 几何只有这一处实现(`computeLayout`):主进程算完把**窗格 rect** 与**分隔条 rect**一起回传渲染层,
  * 渲染层只画不重算(坐标是窗口内容坐标 = chrome 渲染层的 CSS px)。
@@ -15,12 +15,15 @@
 /** 分屏轴:`row` = 左右并排(a 左 b 右);`column` = 上下堆叠(a 上 b 下) */
 export type SplitAxis = 'row' | 'column'
 
-/** 方向键语义:`left/up` 时新窗格在 a 侧,`right/down` 时在 b 侧;调整大小时箭头 = 聚焦窗格要扩张的方向 */
+/** 方向键语义:`left/up` 时新窗格在 a 侧,`right/down` 时在 b 侧;调整大小时箭头 = **分隔条要移动的方向** */
 export type PaneDir = 'left' | 'right' | 'up' | 'down'
 
 export type LayoutNode =
   | { kind: 'leaf'; tabId: number }
   | { kind: 'split'; axis: SplitAxis; ratio: number; a: LayoutNode; b: LayoutNode }
+
+/** 内部:只取 `split` 那一支(路径收集用) */
+type SplitNode = Extract<LayoutNode, { kind: 'split' }>
 
 export interface Rect {
   x: number
@@ -63,7 +66,7 @@ export function axisOfDir(dir: PaneDir): SplitAxis {
   return dir === 'left' || dir === 'right' ? 'row' : 'column'
 }
 
-/** 该方向是否「朝 b 侧扩张」(right/down);否则朝 a 侧(left/up) */
+/** 该方向是否朝 b 侧(right/down);否则朝 a 侧(left/up)。`splitPane` 用它定新窗格放哪一侧,`resizePane` 用它定 `ratio` 的正负 */
 export function isLeadingDir(dir: PaneDir): boolean {
   return dir === 'right' || dir === 'down'
 }
@@ -158,13 +161,17 @@ export function removePane(
 }
 
 /**
- * 调整聚焦窗格的大小:从叶子**由内向外**找第一个「轴与箭头一致,且聚焦子树在可扩张侧」的祖先,改它的 `ratio`。
+ * 调整聚焦窗格的大小:**由内向外**找第一层「轴与箭头一致」的分隔条,把它**朝箭头方向**推一步
+ * (箭头 = 分隔条移动的方向,与聚焦窗格在哪一侧无关):
  *
- * - `→` / `↓`:聚焦子树在 a 侧时把 a 撑大(`ratio + step`);
- * - `←` / `↑`:聚焦子树在 b 侧时把 b 撑大(`ratio - step`);
- * - 聚焦窗格已经贴在该层边界上(子树在 b 而箭头朝 b、或在 a 而箭头朝 a)→ 继续向上找
- *   (它的边界就等于父容器里那一支的边界);
- * - 一路到顶都没有可扩张的祖先 → 整棵树原样返回(引用不变)。
+ * - `→` / `↓`:`ratio + step`;`←` / `↑`:`ratio - step`;
+ * - 聚焦窗格在箭头侧 ⇒ 那条分隔条被推**离**它,窗格**变小**;在反侧 ⇒ 窗格**变大**
+ *   (贴窗口边界的那一侧,推的就是反方向那一条);
+ * - **只动最内层那一层**,外层同轴 `ratio` 不受影响;
+ * - 该层已夹到 `RATIO_MIN/MAX`、或整棵树里没有同轴的祖先(左右并排里按 ↑/↓)⇒ 整棵树原样返回(引用不变)。
+ *
+ * ⚠️ 夹紧后**故意不向上找**:外层同轴的箭头侧可能相反 —— `row(A | row(N|N2))` 里 N 按 ←,内层到底后
+ * 若去推外层,外层会把这支往左扩 ⇒ N 反而变宽(越按越大)。所以到夹紧就停。
  */
 export function resizePane(
   root: LayoutNode,
@@ -173,23 +180,31 @@ export function resizePane(
   step = SPLIT_RESIZE_STEP
 ): LayoutNode {
   const axis = axisOfDir(dir)
-  const leading = isLeadingDir(dir)
-  const walk = (node: LayoutNode): LayoutNode => {
-    if (node.kind === 'leaf') return node
-    const inA = hasPane(node.a, tabId)
-    const inB = !inA && hasPane(node.b, tabId)
-    if (!inA && !inB) return node
-    // 先往下走:命中的是**最靠近叶子的**那一层,外层只有在里层动不了时才轮得到
-    const child = inA ? walk(node.a) : walk(node.b)
-    if (child !== (inA ? node.a : node.b)) {
-      return inA ? { ...node, a: child } : { ...node, b: child }
-    }
-    if (node.axis !== axis) return node
-    if (inA && leading) return { ...node, ratio: clampRatio(node.ratio + step) }
-    if (inB && !leading) return { ...node, ratio: clampRatio(node.ratio - step) }
-    return node
+  const delta = isLeadingDir(dir) ? step : -step
+  // ① 自根向下收集「通往 tabId」的路径(只读):每层记下焦点子树在 a 还是 b
+  const path: { node: SplitNode; inA: boolean }[] = []
+  let cur: LayoutNode = root
+  while (cur.kind === 'split') {
+    const inA = hasPane(cur.a, tabId)
+    if (!inA && !hasPane(cur.b, tabId)) return root // tabId 不在树里
+    path.push({ node: cur, inA })
+    cur = inA ? cur.a : cur.b
   }
-  return walk(root)
+  // ② 由内向外取第一层轴一致的(最多一层会动)
+  for (let i = path.length - 1; i >= 0; i -= 1) {
+    const { node } = path[i]
+    if (node.axis !== axis) continue
+    const ratio = clampRatio(node.ratio + delta)
+    if (ratio === node.ratio) return root // 这条已推到极限(不再向外找)
+    // ③ 只重建「该层 → 根」这一段,路径外的子树引用原样复用
+    let next: LayoutNode = { ...node, ratio }
+    for (let j = i - 1; j >= 0; j -= 1) {
+      const p = path[j]
+      next = p.inA ? { ...p.node, a: next } : { ...p.node, b: next }
+    }
+    return next
+  }
+  return root
 }
 
 export interface LayoutOptions {

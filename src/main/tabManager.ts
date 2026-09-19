@@ -722,8 +722,8 @@ export class TabManager extends EventEmitter {
   }
 
   /**
-   * 调整聚焦窗格的大小(箭头 = 它要扩张的方向):由内向外找第一个能动的分隔条改 `ratio`。
-   * 到最外层边界就不动(返回 false,也不发事件)。
+   * 调整聚焦窗格的大小(箭头 = 把**最内层那条同轴分隔条**朝该方向推)。
+   * 没有同轴祖先、或那条已夹到 `RATIO_MIN/MAX` ⇒ 不动(返回 false,也不发事件)。
    */
   resizeFocused(dir: PaneDir): boolean {
     const active = this.activeGroup()
