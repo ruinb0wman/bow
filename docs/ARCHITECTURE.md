@@ -38,7 +38,7 @@ src/
                                  second-instance 复用同一套规则)
     navInput.ts                  地址栏输入的本地文件兜底(不 import electron,可单测)
     devtools.ts                  DevTools 永远 detach + 全局快捷键拦截
-    tabShortcuts.ts              标签/分屏快捷键(Ctrl+T/W/L/,/数字/Shift+T/Shift+E + Ctrl+Shift+方向/Alt+Shift+方向)全局拦截(终端页里 Ctrl+L 与分屏键放行给 shell)
+    tabShortcuts.ts              标签/分屏快捷键(Ctrl+T/W/L/,/数字/Shift+T/Shift+E + Ctrl+Shift+方向/Alt+Shift+方向)全局拦截(终端页里只有 Ctrl+L 放行给 shell;分屏键在终端页也由主进程接管)
     tabManager.ts                TabManager:每标签一个 WebContentsView + 内部页面标签 + 标签组/嵌套分屏 + 布局
     overlay.ts                   OverlayManager:常驻透明顶层视图,按 placement 布局
     closeConfirm.ts              关闭窗口确认:多标签时拦下 close 事件,改用应用内确认框
@@ -711,8 +711,10 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 - **快捷键分工**:Ctrl+T/W/L/Shift+T/,/数字/Shift+E 由**主进程** `tabShortcuts.ts` 拦截(页面聚焦时渲染层收不到按键);
   —— 放行给终端的只看 `Ctrl+L`(清屏);放行与否看的是**按键来源的 webContents**(不是活动标签),
   否则焦点在地址栏而活动标签是终端时 `Ctrl+W` / `Ctrl+L` 会变成什么都没做的死键;
-  `Ctrl+Shift+方向` / `Alt+Shift+方向` 同样在主进程,但**只在聚焦的 webContents 属于普通网页标签时**才 `preventDefault`
-  —— 地址栏 / 设置页 / 终端页 / DevTools 前端里的这些组合保持原样(按词选择、xterm 选择扩展、前端自己的快捷键);
+  `Ctrl+Shift+方向` / `Alt+Shift+方向` 同样在主进程,但只在聚焦的 webContents 属于**普通网页标签**或**终端页**时
+  才 `preventDefault`(判据 `shouldTakeSplitHotkey()`)—— 终端页自 2026-09-19 起也接管:否则 xterm 会把组合编成
+  CSI 序列送进 pty,分屏 / 调大小在终端里完全没反应;代价是 shell 与终端里的程序也收不到这两个组合。
+  地址栏 / 设置页 / DevTools 前端里的这些组合保持原样(按词选择、前端自己的快捷键);
   chrome 侧只保留 Ctrl+R。
 - 标签关闭兜底:关掉最后一个标签时自动补一个 `about:blank`(与 `tabShortcuts.ts` 的 close 分支一致)。
 
