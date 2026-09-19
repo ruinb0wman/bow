@@ -8,7 +8,7 @@
  */
 
 import { app } from 'electron'
-import { matchTabHotkey, releasesToTerminal, switchIndexForDigit } from '@shared/shortcuts'
+import { matchSplitHotkey, matchTabHotkey, releasesToTerminal, switchIndexForDigit } from '@shared/shortcuts'
 import { parseInternalUrl } from '@shared/internalPages'
 import type { TabInfo } from '@shared/types'
 import type { TabManager } from './tabManager'
@@ -98,6 +98,25 @@ export function setupTabShortcuts(
             }
             break
           }
+        }
+        return
+      }
+      // 分屏快捷键:`Ctrl/Cmd+Shift+方向` 分屏、`Alt+Shift+方向` 调整当前窗格大小。
+      // 只在「聚焦的 webContents 属于**普通网页标签**」时接管 —— 地址栏、`bow://settings`、终端页、
+      // DevTools 前端里的这些组合(按词选择 / xterm 的选择扩展 / 前端自己的快捷键)必须原样留给它们。
+      // 代价已记在文档里:普通网页里的输入框也拿不到 `Ctrl+Shift+方向`。
+      const splitHk = matchSplitHotkey(input)
+      if (splitHk) {
+        const tabId = getTabs().findTabIdByWebContents(contents)
+        const rec = tabId != null ? getTabs().getView(tabId) : null
+        if (rec && !rec.info.internal) {
+          // 全窗弹层开着时不抢焦点也不分屏(与 Ctrl+T / Ctrl+L 同策略)
+          if (getOverlay().isFullOpen) return
+          // preventDefault 会同时阻止页面 keydown/keyup 与菜单快捷键
+          event.preventDefault()
+          if (splitHk.kind === 'split') getTabs().splitFocused(splitHk.dir)
+          else getTabs().resizeFocused(splitHk.dir)
+          log('快捷键:分屏/调整大小', splitHk.kind, splitHk.dir)
         }
         return
       }

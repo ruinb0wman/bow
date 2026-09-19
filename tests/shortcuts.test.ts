@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isDevToolsHotkey, matchHotkey, matchTabHotkey, releasesToTerminal, switchIndexForDigit } from '../src/shared/shortcuts'
+import { isDevToolsHotkey, matchHotkey, matchSplitHotkey, matchTabHotkey, releasesToTerminal, switchIndexForDigit } from '../src/shared/shortcuts'
 import type { KeyInputLike } from '../src/shared/shortcuts'
 
 function input(patch: Partial<KeyInputLike> = {}): KeyInputLike {
@@ -216,5 +216,64 @@ describe('switchIndexForDigit 数字到标签索引', () => {
   it('无标签时返回 null', () => {
     expect(switchIndexForDigit(9, 0)).toBe(null)
     expect(switchIndexForDigit(1, 0)).toBe(null)
+  })
+})
+
+describe('matchSplitHotkey 分屏快捷键识别', () => {
+  const arrow = (dir: 'left' | 'right' | 'up' | 'down'): Partial<KeyInputLike> => ({
+    key: `Arrow${dir[0].toUpperCase()}${dir.slice(1)}`,
+    code: `Arrow${dir[0].toUpperCase()}${dir.slice(1)}`
+  })
+
+  it('Ctrl/Cmd+Shift+方向 → split(四个方向)', () => {
+    for (const dir of ['left', 'right', 'up', 'down'] as const) {
+      expect(matchSplitHotkey(input(arrow(dir)))).toEqual({ kind: 'split', dir })
+    }
+    expect(
+      matchSplitHotkey(input({ ...arrow('right'), control: false, meta: true }))
+    ).toEqual({ kind: 'split', dir: 'right' })
+  })
+
+  it('Alt+Shift+方向 → resize(四个方向)', () => {
+    for (const dir of ['left', 'right', 'up', 'down'] as const) {
+      expect(matchSplitHotkey(input({ ...arrow(dir), control: false, alt: true }))).toEqual({
+        kind: 'resize',
+        dir
+      })
+    }
+  })
+
+  it('code 与 key 任一能认出方向即可(兼容非 QWERTY 布局)', () => {
+    expect(matchSplitHotkey(input({ ...arrow('up'), key: '' }))).toEqual({ kind: 'split', dir: 'up' })
+    expect(matchSplitHotkey(input({ ...arrow('up'), code: '' }))).toEqual({ kind: 'split', dir: 'up' })
+  })
+
+  it('修饰键必须精确:带 Alt 的 split / 带 Ctrl 的 resize / 无 Shift 都不命中', () => {
+    expect(matchSplitHotkey(input({ ...arrow('left'), alt: true }))).toBe(null)
+    expect(matchSplitHotkey(input({ ...arrow('left'), alt: true, control: true }))).toBe(null)
+    expect(matchSplitHotkey(input({ ...arrow('left'), shift: false }))).toBe(null)
+    expect(matchSplitHotkey(input({ ...arrow('left'), shift: false, alt: true }))).toBe(null)
+    expect(
+      matchSplitHotkey(input({ ...arrow('left'), control: false, meta: false, shift: false, alt: true }))
+    ).toBe(null)
+  })
+
+  it('split 忽略自动重复(长按不会连开窗格),resize 允许自动重复(连续调整)', () => {
+    expect(matchSplitHotkey(input({ ...arrow('down'), isAutoRepeat: true }))).toBe(null)
+    expect(matchSplitHotkey(input({ ...arrow('down'), alt: true, control: false, isAutoRepeat: true }))).toEqual({
+      kind: 'resize',
+      dir: 'down'
+    })
+  })
+
+  it('非方向键 / keyUp / 输入法组合中都不命中', () => {
+    expect(matchSplitHotkey(input({ key: 't', code: 'KeyT' }))).toBe(null)
+    expect(matchSplitHotkey(input({ ...arrow('left'), type: 'keyUp' }))).toBe(null)
+    expect(matchSplitHotkey(input({ ...arrow('left'), isComposing: true }))).toBe(null)
+  })
+
+  it('与 matchTabHotkey 不冲突(Ctrl+Shift+T 仍是恢复标签)', () => {
+    expect(matchSplitHotkey(input({ key: 't', code: 'KeyT' }))).toBe(null)
+    expect(matchTabHotkey(input({ key: 't', code: 'KeyT' }))).toEqual({ action: 'restore' })
   })
 })

@@ -1,7 +1,6 @@
 /** 共享类型:main / preload / renderer 三端通用 */
 
-import type { TabGroup } from './groups'
-import type { SplitPreset } from './split'
+import type { LayoutPreset, PaneBox, Rect } from './split'
 
 export interface TabInfo {
   id: number
@@ -22,13 +21,20 @@ export interface TabInfo {
 
 /**
  * 标签组快照(标签栏 + 分屏面板的渲染数据)。组本身的语义见 `@shared/groups`:
- * **标签栏里的每一项就是一个组**,普通组 1 个标签、分屏组 2 个。
+ * **标签栏里的每一项就是一个组**,组里是一棵可任意嵌套的分屏布局树。
+ *
+ * 不下发布局树本身 —— 渲染层只需要「窗格顺序 + 主进程算好的几何」。
  */
-export interface TabGroupInfo extends TabGroup {
-  /** 该组分屏时实际生效的左窗格宽度;单标签组 / 窗口太窄时为 null */
-  leftWidth: number | null
-  /** 两窗格之间的间隔宽度(px);同上 */
-  gap: number | null
+export interface TabGroupInfo {
+  id: number
+  /** 组内窗格标签 id(阅读顺序 = 树先序) */
+  tabIds: number[]
+  /** 聚焦的窗格标签 id */
+  focus: number
+  /** 活动组的窗格几何(窗口内容坐标,只含可见叶子);非活动组为 `[]` */
+  panes: PaneBox[]
+  /** 活动组的分隔条带(同上);非活动组为 `[]` */
+  dividers: Rect[]
 }
 
 export type BookmarkNode =
@@ -87,16 +93,21 @@ export interface CloseConfirmPayload {
  * 分屏面板浮层的 payload(由 chrome 侧组装;面板只读它、回传事件)。
  * `rect` 与 `SuggestPayload.rect` 同形 —— `OverlayManager.bandTopOf()` 就是靠它把条带贴到按钮底下。
  */
+export interface SplitPaneInfo {
+  tabId: number
+  title: string
+  url: string
+  crashed: boolean
+}
+
 export interface SplitMenuPayload {
   rect: { x: number; y: number; width: number; height: number }
-  /** 全部标签(面板用它的标题/头像;结构看 `groups`) */
-  tabs: TabInfo[]
-  /** 全部标签组(顺序 = 标签栏顺序) */
-  groups: TabGroupInfo[]
-  /** 当前活动组 id(= 含活动标签的那个组) */
-  activeGroupId: number | null
-  /** 设置页定义的分屏宽度预设 */
-  presets: SplitPreset[]
+  /** 当前活动组的窗格(阅读顺序) */
+  panes: SplitPaneInfo[]
+  /** 聚焦的窗格;没有窗格时为 null */
+  focusedTabId: number | null
+  /** 已保存的布局(只存结构;套用时在新标签组里打开) */
+  layouts: LayoutPreset[]
 }
 
 /** 核心内容 id 的类型化 payload;插件浮层 payload 由插件自定义(unknown) */
@@ -162,8 +173,6 @@ export interface Settings {
   corsBypassEnabled: boolean
   /** CORS 放行白名单:域名 / IP / host:端口 / *.子域,匹配规则见 @shared/cors */
   corsWhitelist: string[]
-  /** 分屏宽度预设(设置页「常规」里增删改;几何计算见 @shared/split) */
-  splitPresets: SplitPreset[]
 }
 
 export interface FlatBookmark {

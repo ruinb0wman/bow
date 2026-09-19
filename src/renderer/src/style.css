@@ -278,7 +278,7 @@ select:focus {
 }
 
 /* ---------- 标签组(分屏) ---------- */
-/* 分屏组的一项里塞两个标题,需要比普通标签宽一些 */
+/* 多窗格组:聚焦窗格的名字 + 其余窗格的图标,所以要比普通标签宽一些 */
 .tab.group-split {
   min-width: 160px;
   max-width: 300px;
@@ -291,43 +291,39 @@ select:focus {
   color: var(--fg-dim);
 }
 
-.tab-half {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 4px;
+/* 非聚焦窗格:只留一个字母头像(点击切过去) */
+.tab-pane-icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
   border-radius: 4px;
+  background: var(--bg3);
   color: var(--fg-dim);
+  font-size: 10px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
 }
 
-.tab-half:hover {
-  background: var(--bg3);
-}
-
-/* 聚焦的那半:地址栏/前进后退跟着它 */
-.tab-half.focused {
-  background: var(--bg3);
+.tab-pane-icon:hover {
+  background: color-mix(in srgb, var(--accent) 32%, var(--bg3));
   color: var(--fg);
 }
 
-.tab-half .tab-letter {
-  width: 14px;
-  height: 14px;
-  font-size: 9px;
+.tab-pane-icon svg {
+  display: block;
+  flex: none;
 }
 
-/* 两窗格之间的空隙(chrome 页面在合成底层,这里画的就是那条分隔带) */
+/* 分隔条:每个空隙一条(横竖都有),几何完全来自主进程 */
 .split-divider {
   position: fixed;
-  bottom: 0;
   z-index: 0;
   pointer-events: none;
   background: var(--bg3);
-  box-shadow:
-    inset 1px 0 0 var(--border),
-    inset -1px 0 0 var(--border);
+  box-shadow: inset 0 0 0 1px var(--border);
 }
 
 .addressbar {

@@ -2,7 +2,7 @@
  * JSON 持久化(userData 下,原子写入)与核心设置存储。
  *
  * 书签 / 历史 / CORS 等数据已交由对应插件通过插件内核的 storage() 自行管理,
- * 这里只保留通用的 JsonStore 与核心设置(搜索引擎 / 主页)。
+ * 这里保留通用的 JsonStore、核心设置(搜索引擎 / 主页)与保存的分屏布局。
  */
 
 import { app } from 'electron'
@@ -10,6 +10,7 @@ import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Settings } from '@shared/types'
 import { DEFAULT_SETTINGS } from '@shared/url'
+import type { LayoutPreset } from '@shared/split'
 import { log, logError } from './logger'
 
 export class JsonStore<T> {
@@ -77,14 +78,23 @@ export function createStore<T>(filename: string, defaults: T, opts: { compact?: 
 }
 
 let settingsStore: JsonStore<Settings> | null = null
+/** 保存的分屏布局(只存结构;数组型 defaults → 整体替换语义) */
+let layoutsStore: JsonStore<LayoutPreset[]> | null = null
 
 export function initStores(): void {
-  if (settingsStore) return
-  settingsStore = new JsonStore<Settings>('settings.json', DEFAULT_SETTINGS)
+  if (settingsStore && layoutsStore) return
+  settingsStore = settingsStore ?? new JsonStore<Settings>('settings.json', DEFAULT_SETTINGS)
+  layoutsStore = layoutsStore ?? new JsonStore<LayoutPreset[]>('split-layouts.json', [])
   log('stores 初始化完成')
 }
 
 export function getSettingsStore(): JsonStore<Settings> {
   if (!settingsStore) initStores()
   return settingsStore!
+}
+
+/** 保存的分屏布局存储;读取方一律再过一遍 `normalizeLayoutPresets()` */
+export function getLayoutsStore(): JsonStore<LayoutPreset[]> {
+  if (!layoutsStore) initStores()
+  return layoutsStore!
 }

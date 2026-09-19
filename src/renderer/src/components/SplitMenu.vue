@@ -2,18 +2,20 @@
 /**
  * 分屏面板(核心 `below-chrome` 浮层,由工具栏「分屏」按钮触发)。
  *
- * 语义是**标签组**:当前这一项(组)里已经有几个标签;「加入右侧」会把候选标签拼进本组(组已满则
- * 把原来的非聚焦成员挤出去自成一组);「取消分屏」把组拆回两个单标签组(两个标签都保留)。
+ * 语义是**标签组**:当前组是一棵可任意嵌套的分屏树。面板做三件事:
+ * - 列出当前组的窗格(点一行 = 聚焦那个窗格);
+ * - 保存当前布局(只存结构:嵌套方向 + 比例);
+ * - 套用已保存的布局(**在当前组后面新开一个标签组**)/ 删除布局;以及「取消分屏」。
  *
  * 数据全部来自 payload(chrome 侧组装),本组件不发 IPC,只回传 overlay-event:
- * add / add-new / apply / ungroup / cancel。
+ * focus / save / apply / delete / ungroup / cancel。
  */
 import { computed } from 'vue'
-import type { SplitMenuPayload, TabInfo } from '@shared/types'
-import type { SplitPreset } from '@shared/split'
-import { matchSplitPreset, splitValueLabel } from '@shared/split'
+import type { SplitMenuPayload } from '@shared/types'
+import type { LayoutPreset } from '@shared/split'
+import { shapePaneCount, shapeSummary } from '@shared/split'
 import { faviconLetter } from '../lib/avatar'
-import { Columns2, Plus, X } from 'lucide-vue-next'
+import { Columns2, LayoutPanelTop, Plus, Trash2, X } from 'lucide-vue-next'
 
 const props = defineProps<{ payload: SplitMenuPayload; bandTop: number }>()
 const emit = defineEmits<{ 'overlay-event': [event: string, args?: unknown] }>()
@@ -26,53 +28,25 @@ const box = computed(() => {
   return { top: `${top}px`, right: `${right}px` }
 })
 
-const group = computed(() => props.payload.groups.find((g) => g.id === props.payload.activeGroupId) ?? null)
+/** 单窗格组没有结构可存,按钮直接禁用(主进程也会忽略) */
+const canSave = computed(() => props.payload.panes.length > 1)
 
-function titleOf(id: number): string {
-  const tab = props.payload.tabs.find((t) => t.id === id)
-  if (!tab) return `标签 ${id}`
-  return tab.crashed ? '页面崩溃' : tab.title || tab.url
+function layoutDetail(l: LayoutPreset): string {
+  const summary = shapeSummary(l.shape)
+  return summary ? `${shapePaneCount(l.shape)} 窗格 · ${summary}` : `${shapePaneCount(l.shape)} 窗格`
 }
 
-const members = computed<TabInfo[]>(() => {
-  const g = group.value
-  if (!g) return []
-  return g.tabIds.map((id) => props.payload.tabs.find((t) => t.id === id)).filter((t): t is TabInfo => !!t)
-})
-
-const focusedId = computed(() => {
-  const g = group.value
-  return g ? g.tabIds[g.focus] ?? g.tabIds[0] : null
-})
-
-/** 候选 = 所有**不在本组**里的标签(包括其它分屏组里的单个标签;选中就从原组拿走) */
-const candidates = computed(() => {
-  const inGroup = new Set(group.value?.tabIds ?? [])
-  return props.payload.tabs.filter((t) => !inGroup.has(t.id))
-})
-
-/** 当前高亮的预设:优先用组上记的 presetId,否则按「值+单位」反查 */
-const activePresetId = computed(() => {
-  const g = group.value
-  if (!g) return null
-  return g.presetId ?? matchSplitPreset(props.payload.presets, g.level)?.id ?? null
-})
-
-/** 预设小示意图里左侧色块的宽度(像素档按当前窗口宽度折算) */
-function miniLeft(p: SplitPreset): string {
-  const pct =
-    p.unit === 'percent' ? p.value : Math.round((p.value / Math.max(1, window.innerWidth)) * 100)
-  return `${Math.min(88, Math.max(12, pct))}%`
+function focus(tabId: number): void {
+  emit('overlay-event', 'focus', tabId)
 }
-
-function add(id: number): void {
-  emit('overlay-event', 'add', id)
+function save(): void {
+  emit('overlay-event', 'save')
 }
-function addNew(): void {
-  emit('overlay-event', 'add-new')
-}
-function applyPreset(id: string): void {
+function apply(id: string): void {
   emit('overlay-event', 'apply', id)
+}
+function remove(id: string): void {
+  emit('overlay-event', 'delete', id)
 }
 function ungroup(): void {
   emit('overlay-event', 'ungroup')
@@ -90,66 +64,57 @@ function cancel(): void {
       <div class="sm-head">
         <Columns2 :size="14" />
         <span class="sm-title">分屏</span>
-        <button v-if="members.length > 1" class="sm-quiet" @click="ungroup">取消分屏</button>
+        <button v-if="payload.panes.length > 1" class="sm-quiet" @click="ungroup">取消分屏</button>
         <button class="sm-icon" title="关闭" @click="cancel"><X :size="13" /></button>
       </div>
 
-      <div v-if="members.length > 1" class="sm-pair">
-        <div
-          v-for="(t, i) in members"
-          :key="t.id"
-          class="sm-pane"
-          :class="{ focused: t.id === focusedId }"
-        >
-          <span class="sm-pane-tag">{{ i === 0 ? '左' : '右' }}</span>{{ titleOf(t.id) }}
-        </div>
-      </div>
-      <div v-else class="sm-solo">
-        当前组只有一个标签 —— 从下面挑一个拼到右侧,就是一个分屏组
-      </div>
-
-      <template v-if="members.length > 1">
-        <div class="sm-section">宽度预设</div>
-        <div class="sm-presets">
-          <button
-            v-for="p in payload.presets"
-            :key="p.id"
-            class="sm-preset"
-            :class="{ on: p.id === activePresetId }"
-            :title="`${p.label} · ${splitValueLabel(p)}`"
-            @mousedown.prevent="applyPreset(p.id)"
-          >
-            <span class="sm-mini"><i :style="{ width: miniLeft(p) }"></i></span>
-            <span class="sm-preset-text">{{ p.label }}</span>
-            <span class="sm-preset-sub">{{ splitValueLabel(p) }}</span>
-          </button>
-          <div v-if="payload.presets.length === 0" class="sm-empty">
-            还没有预设 —— 去「设置 → 常规 → 分屏预设」里添加
-          </div>
-        </div>
-      </template>
-
-      <div class="sm-section">{{ members.length > 1 ? '更换右侧标签' : '在右侧打开' }}</div>
-      <div class="sm-tabs">
+      <div class="sm-section">当前布局</div>
+      <div class="sm-panes">
         <button
-          v-for="t in candidates"
-          :key="t.id"
-          class="sm-tab"
-          :title="t.url"
-          @mousedown.prevent="add(t.id)"
+          v-for="(p, i) in payload.panes"
+          :key="p.tabId"
+          class="sm-pane"
+          :class="{ focused: p.tabId === payload.focusedTabId }"
+          :title="p.url"
+          @mousedown.prevent="focus(p.tabId)"
         >
-          <span class="sm-letter">{{ faviconLetter(t.title) }}</span>
-          <span class="sm-tab-title">{{ t.title || t.url }}</span>
+          <span class="sm-pane-idx">{{ i + 1 }}</span>
+          <span class="sm-letter">{{ faviconLetter(p.title) }}</span>
+          <span class="sm-pane-title">{{ p.crashed ? '页面崩溃' : p.title || p.url }}</span>
         </button>
-        <div v-if="candidates.length === 0" class="sm-empty">没有其它标签了</div>
+        <div v-if="payload.panes.length === 0" class="sm-empty">当前没有窗格</div>
+      </div>
+      <div class="sm-hint">
+        `Ctrl+Shift+方向键` 在当前窗格上分屏(新窗格开空白标签并聚焦),`Alt+Shift+方向键` 调整当前窗格大小。
       </div>
 
-      <button class="sm-new" @mousedown.prevent="addNew">
-        <Plus :size="13" /> 新建空白标签并在右侧分屏
+      <button class="sm-new" :disabled="!canSave" @mousedown.prevent="save">
+        <Plus :size="13" /> 保存当前布局
       </button>
+      <div v-if="!canSave" class="sm-hint">先分屏(≥2 个窗格)才有结构可保存</div>
+
+      <div class="sm-section">已保存的布局</div>
+      <div class="sm-layouts">
+        <div v-for="l in payload.layouts" :key="l.id" class="sm-layout">
+          <button
+            class="sm-layout-open"
+            :title="`在新标签组里打开:${layoutDetail(l)}`"
+            @mousedown.prevent="apply(l.id)"
+          >
+            <LayoutPanelTop :size="13" />
+            <span class="sm-layout-name">{{ l.name }}</span>
+            <span class="sm-layout-sub">{{ layoutDetail(l) }}</span>
+          </button>
+          <button class="sm-icon" title="删除这个布局" @mousedown.prevent="remove(l.id)">
+            <Trash2 :size="12" />
+          </button>
+        </div>
+        <div v-if="payload.layouts.length === 0" class="sm-empty">还没有保存的布局</div>
+      </div>
+
       <div class="sm-foot">
-        标签栏里的每一项就是一个标签组:分屏的两个标签共用一项,`Ctrl+数字` 按组切,`Ctrl+W`/×
-        只关聚焦的那一半。
+        套用布局会在当前组后面**新开一个标签组**(N 个窗格 = N 个新标签),现有分屏不受影响。
+        标签栏里的一项就是一个组,多窗格组只显示聚焦窗格的名字。
       </div>
     </div>
   </div>
@@ -213,49 +178,6 @@ function cancel(): void {
   color: var(--fg);
 }
 
-.sm-pair {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
-  color: var(--fg-dim);
-  font-size: 12px;
-}
-
-.sm-pane {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.sm-pane.focused {
-  color: var(--fg);
-}
-
-.sm-solo {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
-  color: var(--fg-dim);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.sm-pane-tag {
-  flex: none;
-  width: 16px;
-  height: 16px;
-  border-radius: 4px;
-  background: var(--bg3);
-  color: var(--accent);
-  font-size: 10px;
-  line-height: 16px;
-  text-align: center;
-}
-
 .sm-section {
   padding: 8px 10px 4px;
   color: var(--fg-dim);
@@ -263,47 +185,57 @@ function cancel(): void {
   letter-spacing: 0.06em;
 }
 
-.sm-presets {
+.sm-panes {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 0 6px 4px;
+  padding: 0 6px;
+  max-height: 200px;
+  overflow-y: auto;
 }
 
-.sm-preset {
+.sm-pane {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   padding: 4px 6px;
   border-radius: var(--radius);
   text-align: left;
+  color: var(--fg-dim);
 }
 
-.sm-preset:hover {
+.sm-pane:hover {
   background: var(--bg3);
 }
 
-.sm-preset.on {
-  background: color-mix(in srgb, var(--accent) 22%, transparent);
+/* 聚焦的窗格:地址栏 / 前进后退 / Ctrl+W 都朝着它 */
+.sm-pane.focused {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--fg);
 }
 
-.sm-mini {
+.sm-pane-idx {
   flex: none;
-  width: 34px;
-  height: 18px;
-  display: flex;
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  overflow: hidden;
-  background: var(--bg);
+  width: 14px;
+  color: var(--fg-dim);
+  font-size: 10px;
+  text-align: right;
 }
 
-.sm-mini i {
-  display: block;
-  background: color-mix(in srgb, var(--accent) 65%, transparent);
+.sm-letter {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: var(--bg3);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
 }
 
-.sm-preset-text {
+.sm-pane-title {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -311,53 +243,82 @@ function cancel(): void {
   text-overflow: ellipsis;
 }
 
-.sm-preset-sub {
-  flex: none;
+.sm-hint {
+  padding: 4px 10px 2px;
   color: var(--fg-dim);
   font-size: 11px;
+  line-height: 1.5;
 }
 
-.sm-tabs {
+.sm-new {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 10px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+.sm-new:hover:not(:disabled) {
+  background: var(--bg3);
+  color: var(--fg);
+}
+
+.sm-new:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.sm-layouts {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 0 6px;
-  overflow-y: auto;
+  padding: 0 6px 4px;
   max-height: 220px;
+  overflow-y: auto;
 }
 
-.sm-tab {
+.sm-layout {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 2px;
+}
+
+.sm-layout-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 5px 6px;
   border-radius: var(--radius);
   text-align: left;
 }
 
-.sm-tab:hover {
+.sm-layout-open:hover {
   background: var(--bg3);
 }
 
-.sm-letter {
+.sm-layout-name {
   flex: none;
-  width: 18px;
-  height: 18px;
-  border-radius: 4px;
-  background: var(--bg3);
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 18px;
-  text-align: center;
+  max-width: 110px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
-.sm-tab-title {
+.sm-layout-sub {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+  color: var(--fg-dim);
+  font-size: 11px;
+  text-align: right;
 }
 
 .sm-empty {
@@ -366,27 +327,11 @@ function cancel(): void {
   font-size: 12px;
 }
 
-.sm-new {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 8px 10px;
-  padding: 5px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--fg-dim);
-  font-size: 12px;
-}
-
-.sm-new:hover {
-  background: var(--bg3);
-  color: var(--fg);
-}
-
 .sm-foot {
   padding: 8px 10px;
   border-top: 1px solid var(--border);
   color: var(--fg-dim);
   font-size: 11px;
   line-height: 1.5;
-}</style>
+}
+</style>

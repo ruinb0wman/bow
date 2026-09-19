@@ -3,12 +3,12 @@
 import { BrowserWindow, clipboard, ipcMain } from 'electron'
 import { defaultNavInputDeps, resolveNavigationWithFiles } from './navInput'
 import type { OverlayContent, OverlayEvent, Settings, TabInfo } from '@shared/types'
-import { findSplitPreset, normalizeSplitPresets, splitLevelOf } from '@shared/split'
-import type { SplitPreset } from '@shared/split'
+import { nextLayoutName, nextLayoutPresetId, normalizeLayoutPresets, paneCount, shapeOf } from '@shared/split'
+import type { LayoutPreset, PaneDir } from '@shared/split'
 import type { TabManager } from './tabManager'
 import type { OverlayManager } from './overlay'
 import type { PluginKernel } from './plugins/kernel'
-import { getSettingsStore } from './stores'
+import { getLayoutsStore, getSettingsStore } from './stores'
 import { CLOSE_CONFIRM_OVERLAY_ID, confirmWindowClose } from './closeConfirm'
 import { log } from './logger'
 
@@ -65,25 +65,60 @@ export function registerIpc(
     return true
   })
 
-  // ---------- 标签组(标签栏一项 = 一个组;分屏组两个标签) ----------
-  // 宽度预设存在 settings.json(设置页「常规」里增删改),由这里统一解析成档位再交给 TabManager。
-  const splitPresets = (): SplitPreset[] => normalizeSplitPresets(getSettingsStore().get().splitPresets)
+  // ---------- 标签组(标签栏一项 = 一个组;组里是嵌套分屏树) ----------
+  // 分屏 / 调整大小的**键盘入口在主进程**(tabShortcuts.ts);这两条 IPC 同时是渲染层兜底与
+  // E2E 的入口(CDP 注入的按键验不了主进程 before-input-event)。
+  const PANE_DIRS: readonly string[] = ['left', 'right', 'up', 'down']
+  const isPaneDir = (v: unknown): v is PaneDir => typeof v === 'string' && PANE_DIRS.includes(v)
 
   ipcMain.handle('groups:get', () => tabs.listGroups())
   ipcMain.handle('groups:activate', (_e, groupId?: number) => {
     if (typeof groupId === 'number') tabs.activateGroup(groupId)
     return tabs.listGroups()
   })
-  // 把某个标签拼进当前组(省略 tabId = 新建一个空白标签再拼进来)
-  ipcMain.handle('groups:add-tab', (_e, tabId?: number) =>
-    tabs.addTabToActiveGroup(typeof tabId === 'number' ? tabId : undefined)
-  )
-  ipcMain.handle('groups:ungroup', () => tabs.ungroupActive())
-  ipcMain.handle('groups:set-preset', (_e, presetId?: string) => {
-    // 预设可能刚被删掉:找不到就忽略,不能落回第一个(那会让用户以为点错了档位)
-    const hit = findSplitPreset(splitPresets(), typeof presetId === 'string' ? presetId : null)
-    if (hit) tabs.setActiveGroupLevel(splitLevelOf(hit), hit.id)
+  ipcMain.handle('groups:split', (_e, dir?: unknown) => {
+    if (isPaneDir(dir)) tabs.splitFocused(dir)
     return tabs.listGroups()
+  })
+  ipcMain.handle('groups:resize', (_e, dir?: unknown) => {
+    if (isPaneDir(dir)) tabs.resizeFocused(dir)
+    return tabs.listGroups()
+  })
+  ipcMain.handle('groups:ungroup', () => tabs.ungroupActive())
+
+  // ---------- 保存的分屏布局(split-layouts.json;只存结构,套用时开新标签组) ----------
+  const listLayouts = (): LayoutPreset[] => normalizeLayoutPresets(getLayoutsStore().get())
+
+  ipcMain.handle('layouts:list', () => listLayouts())
+  ipcMain.handle('layouts:save', (_e, name?: unknown) => {
+    const tree = tabs.activeGroupTree()
+    const existing = listLayouts()
+    // 单窗格组没有结构可存:不打扰、也不产生垃圾条目
+    if (!tree || paneCount(tree) < 2) return existing
+    const cleaned = typeof name === 'string' ? name.trim().slice(0, 24) : ''
+    const preset: LayoutPreset = {
+      id: nextLayoutPresetId(existing.map((p) => p.id)),
+      name: cleaned || nextLayoutName(existing),
+      shape: shapeOf(tree)
+    }
+    const next = normalizeLayoutPresets([...existing, preset])
+    getLayoutsStore().setRaw(next)
+    log('保存分屏布局', preset.id, preset.name)
+    return next
+  })
+  ipcMain.handle('layouts:apply', (_e, id?: unknown) => {
+    const hit = typeof id === 'string' ? listLayouts().find((p) => p.id === id) ?? null : null
+    if (hit) tabs.applyLayout(hit.shape)
+    return tabs.listGroups()
+  })
+  ipcMain.handle('layouts:delete', (_e, id?: unknown) => {
+    const existing = listLayouts()
+    if (typeof id !== 'string') return existing
+    const next = existing.filter((p) => p.id !== id)
+    if (next.length === existing.length) return existing
+    getLayoutsStore().setRaw(next)
+    log('删除分屏布局', id)
+    return next
   })
 
   ipcMain.handle('nav:go', (_e, input: string) => {

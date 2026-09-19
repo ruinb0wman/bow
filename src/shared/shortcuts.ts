@@ -1,5 +1,7 @@
 /** 快捷键纯逻辑(三端安全,无 Electron/DOM 依赖):用于主进程识别 DevTools 快捷键 */
 
+import type { PaneDir } from './split'
+
 /** Electron `Input`(webContents before-input-event)与本接口结构化兼容 */
 export interface KeyInputLike {
   type: string
@@ -69,6 +71,42 @@ export function matchTabHotkey(input: KeyInputLike): TabHotkey | null {
  */
 export function releasesToTerminal(hotkey: TabHotkey): boolean {
   return hotkey.action === 'close' || hotkey.action === 'focus-address'
+}
+
+/** 分屏快捷键:`split` = Ctrl/Cmd+Shift+方向(在聚焦窗格上分屏);`resize` = Alt+Shift+方向(向该方向扩张) */
+export interface SplitHotkey {
+  kind: 'split' | 'resize'
+  dir: PaneDir
+}
+
+const ARROW_DIRS: Record<string, PaneDir> = {
+  ArrowLeft: 'left',
+  ArrowRight: 'right',
+  ArrowUp: 'up',
+  ArrowDown: 'down'
+}
+
+/**
+ * 分屏快捷键识别:`Ctrl/Cmd+Shift+方向`(分屏)与 `Alt+Shift+方向`(调整大小)。
+ *
+ * 与 `matchTabHotkey` 的两处**刻意不同**:
+ * - split **忽略自动重复**(长按方向键不会一口气开出一屏窗格);
+ * - resize **允许自动重复**(按住不放连续调整大小)。
+ *
+ * 调用方还必须保证只在「聚焦的 webContents 是普通网页标签」时接管 —— 地址栏/设置页/终端/DevTools
+ * 前端里的 `Ctrl+Shift+方向`(按词选择、xterm 选择扩展)要原样留给它们。
+ */
+export function matchSplitHotkey(input: KeyInputLike): SplitHotkey | null {
+  if (input.type !== 'keyDown') return null
+  if (input.isComposing) return null
+  const dir = ARROW_DIRS[input.code ?? ''] ?? ARROW_DIRS[input.key]
+  if (!dir) return null
+  const ctrl = input.control || input.meta
+  if (ctrl && input.shift && !input.alt) {
+    return input.isAutoRepeat ? null : { kind: 'split', dir }
+  }
+  if (input.alt && input.shift && !ctrl) return { kind: 'resize', dir }
+  return null
 }
 
 /**

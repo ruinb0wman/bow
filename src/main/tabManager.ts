@@ -5,18 +5,18 @@ import type { WebContents } from 'electron'
 import { EventEmitter } from 'node:events'
 import { join } from 'node:path'
 import type { TabGroupInfo, TabInfo } from '@shared/types'
-import { DEFAULT_SPLIT_LEVEL, computeSplitBounds } from '@shared/split'
-import type { SplitLevel } from '@shared/split'
+import { MAX_GROUP_PANES, MIN_PANE, SPLIT_GAP, computeLayout, hasPane, instantiateShape, paneCount, resizePane, shapePaneCount } from '@shared/split'
+import type { LayoutGeometry, LayoutNode, LayoutShape, PaneDir, Rect } from '@shared/split'
 import {
-  addTabToGroup,
   findGroupOfTab,
   focusTab,
   focusedTabId,
+  groupTabIds,
   insertIndexAfterGroup,
   neighborGroupIdAfterRemoval,
   newTabGroup,
   removeTabFromGroups,
-  setGroupLevel,
+  splitGroup,
   ungroup
 } from '@shared/groups'
 import type { TabGroup } from '@shared/groups'
@@ -81,9 +81,9 @@ export class TabManager extends EventEmitter {
   /** 最近处于激活状态的「普通网页标签」(内部页面标签不计入),供插件页面 API 与设置页跳转使用 */
   private lastBrowsingId: number | null = null
   /**
-   * 标签组列表;顺序 = 标签栏顺序。**标签栏里的每一项就是一个组** —— 普通组 1 个标签,
-   * 分屏组 2 个。活动组由 `activeId` 推出(不另存 `activeGroupId`,省得两边不同步)。
-   * 状态只在内存,重启不恢复;记账规则见 `@shared/groups`。
+   * 标签组列表;顺序 = 标签栏顺序。**标签栏里的每一项就是一个组** —— 普通组 1 个窗格,
+   * 分屏组 2..`MAX_GROUP_PANES` 个。活动组由 `activeId` 推出(不另存 `activeGroupId`,省得两边不同步)。
+   * 状态只在内存,重启不恢复;记账规则见 `@shared/groups`,树操作见 `@shared/split`。
    */
   private groups: TabGroup[] = []
   private nextGroupId = 1
@@ -197,6 +197,24 @@ export class TabManager extends EventEmitter {
   }
 
   create(url?: string, activate = true): TabInfo {
+    const { id, info } = this.spawn(url)
+    // 新标签 = 新组(插在活动组后面)—— **绝不拆已有的分屏组**
+    this.insertNewGroup(id)
+    if (activate) this.activate(id, true)
+    this.publishGroups()
+    this.emit('tabs-changed')
+    this.layout()
+    this.emit('tab-created', this.decorate({ ...info, active: activate }))
+    log('创建标签', id, url ?? '(blank)')
+    return this.decorate({ ...info, active: activate })
+  }
+
+  /**
+   * 建标签视图并接线(**不碰标签组、不 activate、不发标签事件**):
+   * `create()` / `splitFocused()` / `applyLayout()` 共用。
+   * 返回的 `info` 是活的 TabInfo(标题/URL 变化会就地更新),对外给快照前先 `decorate()`。
+   */
+  private spawn(url?: string): { id: number; info: TabInfo } {
     const internalId = url ? parseInternalUrl(url) : null
     // create() 只造 page / internal;第三种(inspector)有自己的入口,见 createInspectorTab()
     const kind: TabKind = internalId ? 'internal' : 'page'
@@ -227,8 +245,6 @@ export class TabManager extends EventEmitter {
       ...(internalId ? { internal: true } : {})
     }
     this.views.set(id, { view, info, kind, internalId })
-    // 新标签 = 新组(插在活动组后面)—— **绝不拆已有的分屏组**
-    this.insertNewGroup(id)
 
     wc.on('page-title-updated', (_e, title) => {
       info.title = title || (internalId ? INTERNAL_PAGES[internalId].title : '新标签页')
@@ -256,15 +272,9 @@ export class TabManager extends EventEmitter {
     }
 
     this.window.contentView.addChildView(view)
-    if (activate) this.activate(id, true)
     if (kind === 'internal') loadRendererEntry(wc, INTERNAL_PAGES[internalId!].entry)
     else if (kind === 'page' && url) this.navigate(id, url)
-    this.publishGroups()
-    this.emit('tabs-changed')
-    this.layout()
-    this.emit('tab-created', this.decorate({ ...info, active: activate }))
-    log('创建标签', id, url ?? '(blank)')
-    return this.decorate({ ...info, active: activate })
+    return { id, info }
   }
 
   /**
@@ -354,16 +364,16 @@ export class TabManager extends EventEmitter {
       this.publish(id)
       logError(`${label}崩溃`, id, details.reason)
     })
-    // 分屏:点到/敲到活动组的另一半就切过去(地址栏、前进后退、Ctrl+L 都跟随聚焦的那个窗格)。
+    // 分屏:点到/敲到活动组的另一个窗格就切过去(地址栏、前进后退、Ctrl+L 都跟随聚焦的那个窗格)。
     // 两个触发源:`focus` 是常规路径;`input-event` 兜底 —— 鼠标点击/滚轮/键盘都会先经过它,
-    // 即使某个平台/版本不发 focus 也不会出现「看着右半却在操作左半」。
-    // 非活动组的视图是隐藏的,收不到输入,所以只需判「是不是活动组的成员」。
+    // 即使某个平台/版本不发 focus 也不会出现「看着这个窗格却在操作那个」。
+    // 非活动组的视图是隐藏的,收不到输入,所以只需判「是不是活动组的窗格」。
     // `activate()` 的 `activeId === id` 早退保证不会递归。
     const activatePaneIfGroupMember = (): void => {
       const group = this.activeGroup()
-      if (!group || group.tabIds.length < 2) return
+      if (!group || paneCount(group.tree) < 2) return
       if (this.activeId === id) return
-      if (!group.tabIds.includes(id)) return
+      if (!hasPane(group.tree, id)) return
       this.activate(id)
     }
     wc.on('focus', activatePaneIfGroupMember)
@@ -570,22 +580,32 @@ export class TabManager extends EventEmitter {
 
   // ---------- 标签组(标签栏的一项 = 一个组;分屏组两个标签) ----------
 
-  /** 标签组快照(渲染层标签栏与分屏面板的唯一数据源) */
+  /**
+   * 标签组快照(渲染层标签栏与分屏面板的唯一数据源)。
+   * 几何只给**当前显示的那个组**算(其它组根本没显示);每次现算,窗口缩放 / chrome 高度变化后
+   * 渲染层才拿得到新值。
+   */
   listGroups(): TabGroupInfo[] {
-    const width = this.window.isDestroyed() ? 0 : this.window.getContentSize()[0]
     const active = this.activeGroup()
-    return this.groups.map((g) => {
-      // 几何只给当前显示的那个 2 标签组算(其它组根本没显示);每次现算,窗口缩放后渲染层才拿得到新值
-      const geo =
-        g.id === active?.id && g.tabIds.length === 2
-          ? computeSplitBounds({ totalWidth: width, level: g.level })
-          : null
-      return {
-        ...g,
-        tabIds: [...g.tabIds],
-        leftWidth: geo ? geo.leftWidth : null,
-        gap: geo ? geo.gap : null
-      }
+    const geo = active ? this.geometryOf(active) : null
+    const isActive = (g: TabGroup): boolean => active != null && g.id === active.id
+    return this.groups.map((g) => ({
+      id: g.id,
+      tabIds: groupTabIds(g),
+      focus: g.focus,
+      panes: geo && isActive(g) ? geo.panes.map((p) => ({ tabId: p.tabId, rect: { ...p.rect } })) : [],
+      dividers: geo && isActive(g) ? geo.dividers.map((d) => ({ ...d })) : []
+    }))
+  }
+
+  /** 活动组的窗格与分隔条几何(窗口内容坐标:页面区从 chromeHeight 起)。几何只有这一处实现 */
+  private geometryOf(group: TabGroup): LayoutGeometry {
+    const [w, h] = this.window.isDestroyed() ? [0, 0] : this.window.getContentSize()
+    const top = this.chromeHeight
+    return computeLayout(group.tree, { x: 0, y: top, width: w, height: Math.max(0, h - top) }, {
+      gap: SPLIT_GAP,
+      minPane: MIN_PANE,
+      focusedTabId: this.activeId
     })
   }
 
@@ -600,15 +620,15 @@ export class TabManager extends EventEmitter {
 
   /** 新标签 → 新组,插在活动组后面(新标签**绝不**拆已有的组) */
   private insertNewGroup(tabId: number): TabGroup {
-    const group = newTabGroup(this.nextGroupId++, tabId, DEFAULT_SPLIT_LEVEL)
+    const group = newTabGroup(this.nextGroupId++, tabId)
     const at = insertIndexAfterGroup(this.groups, this.activeGroup()?.id ?? null)
     this.groups = [...this.groups.slice(0, at), group, ...this.groups.slice(at)]
     return group
   }
 
   /**
-   * 把一个标签从组列表里摘掉(`close()` 与 `destroyed` 共用)。
-   * - 组还剩成员 → 焦点交给幸存那个(它独占整窗);
+   * 把一个窗格从组里摘掉(`close()` 与 `destroyed` 共用)。
+   * - 组还剩窗格 → 容器塌缩,焦点交给阅读顺序里的下一个(它接着占那块地方);
    * - 组空了 → 整组移除,活动组换到**最近的邻组**;
    * - 被摘掉的标签本来就是活动标签时,`activeId` 会落到新选中的那个上。
    * 反复调用是幂等的(标签不在任何组里就什么都不做)。
@@ -634,41 +654,86 @@ export class TabManager extends EventEmitter {
   }
 
   /**
-   * 分屏面板:「把某个标签拼进当前组」(省略 `tabId` = 新建一个空白标签再拼进来)。
-   * 新标签进右槽并成为聚焦成员(可以立刻在地址栏里给它输网址);
-   * 组已满时原来的非聚焦成员被挤出去自成一组;该标签原来所在的组也会跟着降级。
+   * 在**当前聚焦窗格**上分屏:新标签开一个空白页,按 `dir` 嵌到那个窗格旁边(→ 右、← 左、↑ 上、↓ 下),
+   * 并立即聚焦它(可以接着在地址栏里输网址)。组里窗格数到 `MAX_GROUP_PANES` 就不再响应。
    */
-  addTabToActiveGroup(tabId?: number): TabGroupInfo[] {
+  splitFocused(dir: PaneDir): boolean {
     const active = this.activeGroup()
-    if (!active) return this.listGroups()
-    const memberId = typeof tabId === 'number' ? tabId : this.create('about:blank', false).id
-    if (!this.views.has(memberId) || memberId === this.activeId) return this.listGroups()
-    const res = addTabToGroup(this.groups, active.id, memberId, this.nextGroupId)
-    if (res.evicted != null) this.nextGroupId += 1
-    this.groups = res.groups
-    this.activate(memberId)
+    if (!active) return false
+    if (paneCount(active.tree) >= MAX_GROUP_PANES) {
+      log('分屏已达窗格上限', active.id, MAX_GROUP_PANES)
+      return false
+    }
+    const focusId = focusedTabId(active)
+    if (focusId == null) return false
+    const { id, info } = this.spawn('about:blank')
+    this.groups = splitGroup(this.groups, active.id, focusId, dir, id)
+    // activate 内部会 layout + publishGroups + 发 tabs-changed
+    this.activate(id)
+    this.emit('tab-created', this.decorate({ ...info, active: true }))
+    log('分屏', dir, id)
+    return true
+  }
+
+  /**
+   * 调整聚焦窗格的大小(箭头 = 它要扩张的方向):由内向外找第一个能动的分隔条改 `ratio`。
+   * 到最外层边界就不动(返回 false,也不发事件)。
+   */
+  resizeFocused(dir: PaneDir): boolean {
+    const active = this.activeGroup()
+    if (!active) return false
+    const focusId = focusedTabId(active)
+    if (focusId == null) return false
+    const tree = resizePane(active.tree, focusId, dir)
+    if (tree === active.tree) return false
+    this.groups = this.groups.map((g) => (g.id === active.id ? { ...g, tree } : g))
+    this.layout()
     this.publishGroups()
+    return true
+  }
+
+  /** 活动组的布局树(保存布局用;没有活动组返回 null) */
+  activeGroupTree(): LayoutNode | null {
+    return this.activeGroup()?.tree ?? null
+  }
+
+  /**
+   * 套用一个保存的布局:建 N 个空白标签,按形状摆成一棵新树,**在活动组后面**插一个新的标签栏项
+   * 并切过去(现有分屏不被动)。形状与窗格数对不上时不做任何事。
+   */
+  applyLayout(shape: LayoutShape): TabGroupInfo[] {
+    const count = shapePaneCount(shape)
+    if (count < 2) return this.listGroups()
+    const ids: number[] = []
+    for (let i = 0; i < count; i += 1) ids.push(this.spawn('about:blank').id)
+    const tree = instantiateShape(shape, ids)
+    if (!tree) {
+      logError('套用布局失败:窗格数与形状不一致', count)
+      return this.listGroups()
+    }
+    const group: TabGroup = { id: this.nextGroupId++, tree, focus: ids[0] }
+    const at = insertIndexAfterGroup(this.groups, this.activeGroup()?.id ?? null)
+    this.groups = [...this.groups.slice(0, at), group, ...this.groups.slice(at)]
+    for (const id of ids) {
+      const rec = this.views.get(id)
+      if (rec) this.emit('tab-created', this.decorate({ ...rec.info, active: id === ids[0] }))
+    }
+    this.activate(ids[0])
+    log('套用布局', group.id, count)
     return this.listGroups()
   }
 
   /**
-   * 取消分屏:把当前组拆成两个单标签组(两个标签都保留,左右顺序不变,档位都继承)。
-   * 活动标签不变 ⇒ 它所在的那个新组仍是活动组,于是它独占整窗。
+   * 取消分屏:把当前组的 N 个窗格拆成**相邻的 N 个单标签组**(顺序 = 阅读顺序,标签都不销毁)。
+   * 活动标签不变 ⇒ 它所在的那个新组仍是活动组。
    */
   ungroupActive(): TabGroupInfo[] {
     const active = this.activeGroup()
-    if (!active || active.tabIds.length < 2) return this.listGroups()
-    this.groups = ungroup(this.groups, active.id, this.nextGroupId++)
-    this.layout()
-    this.publishGroups()
-    return this.listGroups()
-  }
-
-  /** 套用宽度预设到当前组(单标签组也记下,下次拼第二个标签时直接用) */
-  setActiveGroupLevel(level: SplitLevel, presetId: string | null): TabGroupInfo[] {
-    const active = this.activeGroup()
     if (!active) return this.listGroups()
-    this.groups = setGroupLevel(this.groups, active.id, level, presetId)
+    const count = paneCount(active.tree)
+    if (count < 2) return this.listGroups()
+    const ids = Array.from({ length: count - 1 }, () => this.nextGroupId++)
+    this.groups = ungroup(this.groups, active.id, ids)
     this.layout()
     this.publishGroups()
     return this.listGroups()
@@ -684,8 +749,8 @@ export class TabManager extends EventEmitter {
   }
 
   /**
-   * 布局:普通组铺满页面区,**活动组是 2 标签组时左/右两窗格各占一半**。
-   * 也是**可见性的唯一来源** —— 只有活动组的标签可见(单标签组只有那一个)。
+   * 布局:可见集合 = **活动组的可见窗格**(树里因为太窄而被退化的分支不显示)。
+   * 也是**可见性的唯一来源** —— 别的组的窗格一律 hide。
    * 旧实现把 `setVisible` 放在 `activate()` 里,导致 `create(url, activate=false)` 的后台标签视图
    * (View 默认可见)盖在当前页上。
    */
@@ -694,36 +759,20 @@ export class TabManager extends EventEmitter {
     // 仍会走到 activateLastVisible() → 这里 —— 对已销毁的窗口取尺寸会抛
     // `Object has been destroyed`(每个标签一条)。见 docs/ARCHITECTURE.md §10。
     if (this.window.isDestroyed()) return
-    const [w, h] = this.window.getContentSize()
-    const top = this.chromeHeight
-    const viewH = Math.max(0, h - top)
     const active = this.activeGroup()
-    const split = active && active.tabIds.length === 2 ? active : null
-    const geo = split ? computeSplitBounds({ totalWidth: w, level: split.level }) : null
-    const leftId = geo && split ? split.tabIds[0] : null
-    const rightId = geo && split ? split.tabIds[1] : null
+    const geo = active ? this.geometryOf(active) : null
+    const boxes = new Map<number, Rect>()
+    for (const pane of geo?.panes ?? []) boxes.set(pane.tabId, pane.rect)
     for (const [id, v] of this.views) {
-      const isLeft = id === leftId
-      const isRight = id === rightId
-      // 窗口太窄放不下两窗格时退化为「聚焦那半铺满」—— 组本身不拆,窗口变宽后自动恢复
-      const visible = isLeft || isRight ? true : id === this.activeId
-      if (visible) {
-        if (isLeft && geo) {
-          v.view.setBounds({ x: 0, y: top, width: geo.leftWidth, height: viewH })
-        } else if (isRight && geo) {
-          v.view.setBounds({
-            x: geo.leftWidth + geo.gap,
-            y: top,
-            width: Math.max(0, geo.totalWidth - geo.leftWidth - geo.gap),
-            height: viewH
-          })
-        } else {
-          v.view.setBounds({ x: 0, y: top, width: w, height: viewH })
-        }
+      const rect = boxes.get(id)
+      if (rect) {
+        v.view.setBounds({ x: rect.x, y: rect.y, width: rect.width, height: rect.height })
+        v.view.setVisible(true)
+      } else {
+        v.view.setVisible(false)
       }
-      v.view.setVisible(visible)
     }
-    // 分屏几何(左窗格宽度 / 窗口缩放)变了 → 渲染层重画分隔条
-    if (split) this.publishGroups()
+    // 分屏几何(比例 / 窗口缩放 / chrome 高度)变了 → 渲染层重画分隔条
+    if (active && paneCount(active.tree) > 1) this.publishGroups()
   }
 }

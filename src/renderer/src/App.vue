@@ -4,6 +4,7 @@ import type { Component } from 'vue'
 import type {
   OverlayEvent,
   SplitMenuPayload,
+  SplitPaneInfo,
   TabGroupInfo,
   TabInfo,
   Suggestion,
@@ -11,8 +12,6 @@ import type {
   SuggestRow
 } from '@shared/types'
 import type { PluginInfo } from '@shared/plugins'
-import type { SplitPreset } from '@shared/split'
-import { normalizeSplitPresets } from '@shared/split'
 import type { PluginSlot } from './plugins/types'
 import { SETTINGS_URL } from '@shared/internalPages'
 import { faviconLetter } from './lib/avatar'
@@ -63,9 +62,16 @@ const activeTab = computed(() => tabs.value.find((t) => t.active) ?? null)
 const currentUrl = computed(() => activeTab.value?.url ?? '')
 const loading = computed(() => !!activeTab.value?.loading)
 
-// ---------- 标签组(标签栏的一项 = 一个组;分屏组两个标签) ----------
+// ---------- 标签组(标签栏的一项 = 一个组;组里是嵌套分屏树) ----------
 const groups = ref<TabGroupInfo[]>([])
 const splitMenuOpen = ref(false)
+/**
+ * 面板的「代」:每次打开/刷新 +1。
+ * `pushSplitMenu()` 要 await 取布局,期间可能被 `closeSplitMenu()` 关掉(典型序列:
+ * `groups-changed` 触发刷新 → 套用布局的 promise 落地把面板关掉 → 刷新的结果又把它打开),
+ * 所以取数回来要先比一代,过期的结果直接丢弃。
+ */
+let splitMenuSeq = 0
 const splitBtn = ref<HTMLElement | null>(null)
 /** chrome 实测高度(既上报主进程,也用来定位分隔条的起点) */
 const chromeHeight = ref(0)
@@ -77,21 +83,31 @@ const activeGroup = computed(
   () => groups.value.find((g) => !!activeTab.value && g.tabIds.includes(activeTab.value.id)) ?? null
 )
 
-/** 活动组的两种结构:单标签铺满,或者两窗格分屏(几何算得出来才算真分屏) */
-const splitGeometry = computed(() => {
-  const g = activeGroup.value
-  if (!g || g.tabIds.length < 2 || g.leftWidth == null) return null
-  return { leftWidth: g.leftWidth, gap: g.gap ?? 4 }
-})
+/** 组内窗格数 >1 才算真分屏 */
+const isSplitGroup = (g: TabGroupInfo): boolean => g.tabIds.length > 1
+
+/** 活动组的分隔条带:几何完全来自主进程(渲染层只画不重算) */
+const activeGroupDividers = computed(() => activeGroup.value?.dividers ?? [])
 
 /** 组内成员标签(按 tabIds 顺序;标签刚被关掉时过滤掉取不到的) */
 function groupTabs(g: TabGroupInfo): TabInfo[] {
   return g.tabIds.map((id) => tabById.value.get(id)).filter((t): t is TabInfo => !!t)
 }
 
-/** 组内聚焦的标签 id —— 地址栏、关闭按钮、中键都朝着它 */
+/** 组内聚焦的标签 —— 地址栏、关闭按钮、中键都朝着它(`focus` 是 tabId,不是下标) */
+function focusedTab(g: TabGroupInfo): TabInfo | undefined {
+  const id = g.tabIds.includes(g.focus) ? g.focus : g.tabIds[0]
+  return tabById.value.get(id)
+}
+
 function focusedTabId(g: TabGroupInfo): number {
-  return g.tabIds[g.focus] ?? g.tabIds[0]
+  return g.tabIds.includes(g.focus) ? g.focus : g.tabIds[0]
+}
+
+/** 非聚焦窗格:标签栏里只显示图标(点击切过去) */
+function otherPanes(g: TabGroupInfo): TabInfo[] {
+  const focus = focusedTabId(g)
+  return groupTabs(g).filter((t) => t.id !== focus)
 }
 
 const isGroupActive = (g: TabGroupInfo): boolean => !!activeTab.value && g.tabIds.includes(activeTab.value.id)
@@ -219,19 +235,25 @@ function splitButtonRect(): SplitMenuPayload['rect'] {
   return { x: r?.x ?? 0, y: r?.y ?? 0, width: r?.width ?? 0, height: r?.height ?? 0 }
 }
 
-/** 组装并显示面板(已打开时重推 = 用最新标签/组/预设刷新) */
+/** 组装并显示面板(已打开时重推 = 用最新窗格/布局刷新) */
 async function pushSplitMenu(): Promise<void> {
-  const [tabList, settings] = await Promise.all([api.listTabs(), api.getSettings()])
+  const seq = ++splitMenuSeq
+  const [layouts, g] = await Promise.all([api.getLayouts(), Promise.resolve(activeGroup.value)])
+  if (seq !== splitMenuSeq) return // 取数期间被关掉 / 又推过一次 → 丢弃这次结果
+  const panes: SplitPaneInfo[] = g
+    ? groupTabs(g).map((t) => ({ tabId: t.id, title: groupTitle(t), url: t.url, crashed: t.crashed }))
+    : []
   const payload: SplitMenuPayload = {
     rect: splitButtonRect(),
-    // IPC 走结构化克隆,不能传 Vue 响应式代理 → 逐个摊平
-    tabs: tabList.map((t) => ({ ...t })),
-    groups: groups.value.map((g) => ({ ...g, tabIds: [...g.tabIds], level: { ...g.level } })),
-    activeGroupId: activeGroup.value?.id ?? null,
-    presets: normalizeSplitPresets(settings.splitPresets)
+    panes,
+    focusedTabId: g ? focusedTabId(g) : null,
+    // IPC 走结构化克隆,不能传 Vue 响应式代理 → 逐个摊平(shape 是纯数据,可整体克隆)
+    layouts: layouts.map((l) => ({ ...l }))
   }
   splitMenuOpen.value = true
   await api.showOverlay({ id: 'split-menu', placement: 'below-chrome', payload })
+  // 下发期间又被关掉:把这次竞态里最后落下的浮层收回去
+  if (seq !== splitMenuSeq) void api.showOverlay(null)
 }
 
 async function toggleSplitMenu(): Promise<void> {
@@ -245,21 +267,27 @@ async function toggleSplitMenu(): Promise<void> {
 function closeSplitMenu(): void {
   if (!splitMenuOpen.value) return
   splitMenuOpen.value = false
+  splitMenuSeq += 1 // 作废正在进行的 pushSplitMenu
   void api.showOverlay(null)
 }
 
 function handleSplitMenuEvent(ev: OverlayEvent): void {
   const arg = ev.args
   switch (ev.event) {
-    case 'add':
-      // 把候选标签拼进当前组(面板不关:马上能接着选宽度预设)
-      if (typeof arg === 'number') void api.groupsAddTab(arg)
+    // 点面板里的窗格行 = 聚焦那个窗格
+    case 'focus':
+      if (typeof arg === 'number') void api.activateTab(arg)
       break
-    case 'add-new':
-      void api.groupsAddTab()
+    // 保存当前组的结构(单窗格组没东西可存,主进程会原样返回)
+    case 'save':
+      void api.saveLayout().then(() => pushSplitMenu())
       break
+    // 套用布局 = 在当前组后面新开一个标签组;面板立刻关掉(它的数据已过期)
     case 'apply':
-      if (typeof arg === 'string') void api.groupsSetPreset(arg)
+      if (typeof arg === 'string') void api.applyLayout(arg).then(() => closeSplitMenu())
+      break
+    case 'delete':
+      if (typeof arg === 'string') void api.deleteLayout(arg).then(() => pushSplitMenu())
       break
     case 'ungroup':
       void api.groupsUngroup().then(() => closeSplitMenu())
@@ -470,41 +498,33 @@ onBeforeUnmount(() => {
           :class="{
             active: isGroupActive(g),
             crashed: groupCrashed(g),
-            'group-split': groupTabs(g).length > 1
+            'group-split': isSplitGroup(g)
           }"
           @click="activateTab(focusedTabId(g))"
           @auxclick="(e) => { if (e.button === 1) closeTab(focusedTabId(g)) }"
         >
-          <Columns2 v-if="groupTabs(g).length > 1" class="tab-split-icon" :size="11" />
-          <!-- 分屏组:两个标签共用一个项,左右两半各显示自己的标题,点哪半聚焦哪半 -->
-          <template v-if="groupTabs(g).length > 1">
-            <span
-              v-for="t in groupTabs(g)"
-              :key="t.id"
-              class="tab-half"
-              :class="{ focused: t.active }"
-              :title="groupTitle(t)"
-              @click.stop="activateTab(t.id)"
-              @auxclick.stop="(e) => { if (e.button === 1) closeTab(t.id) }"
-            >
-              <span class="tab-letter">
-                <TriangleAlert v-if="t.crashed" :size="11" />
-                <template v-else>{{ faviconLetter(t.title) }}</template>
-              </span>
-              <span class="tab-title">{{ groupTitle(t) }}</span>
-            </span>
-          </template>
-          <template v-else>
-            <span class="tab-letter">
-              <TriangleAlert v-if="groupCrashed(g)" :size="13" />
-              <template v-else>{{ faviconLetter(groupTabs(g)[0]?.title ?? '') }}</template>
-            </span>
-            <span class="tab-title">{{ groupTitle(groupTabs(g)[0]) }}</span>
-          </template>
+          <Columns2 v-if="isSplitGroup(g)" class="tab-split-icon" :size="11" />
+          <!-- 多窗格组只有**聚焦窗格**显示标题,其余窗格只留图标(点哪个切哪个) -->
+          <span class="tab-letter">
+            <TriangleAlert v-if="focusedTab(g)?.crashed" :size="12" />
+            <template v-else>{{ faviconLetter(focusedTab(g)?.title ?? '') }}</template>
+          </span>
+          <span class="tab-title">{{ groupTitle(focusedTab(g)) }}</span>
+          <span
+            v-for="t in otherPanes(g)"
+            :key="t.id"
+            class="tab-pane-icon"
+            :title="groupTitle(t)"
+            @click.stop="activateTab(t.id)"
+            @auxclick.stop="(e) => { if (e.button === 1) closeTab(t.id) }"
+          >
+            <TriangleAlert v-if="t.crashed" :size="10" />
+            <template v-else>{{ faviconLetter(t.title) }}</template>
+          </span>
           <span v-if="groupLoading(g)" class="tab-spinner"></span>
           <button
             class="tab-close no-drag"
-            :title="groupTabs(g).length > 1 ? '关闭聚焦的那一半 (Ctrl+W)' : '关闭标签 (Ctrl+W)'"
+            :title="isSplitGroup(g) ? '关闭聚焦的窗格 (Ctrl+W)' : '关闭标签 (Ctrl+W)'"
             @click.stop="closeTab(focusedTabId(g))"
           >
             <X :size="12" />
@@ -559,8 +579,8 @@ onBeforeUnmount(() => {
       <button
         ref="splitBtn"
         class="tool-btn no-drag split-btn"
-        :class="{ on: !!splitGeometry }"
-        :title="splitGeometry ? '分屏中(调整宽度 / 取消分屏)' : '分屏:把另一个标签拼进当前组'"
+        :class="{ on: !!activeGroup && isSplitGroup(activeGroup) }"
+        :title="activeGroup && isSplitGroup(activeGroup) ? '分屏中(保存/套用布局、取消分屏)' : '分屏:把当前标签拆成多个窗格'"
         @click="toggleSplitMenu"
       >
         <Columns2 :size="16" />
@@ -573,14 +593,16 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
-    <!-- 分屏分隔条:画在两窗格之间的空隙上(不可拖,指针事件穿透) -->
+    <!-- 分隔条:一个空隙一条,几何完全来自主进程(`groups:changed` 里的 dividers) -->
     <div
-      v-if="splitGeometry"
+      v-for="(d, i) in activeGroupDividers"
+      :key="i"
       class="split-divider"
       :style="{
-        left: `${splitGeometry.leftWidth}px`,
-        width: `${splitGeometry.gap}px`,
-        top: `${chromeHeight}px`
+        left: `${d.x}px`,
+        top: `${d.y}px`,
+        width: `${d.width}px`,
+        height: `${d.height}px`
       }"
     />
   </div>
