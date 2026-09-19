@@ -39,7 +39,7 @@ src/
     navInput.ts                  地址栏输入的本地文件兜底(不 import electron,可单测)
     devtools.ts                  DevTools 永远 detach + 全局快捷键拦截
     tabShortcuts.ts              标签快捷键(Ctrl+T/W/L/,/数字/Shift+T)全局拦截
-    tabManager.ts                TabManager:每标签一个 WebContentsView + 内部页面标签 + 左右分屏 + 布局
+    tabManager.ts                TabManager:每标签一个 WebContentsView + 内部页面标签 + 标签组/分屏 + 布局
     overlay.ts                   OverlayManager:常驻透明顶层视图,按 placement 布局
     closeConfirm.ts              关闭窗口确认:多标签时拦下 close 事件,改用应用内确认框
     actions.ts                   注入式页面操作原语(snapshot/click/type/scroll/pressKey/screenshot)+ waitForLoad
@@ -79,7 +79,8 @@ src/
     types.ts        跨端类型(TabInfo/Settings/Suggestion/Overlay*/ActionResult…)
     plugins.ts      插件契约类型 + PluginCapability 标签表
     url.ts          地址栏输入解析 + 搜索引擎表 + DEFAULT_SETTINGS
-    split.ts        分屏预设模型 + 档位解析 + 两窗格几何(computeSplitBounds)
+    groups.ts       标签组记账(标签栏一项 = 一个组:加/摘/挤/拆/焦点;纯函数)
+    split.ts        分屏预设模型 + 两窗格几何(computeSplitBounds)
     localFile.ts    本地路径形态判定(isFileUrl / looksLikeLocalPath / expandHome)
     internalPages.ts bow:// 内部页面标识与 parse
     settingsNav.ts  设置页侧栏导航模型
@@ -157,7 +158,7 @@ Electron 的合成顺序:`contentView` 的子视图按加入顺序从底到顶;*
 | 视图 | 创建处 | 说明 |
 | --- | --- | --- |
 | chrome 窗口 webContents | `index.ts` 的 `createWindow()` | `frame:false`;承载 `index.html`(标签栏+工具栏+地址栏) |
-| 每标签一个 `WebContentsView` | `TabManager.create()` | 普通标签**不给 preload**(`sandbox:true`);始终 `y = chromeHeight`;分屏时左/右两半各占一半宽(见下) |
+| 每标签一个 `WebContentsView` | `TabManager.create()` | 普通标签**不给 preload**(`sandbox:true`);始终 `y = chromeHeight`;活动组是分屏组时左/右两半各占一半宽(见下) |
 | Overlay `WebContentsView` | `OverlayManager.ensureView()` | 透明(`#00000000`)、单例、按需创建;`raise()` = 重新 `addChildView` 置顶 |
 | 内部页面标签 | `TabManager.create(internalId)` | 唯一的例外:普通标签视图 + **注入应用 preload** |
 
@@ -171,12 +172,15 @@ Electron 的合成顺序:`contentView` 的子视图按加入顺序从底到顶;*
     `min(chromeHeight, ceil(payload.rect.y + rect.height))`——即「绝不上盖工具栏,但尽量贴住地址栏底边」。
     **假设工具栏是 chrome 的最后一行**;将来加书签栏这种整行,这里要回退成 `chromeHeight`。
 - `raise()` 由 `tabs.on('tabs-changed')` 触发:新标签视图会盖住已开浮层,所以每次标签增删都要重新置顶。
-- **分屏(左右两窗格)**:状态是 `TabManager.split`(只在内存),`layout()` 按 `computeSplitBounds()`
-  (`shared/split.ts`,比例按「总宽减间隔」算)给两个成员设 bounds,其余视图 `setVisible(false)`。
-  两个关键不变式:①**`layout()` 是页面视图可见性的唯一来源**(旧实现把 `setVisible` 放在 `activate()` 里,
+- **标签组(标签栏的一项 = 一个组)**:`TabManager` 持有 `groups: TabGroup[]`(纯记账在 `@shared/groups`,
+  单测见 `tests/groups.test.ts`);普通组 1 个标签、分屏组 2 个,组空了整项消失。活动组由 `activeId` 推出
+  (不另存 `activeGroupId`)。`layout()` 按 `computeSplitBounds()`(`shared/split.ts`,比例按「总宽减间隔」算)
+  给活动组的两个成员设 bounds,其余视图 `setVisible(false)`。
+  三个关键不变式:①**`layout()` 是页面视图可见性的唯一来源**(旧实现把 `setVisible` 放在 `activate()` 里,
   导致 `create(url, activate=false)` 的后台标签会盖住当前页);②两窗格之间留 `SPLIT_GAP=4px` 的空隙,
-  渲染层在那条缝上画分隔条(`App.vue` 的 `.split-divider`,用主进程回传的 `leftWidth/gap`,**不重算几何**)。
-  分屏状态变化通过 `split-changed` 事件 → `split:changed` 通道只发给 chrome(面板数据由 chrome 组装下发)。
+  渲染层在那条缝上画分隔条(`App.vue` 的 `.split-divider`,用主进程回传的 `leftWidth/gap`,**不重算几何**);
+  ③**新建标签永远是新建一个组,`activate()` 不拆任何组** —— 所以新建 tab3 不会弄丢 tab1|tab2 的分屏。
+  组变化通过 `groups-changed` 事件 → `groups:changed` 通道只发给 chrome(面板数据由 chrome 组装下发)。
 
 ### overlay 的两种消息流(别搞混)
 
@@ -626,10 +630,10 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | 导航 | `go(input)` `goUrl(url)` `back()` `forward()` `reload()` `stop()` |
 | 设置 | `getSettings()` `setSettings(patch)` |
 | 窗口 | `minimize()` `maximize()` `closeWindow()` `reportChromeHeight(h)` |
-| 分屏 | `getSplitState()` `splitEnter(rightTabId?, presetId?)` `splitExit()` `splitApplyPreset(presetId)` |
+| 标签组 | `getGroups()` `groupsActivate(groupId)` `groupsAddTab(tabId?)` `groupsUngroup()` `groupsSetPreset(presetId)` |
 | 浮层 | `showOverlay(content\|null)` `onOverlayEvent(cb)` `onOverlayShow(cb)` `overlayEmit(id,event,args)` |
 | 插件 | `plugins.list()` `setEnabled(id,enabled)` `invoke(id,method,…args)` `overlayEvent(overlayId,event,args)` `suggest(input)` `onChanged(cb)` `onEvent(cb)` |
-| 订阅 | `onTabUpdated` `onTabsChanged` `onTabActivated` `onSettingsChanged` `onFocusAddressRequest` `onWindowBlur` `onSplitChanged`(均返回取消订阅函数) |
+| 订阅 | `onTabUpdated` `onTabsChanged` `onTabActivated` `onSettingsChanged` `onFocusAddressRequest` `onWindowBlur` `onGroupsChanged`(均返回取消订阅函数) |
 
 ⚠️ `browserAPI` 也暴露给内部页面标签(设置页)与 Overlay;普通网页标签**没有** preload。
 
@@ -647,11 +651,13 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
   `ResizeObserver` + `window.resize` + 挂载后 300ms 三重触发。
 - **地址栏建议**:`onAddressInput` 100ms 防抖 → `api.plugins.suggest()` →
   `showOverlay({id:'suggest', payload, placement:'below-chrome'})`。
-  `toPlainRows()` 深拷贝的原因是 **IPC 结构化克隆不能传 Vue 响应式代理**(分屏面板的 `plainSplit()` 同理)。
+  `toPlainRows()` 深拷贝的原因是 **IPC 结构化克隆不能传 Vue 响应式代理**(分屏面板的 tabs/groups 同理)。
+- **标签栏按组渲染**:一项 = 一个组(`v-for="g in groups"`),2 标签的组在项里画两个 `.tab-half`
+  (各显示自己的标题、各可点、聚焦那半加 `.focused`);`×` / 中键 / `Ctrl+W` 都只关**聚焦那一半**。
 - **分屏面板**:工具栏「分屏」按钮打开 `{id:'split-menu', placement:'below-chrome'}`;
-  chrome 是面板的 owner —— 它把 `tabs/presets/split` 打进 payload,面板只回传
-  `enter` / `enter-new` / `apply` / `exit` / `cancel`(与 suggest 同构)。`split:changed` 到达、
-  或分屏状态被外面的操作改变时,chrome 重推 payload(面板不关,方便连点几档宽度)。
+  chrome 是面板的 owner —— 它把 `tabs/groups/activeGroupId/presets` 打进 payload,面板只回传
+  `add` / `add-new` / `apply` / `ungroup` / `cancel`(与 suggest 同构)。`groups:changed` 到达、
+  或组状态被外面的操作改变时,chrome 重推 payload(面板不关,方便连点几档宽度)。
 - **焦点策略**:`explicitFocus` / `selectOnFocus` 区分「显式聚焦(点击 / Ctrl+L / 新建标签)」与
   「窗口被动恢复聚焦」,只有前者才 `select()`。主进程 `chrome:window-blur` 会主动 `blur()` 地址栏,
   用于消除 Electron 把焦点恢复给地址栏的路径。
@@ -716,10 +722,11 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `tab:list` | — | `TabInfo[]` |
 | `tab:active` | — | `TabInfo \| null` |
 | `tab:activate-last-browsing` | — | `TabInfo \| null` |
-| `split:get` | — | `SplitState` |
-| `split:enter` | rightTabId?, presetId? | `SplitState`(两个都省略 = 新建一个空白标签当右窗格;`presetId` 省略 = 沿用主进程记住的档位) |
-| `split:exit` | — | `SplitState` |
-| `split:apply` | presetId | `SplitState`(预设已被删掉则忽略、宽度不变) |
+| `groups:get` | — | `TabGroupInfo[]` |
+| `groups:activate` | groupId | `TabGroupInfo[]`(激活该组**聚焦的**成员) |
+| `groups:add-tab` | tabId? | `TabGroupInfo[]`(把它拼进当前组;省略 = 新建空白标签再拼) |
+| `groups:ungroup` | — | `TabGroupInfo[]`(拆当前组为两个单标签组) |
+| `groups:set-preset` | presetId | `TabGroupInfo[]`(预设已被删掉则忽略、宽度不变) |
 | `nav:go` | input | `{parsed, query?, url?, tabId}`(**本地路径存在时经 `navInput.ts` 识别为 `file://`**) |
 | `nav:url` | url | `{tabId}` |
 | `nav:back` / `nav:forward` | — | `boolean` |
@@ -743,7 +750,7 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `tab:updated` | `TabInfo` | `ipc.ts`(订阅 `tab-updated`) |
 | `tab:list-changed` | `TabInfo[]` | `ipc.ts`(订阅 `tabs-changed`) |
 | `tab:activated` | `id` | `TabManager.activate()`(直发 chrome,不经 broadcaster) |
-| `split:changed` | `SplitState` | `ipc.ts`(订阅 `split-changed`;只发 chrome,面板数据由 chrome 组装) |
+| `groups:changed` | `TabGroupInfo[]` | `ipc.ts`(订阅 `groups-changed`;只发 chrome,面板数据由 chrome 组装) |
 | `settings:changed` | `Settings` | `ipc.ts` 的 `settings:set` |
 | `plugins:changed` | `PluginInfo[]` | `kernel.setEnabled()` 经 broadcaster |
 | `plugin:event` | `{id, event, args}` | `ctx.ipc.emit()` 经 broadcaster |
@@ -826,8 +833,8 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
   ⚠️ 给主进程加新的 `tabs.*` / `wc.*` 调用时**必须同步补假实现**,否则测试会红得莫名其妙。
 - `tests/mcpServer.test.ts`(861 行)用 `InMemoryTransport` + 真实 `McpServer`/`Client` 握手,
   覆盖 instructions 下发、工具面与 schema、`waitUntil` 语义、失败一律 `isError`、内部页面边界、插件工具错误传播。
-- **当前基线(2026-09-19 复测)**:`npm test` → **37 个文件 / 621 个用例全绿**,约 3.7s。
-  37 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
+- **当前基线(2026-09-19 复测)**:`npm test` → **38 个文件 / 646 个用例全绿**,约 3.7s。
+  38 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
   `fakeWc.ts`、`fakeKernel.ts`。
 
 | 测试文件 | 行数 | 用例 | 测试文件 | 行数 | 用例 |
@@ -845,7 +852,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 
 其余:`ua`(5)、`pluginMatch`(13)、`settingsNav`(4)、`modalStack`(3)、`bundleScan`(4)、
 `adblockPickerScript`(4)、`elementFullscreenPlugin`(3)、`localFile`(6)、`navInput`(9)、`openArgs`(14)、
-`defaultBrowser`(60)、`closeConfirm`(6)、`split`(23)。合计 **621**。
+`defaultBrowser`(60)、`closeConfirm`(6)、`split`(22)、`groups`(26)。合计 **646**。
 
 设备检查插件的三个测试文件(它们不在上表里:代码量不大,但每一条都在钉外部格式):
 
@@ -908,10 +915,14 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
    `showSuggest`/`splitMenuOpen` 这类本地开关会变脏。
 5. **页面视图的可见性只在 `TabManager.layout()` 里设**。曾经在 `activate()` 里 `setVisible(vid === id)`,
    结果 `create(url, activate=false)`(MCP `browser_new_tab {activate:false}`)的后台标签视图
-   (Chromium `views::View::visible_` 默认 true)会盖在当前页上。分屏只是把「可见集」从
-   `{活动标签}` 扩成 `{左窗格, 右窗格}`,别的什么都没变。
-6. 分屏的**活动窗格**由 `wc.on('focus')` + `wc.on('input-event')` 双触发同步到 `activeId`
+   (Chromium `views::View::visible_` 默认 true)会盖在当前页上。标签组只是把「可见集」从
+   `{活动标签}` 扩成 `{活动组的标签}`(分屏组 = 两半),别的什么都没变。
+6. **`activate()` 不拆组**:新建标签 = 新建一个组(`insertNewGroup`),切标签 = 切到它所在的那个组。
+   曾经分屏状态是全局单例、`activate()` 一见非成员就 `setSplit(null)` → 「新建 tab3 弄丢 tab1|tab2 的分屏」。
+   组的记账规则(加/摘/挤/拆)全部在 `@shared/groups` 的纯函数里,`TabManager` 只管数组 → 视图/事件。
+7. 分屏组的**聚焦成员**由 `wc.on('focus')` + `wc.on('input-event')` 双触发同步到 `activeId`
    (点击/滚轮/键盘进入哪半,地址栏与导航就跟哪半);`activate()` 的 `activeId === id` 早退是防递归的关键。
+   标签栏的「哪半高亮」、`Ctrl+W` 关哪半、面板里的当前组,全部看 `activeId` / `group.focus`。
 5. IPC 不能传 Vue 响应式代理(结构化克隆),`App.vue` 的 `toPlainRows()` 就是为此。
 6. 内部页面标签持有 preload,**任何**让它能载入远程内容的改动都是安全漏洞(`will-navigate` 与 `navigate()` 双重拦截)。
 
