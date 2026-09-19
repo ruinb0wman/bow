@@ -38,7 +38,7 @@ src/
                                  second-instance 复用同一套规则)
     navInput.ts                  地址栏输入的本地文件兜底(不 import electron,可单测)
     devtools.ts                  DevTools 永远 detach + 全局快捷键拦截
-    tabShortcuts.ts              标签/分屏快捷键(Ctrl+T/W/L/,/数字/Shift+T + Ctrl+Shift+方向/Alt+Shift+方向)全局拦截(终端页里 Ctrl+W/L 与分屏键放行给 shell)
+    tabShortcuts.ts              标签/分屏快捷键(Ctrl+T/W/L/,/数字/Shift+T/Shift+E + Ctrl+Shift+方向/Alt+Shift+方向)全局拦截(终端页里 Ctrl+L 与分屏键放行给 shell)
     tabManager.ts                TabManager:每标签一个 WebContentsView + 内部页面标签 + 标签组/嵌套分屏 + 布局
     overlay.ts                   OverlayManager:常驻透明顶层视图,按 placement 布局
     closeConfirm.ts              关闭窗口确认:多标签时拦下 close 事件,改用应用内确认框
@@ -237,6 +237,9 @@ opensInPane(id)         // openIn === 'pane' 的内部页面(终端):地址栏�
 | `singleton` | `true`(设置页)已存在则只聚焦 / `false`(终端)不查找已有标签 | `TabManager.openInternal()` |
 | `openIn` | `'tab'` 新建标签(设置页) / `'pane'` **顶替当前聚焦窗格**(终端) | 地址栏通路 `TabManager.openUrl()` |
 
+三个入口都汇到 `openUrl()`:地址栏输入 / `Ctrl+Shift+E`(`tabShortcuts` 的 `terminal` action)/ 历史·书签点选 ——
+所以「点书签里的终端」与「在地址栏输 bow://terminal」行为完全一致(都是顶替聚焦窗格)。
+
 所以地址栏输入 `bow://terminal` **不新建标签、也不自己造分屏**:它把聚焦窗格的叶子换成新开的内部页面视图
 (`spawn()` 一个带 preload 的 view + `replaceTabInGroups()` 换叶子 + `close()` 旧标签进关闭栈),
 `Ctrl+Shift+T` 仍能找回被顶替的页面。聚焦窗格**已经是**该内部页面时什么都不做。
@@ -254,7 +257,8 @@ opensInPane(id)         // openIn === 'pane' 的内部页面(终端):地址栏�
 | 内部页面标签持有应用 preload,普通标签**绝不能**有 | `TabManager.create()` 的 `...(internalId ? {preload} : {})` |
 | 内部页面标签只能载入同一内部 URL | `wc.on('will-navigate')` 阻止 + `TabManager.navigate()` 返回 false |
 | 内部页面标签不登记内容注入(否则插件 `<all_urls>` 会注入到浏览器自己的 UI) | `create()` 里 `if (!internalId) pageTracker.track(wc)` |
-| 内部页面不发布 `tab-navigated`(不进历史),URL 恒为对外 URL,不可前进后退 | `did-navigate` 分支 + `syncNavigation()` |
+| 内部页面发布 `tab-navigated`(**逻辑 URL** `bow://<id>`,也进历史),URL 恒为对外 URL,不可前进后退;`inspector`(DevTools 前端)不发布 | `did-navigate` 分支(按 `kind`)+ `syncNavigation()` |
+| `bow://` 内部页可被**收藏**(星标 / `browser_add_bookmark`,只接受已登记的 `bow://<id>`) | `StarButton.vue` / `bookmarks/main.ts` 用 `isInternalUrl()` 判定 |
 | 内部页面标签可以被**反查 tabId**(终端页据此把会话绑到标签上) | `ipcMain.handle('tab:self')` → `TabManager.findTabIdByWebContents(sender)` |
 | 内部页面不计入「最近浏览标签」(`lastBrowsingId`)且不可后退 | `activate()` / `syncNavigation()` |
 | 跨「内部 ↔ 普通」边界一律拒绝就地导航,必须另开标签 | `navigate()` 返回 false;`openUrl()` 判断后 `create()` |
@@ -504,7 +508,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 
 | 事件 | 发布者 | 订阅者 |
 | --- | --- | --- |
-| `tab:navigated` `{tabId,url,title}` | `TabManager` → `index.ts`(仅普通标签的主框架导航) | history, adblock, element-fullscreen |
+| `tab:navigated` `{tabId,url,title}` | `TabManager` → `index.ts`(普通标签的主框架导航 + 内部页的逻辑 `bow://<id>` URL;`inspector` 不发) | history, adblock, element-fullscreen |
 | `tab:created` `{TabInfo}` | 同上 | (当前无) |
 | `tab:closed` `{TabInfo}` | 同上 | adblock, element-fullscreen |
 | `tab:activated` `{TabInfo}` | 同上 | adblock, element-fullscreen |
@@ -565,7 +569,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 —— 共 17 个,合计 **36** 个工具。
 
 静态计数来源:`CORE_MCP_TOOL_NAMES`(19)+ `ctx.mcp.tool(...)` 的调用点
-(`bookmarks/main.ts:136,161`、`adblock/main.ts:711,730,752,799,821,835,853,874`、
+(`bookmarks/main.ts:137,165`、`adblock/main.ts:711,730,752,799,821,835,853,874`、
 `element-fullscreen/main.ts:196,227`、`device-inspect/main.ts:381,421,438,461,481`)。
 ⚠️ 实际工具面**随插件启停变化**:停用 adblock 就少 8 个,停用 device-inspect 就少 5 个。
 
@@ -704,7 +708,9 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 - **焦点策略**:`explicitFocus` / `selectOnFocus` 区分「显式聚焦(点击 / Ctrl+L / 新建标签)」与
   「窗口被动恢复聚焦」,只有前者才 `select()`。主进程 `chrome:window-blur` 会主动 `blur()` 地址栏,
   用于消除 Electron 把焦点恢复给地址栏的路径。
-- **快捷键分工**:Ctrl+T/W/L/Shift+T/,/数字由**主进程** `tabShortcuts.ts` 拦截(页面聚焦时渲染层收不到按键);
+- **快捷键分工**:Ctrl+T/W/L/Shift+T/,/数字/Shift+E 由**主进程** `tabShortcuts.ts` 拦截(页面聚焦时渲染层收不到按键);
+  —— 放行给终端的只看 `Ctrl+L`(清屏);放行与否看的是**按键来源的 webContents**(不是活动标签),
+  否则焦点在地址栏而活动标签是终端时 `Ctrl+W` / `Ctrl+L` 会变成什么都没做的死键;
   `Ctrl+Shift+方向` / `Alt+Shift+方向` 同样在主进程,但**只在聚焦的 webContents 属于普通网页标签时**才 `preventDefault`
   —— 地址栏 / 设置页 / 终端页 / DevTools 前端里的这些组合保持原样(按词选择、xterm 选择扩展、前端自己的快捷键);
   chrome 侧只保留 Ctrl+R。
@@ -902,7 +908,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
   ⚠️ 给主进程加新的 `tabs.*` / `wc.*` 调用时**必须同步补假实现**,否则测试会红得莫名其妙。
 - `tests/mcpServer.test.ts`(861 行)用 `InMemoryTransport` + 真实 `McpServer`/`Client` 握手,
   覆盖 instructions 下发、工具面与 schema、`waitUntil` 语义、失败一律 `isError`、内部页面边界、插件工具错误传播。
-- **当前基线(2026-09-19 复测,地址栏终端顶替窗格 + Ctrl+Shift+L 改动后)**:`bun run test` → **39 个文件 / 730 个用例全绿**,约 3.7s。
+- **当前基线(2026-09-19 复测,内部页进历史 + 可收藏 + Ctrl+Shift+E + Ctrl+W 关终端窗格改动后)**:`bun run test` → **39 个文件 / 732 个用例全绿**,约 3.7s。
   39 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
   `fakeWc.ts`、`fakeKernel.ts`。
 
@@ -914,8 +920,8 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `mcpWait.test.ts` | 285 | 27 | `mcpActivity.test.ts` | 113 | 9 |
 | `suggest.test.ts` | 283 | 32 | `mcpHttpService.test.ts` | 184 | 7 |
 | `mcpHttp.test.ts` | 214 | 11 | `url.test.ts` | 105 | 11 |
-| `history.test.ts` | 208 | 22 | `singleInstance.test.ts` | 70 | 6 |
-| `shortcuts.test.ts` | 301 | 42 | `pluginUiSlots.test.ts` | 58 | 6 |
+| `history.test.ts` | 218 | 23 | `singleInstance.test.ts` | 70 | 6 |
+| `shortcuts.test.ts` | 315 | 43 | `pluginUiSlots.test.ts` | 58 | 6 |
 | `bookmarkTree.test.ts` | 198 | 14 | `internalPages.test.ts` | 81 | 11 |
 | `pluginBoundaries.test.ts` | 47 | 3 | `elementFullscreenScript.test.ts` | 68 | 6 |
 
@@ -923,7 +929,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 `adblockPickerScript`(4)、`elementFullscreenPlugin`(3)、`localFile`(6)、`navInput`(9)、`openArgs`(14)、
 `defaultBrowser`(60)、`closeConfirm`(6)、`split`(50,嵌套分屏树 / 几何 / 原地换叶子 / 布局形状与归一化)、
 `groups`(26,树版组记账 + 原地换叶子)、`terminalShared`(39,纯逻辑:设置规范化 /
-平台预设 / spawn 参数 / 环境变量清洗 / 回放缓冲 / PATH 查找 / 参数文本 / 复制粘贴键位)。合计 **730**。
+平台预设 / spawn 参数 / 环境变量清洗 / 回放缓冲 / PATH 查找 / 参数文本 / 复制粘贴键位)。合计 **732**。
 
 设备检查插件的三个测试文件(它们不在上表里:代码量不大,但每一条都在钉外部格式):
 
@@ -942,7 +948,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 
 | # | 说法(位置) | 实际(位置) | 影响 |
 | --- | --- | --- | --- |
-| 1 | README:294 「`Ctrl+D` 收藏当前页」;`StarButton.vue:57` tooltip 也写「收藏当前页 (Ctrl+D)」 | **全仓库没有任何 Ctrl+D 处理**:`matchTabHotkey`(`shared/shortcuts.ts`)不认 `d`,`App.vue` 的 `onKeydown` 只处理 Ctrl+R | **该快捷键完全不可用**;页面聚焦时渲染层收不到按键,必须装进主进程 |
+| 1 | README 「`Ctrl+D` 收藏当前页」;`StarButton.vue` tooltip 也写「收藏当前页 (Ctrl+D)」 | **全仓库没有任何 Ctrl+D 处理** | **已消除(2026-09-19)**:用户拍板不实现 Ctrl+D,两处说法都已删掉(README「手动使用快捷键」与星标 tooltip 现只写「收藏当前页」) |
 | 2 | README 「广告/追踪拦截是参考插件」 | `main/plugins/builtin.ts` 把 `adblock` 并入 `BUILTIN_PLUGINS`;`PluginRegistry.list()` 对所有插件硬编码 `builtin: true` | `PluginInfo.builtin` 无区分能力;措辞误导 |
 | 3 | README 「Electron(≥ 33,…)」 | `package.json` = `electron: ^44.3.0`;`contentHooks.ts` 注释明确以 Electron 44 行为(44 下 `getType()` 无法区分 WebContentsView)为前提 | 升级/兼容判断会看错 |
 | 4 | README 「tests/ vitest 单元测试(url 解析、内部页面、设置导航、书签树、历史、模糊建议、插件注册表/匹配/边界)」 | 实际 **31 个测试文件 / 493 个用例**(已实测),另有 `adblock` 61 例、`mcpServer` 59 例、`mcpWait` 27 例、`mcpHttp*`×3、`mcpActivity`、`bundleScan`、`singleInstance`、`ua`、`shortcuts`、`elementFullscreen*`×2、`modalStack` 等 | 低估了测试面 |
@@ -1025,7 +1031,10 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
     改成断言 target 列表 + 插件侧 `write` 返回 false,不要去 eval 已销毁的页面)。
 20. 终端页可能在任何时候失去会话(标签被关、插件被停用、shell 自己退出),这些都要经
     `session-closed` / `exit` 广播告诉页面 —— 不能指望 IPC 调用抛错来发现。
-21. 终端页的 `Ctrl+W` / `Ctrl+L` 是**故意放行**给 shell 的(`@shared/shortcuts.releasesToTerminal`):
+21. 终端页的 `Ctrl+L` 是**故意放行**给 shell 的(`@shared/shortcuts.releasesToTerminal`);
+    `Ctrl+W` 曾是放行名单里的另一个(`shell 的删词`)—— **2026-09-19 用户拍板移出名单**:终端里也要能
+    `Ctrl+W` 关掉聚焦窗格,shell 的删词让位(README 已改)。放行的判据也从「活动标签」改成
+    「**按键来源的 webContents**」:焦点在地址栏而活动标签是终端时不能把键吞掉。
     主进程 `preventDefault` 过的按键渲染层收不到,xterm 无法把组合送进 pty。
 22. 终端的**复制/粘贴也是自己接管的**(`ui/TerminalView.vue` 的 `attachCustomKeyEventHandler` +
     `@plugins/terminal/shared` 的 `matchClipboardKey`),两个不好踩的坑:
