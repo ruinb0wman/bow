@@ -35,7 +35,7 @@ export interface TabEvents {
   'tab-activated': (tab: TabInfo) => void
   /** 标签组变化(建组/拆组/换成员/聚焦成员变化/宽度档位变化/窗口缩放) */
   'groups-changed': (groups: TabGroupInfo[]) => void
-  /** 主框架导航完成(http(s) 主文档),供插件记录历史等 */
+  /** 主框架导航完成(普通网页与内部页面的逻辑 URL),供插件记录历史等 */
   'tab-navigated': (payload: { tabId: number; url: string; title: string }) => void
 }
 
@@ -256,10 +256,16 @@ export class TabManager extends EventEmitter {
       this.syncNavigation(id)
       this.publish(id)
     }
-    // 主框架导航 → 发布 tab-navigated 事件(历史由插件订阅);SPA 内 hash 变化不发布
-    // 内部页面使用 file:// 或 dev server URL,不对外暴露为可记录的历史
+    // 主框架导航 → 发布 tab-navigated 事件(历史由插件订阅);SPA 内 hash 变化不发布。
+    // 内部页面也记一条访问(2026-09-19):它的**真实** URL 是 file://…(或 dev server 地址),
+    // 对外一律用逻辑 URL `bow://<id>`,历史/地址栏建议里也只认这个 ——
+    // 这样「终端」就能从历史里一键回来(不必再手打整串 bow://terminal)。
     wc.on('did-navigate', (_e, url) => {
-      if (kind === 'page') this.emit('tab-navigated', { tabId: id, url, title: wc.getTitle() || url })
+      if (kind === 'page') {
+        this.emit('tab-navigated', { tabId: id, url, title: wc.getTitle() || url })
+      } else if (kind === 'internal' && internalId != null) {
+        this.emit('tab-navigated', { tabId: id, url: internalPageUrl(internalId), title: info.title })
+      }
       onNavigate()
     })
     wc.on('did-navigate-in-page', onNavigate)

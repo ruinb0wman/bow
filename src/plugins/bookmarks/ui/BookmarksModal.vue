@@ -3,6 +3,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { BookmarkNode, BookmarkTree } from '@shared/types'
 import { childrenOf } from '@shared/bookmarkTree'
+import { isInternalUrl } from '@shared/internalPages'
 import { ArrowLeft, ArrowRightLeft, Folder, Pencil, Plus, Search, Trash2, X } from 'lucide-vue-next'
 import { domainHue, faviconLetter } from '@renderer/lib/avatar'
 import { openAllInFolder, openBookmarkBackground } from '@renderer/lib/openFolder'
@@ -108,11 +109,11 @@ async function startAddBookmark(): Promise<void> {
   adding.value = 'bookmark'
   addTitle.value = ''
   addUrl.value = ''
-  // 预填当前页(仅 http/https;about:blank、devtools: 等不预填)
+  // 预填当前页(http(s) 与 bow:// 内部页;about:blank、devtools: 等不预填)
   const tab = await api.getActiveTab()
   if (adding.value !== 'bookmark') return // 等待期间用户已取消/切到新建文件夹
   const url = tab?.url ?? ''
-  if (/^https?:/i.test(url)) {
+  if (/^https?:/i.test(url) || isInternalUrl(url)) {
     addUrl.value = url
     addTitle.value = tab?.title ?? ''
   }

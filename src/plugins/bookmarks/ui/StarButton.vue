@@ -2,6 +2,7 @@
 /** 地址栏星标(书签插件贡献到 addressbar-trailing 插槽) */
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import type { FlatBookmark } from '@shared/types'
+import { isInternalUrl } from '@shared/internalPages'
 import { Star } from 'lucide-vue-next'
 
 const api = window.browserAPI
@@ -12,8 +13,8 @@ const unsubs: Array<() => void> = []
 async function refresh(): Promise<void> {
   const tab = await api.getActiveTab()
   const url = tab?.url ?? ''
-  // 仅 http(s) 页面可收藏(内部页面如 bow://settings 不参与书签)
-  currentUrl = /^https?:/i.test(url) ? url : ''
+  // http(s) 与 bow:// 内部页(终端/设置)都可收藏;about:blank、devtools:// 等不参与
+  currentUrl = /^https?:/i.test(url) || isInternalUrl(url) ? url : ''
   if (!currentUrl) {
     on.value = false
     return
@@ -54,7 +55,7 @@ onBeforeUnmount(() => {
   <button
     class="star no-drag"
     :class="{ on }"
-    :title="on ? '取消收藏' : '收藏当前页 (Ctrl+D)'"
+    :title="on ? '取消收藏' : '收藏当前页'"
     @click="toggle"
   >
     <Star :size="15" :fill="on ? 'currentColor' : 'none'" />

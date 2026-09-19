@@ -121,6 +121,18 @@ describe('matchTabHotkey Tab 快捷键识别', () => {
     expect(matchTabHotkey(input({ isComposing: true, key: 'l', code: 'KeyL' }))).toBe(null)
   })
 
+  it('Ctrl/Cmd+Shift+E 在聚焦窗格开终端(与 Ctrl+Shift+L 同族,不让给 shell)', () => {
+    expect(matchTabHotkey(input({ key: 'e', code: 'KeyE' }))).toEqual({ action: 'terminal' })
+    // 非 QWERTY:key 可能是其它字符,code 仍为 KeyE
+    expect(matchTabHotkey(input({ key: 'ł', code: 'KeyE' }))).toEqual({ action: 'terminal' })
+    expect(matchTabHotkey(input({ key: 'e', code: 'KeyE', control: false, meta: true }))).toEqual({
+      action: 'terminal'
+    })
+    // 带 Alt / 不带 Shift 都不命中(Ctrl+E 留给页面/终端)
+    expect(matchTabHotkey(input({ key: 'e', code: 'KeyE', alt: true }))).toBe(null)
+    expect(matchTabHotkey(input({ key: 'e', code: 'KeyE', shift: false }))).toBe(null)
+  })
+
   it('Ctrl/Cmd+1..9 切换(code 物理键行优先)', () => {
     expect(matchTabHotkey(input({ key: '1', code: 'Digit1', shift: false }))).toEqual({ action: 'switch', digit: 1 })
     expect(matchTabHotkey(input({ key: '1', code: 'Digit1', shift: false, control: false, meta: true }))).toEqual({ action: 'switch', digit: 1 })
@@ -155,8 +167,8 @@ describe('matchTabHotkey Tab 快捷键识别', () => {
 })
 
 describe('releasesToTerminal 终端页的快捷键放行', () => {
-  it('Ctrl+W(删词)与 Ctrl+L(清屏)还给 shell', () => {
-    expect(releasesToTerminal(matchTabHotkey(input({ key: 'w', code: 'KeyW', shift: false }))!)).toBe(true)
+  it('只有 Ctrl+L(清屏)还给 shell', () => {
+    expect(releasesToTerminal(matchTabHotkey(input({ key: 'w', code: 'KeyW', shift: false }))!)).toBe(false)
     expect(releasesToTerminal(matchTabHotkey(input({ key: 'l', code: 'KeyL', shift: false }))!)).toBe(true)
   })
 
@@ -167,10 +179,12 @@ describe('releasesToTerminal 终端页的快捷键放行', () => {
     expect(releasesToTerminal(matchTabHotkey(input({ key: '2', code: 'Digit2', shift: false }))!)).toBe(false)
   })
 
-  it('Ctrl+Shift+L 不放行给终端(它的存在意义就是终端里也能聚焦地址栏)', () => {
+  it('Ctrl+Shift+L 与 Ctrl+Shift+E 不放行给终端(终端里也要能用)', () => {
     const hk = matchTabHotkey(input({ key: 'l', code: 'KeyL' }))
     expect(hk).toEqual({ action: 'focus-address-anywhere' })
     expect(releasesToTerminal(hk!)).toBe(false)
+    const e = matchTabHotkey(input({ key: 'e', code: 'KeyE' }))
+    expect(releasesToTerminal(e!)).toBe(false)
   })
 })
 

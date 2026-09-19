@@ -17,6 +17,7 @@ import {
   removeNode,
   updateNode
 } from '@shared/bookmarkTree'
+import { isInternalUrl } from '@shared/internalPages'
 import { isHttpUrl } from '@shared/url'
 import { scoreFields } from '@shared/suggest'
 import { textContent } from '../../main/plugins/mcpResult'
@@ -139,13 +140,16 @@ const plugin: PluginMain = {
         description: '添加书签',
         inputSchema: {
           title: z.string().optional().describe('书签标题,缺省用 URL'),
-          url: z.string().describe('http(s) 地址'),
+          url: z.string().describe('http(s) 地址,或 bow:// 内部页(如 bow://terminal)'),
           folderId: z.string().optional().describe('目标文件夹 id(根级目录),缺省根目录')
         }
       },
       async (args) => {
         const url = String(args.url ?? '')
-        if (!isHttpUrl(url)) return textContent({ ok: false, error: '书签地址必须是 http/https' })
+        // bow:// 内部页(终端/设置)也可以收藏:收藏后点它 = 顶替聚焦窗格(与地址栏同一条路)
+        if (!isHttpUrl(url) && !isInternalUrl(url)) {
+          return textContent({ ok: false, error: '书签地址必须是 http/https 或 bow:// 内部页' })
+        }
         const added = addBookmark(store.get(), {
           title: String(args.title ?? ''),
           url,

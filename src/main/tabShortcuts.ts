@@ -1,6 +1,7 @@
 /**
  * Tab 快捷键全局拦截:对所有 webContents 的 before-input-event 统一处理,
- * 保证页面/地址栏/弹层任何焦点下 Ctrl+T / Ctrl+Shift+T / Ctrl+W / Ctrl+L / Ctrl+Shift+L / Ctrl+数字 / Ctrl+, 均可生效。
+ * 保证页面/地址栏/弹层任何焦点下 Ctrl+T / Ctrl+Shift+T / Ctrl+W / Ctrl+L / Ctrl+Shift+L / Ctrl+Shift+E /
+ * Ctrl+数字 / Ctrl+, 均可生效。
  *
  * 背景:标签页是独立 WebContentsView,按键事件只进入当前聚焦的 webContents,
  * 渲染层 keydown 在页面聚焦时收不到按键,因此必须在主进程拦截。
@@ -9,14 +10,15 @@
 
 import { app } from 'electron'
 import { matchSplitHotkey, matchTabHotkey, releasesToTerminal, switchIndexForDigit } from '@shared/shortcuts'
-import { parseInternalUrl } from '@shared/internalPages'
+import { TERMINAL_URL, parseInternalUrl } from '@shared/internalPages'
 import type { TabInfo } from '@shared/types'
 import type { TabManager } from './tabManager'
 import type { OverlayManager } from './overlay'
 import type { PluginKernel } from './plugins/kernel'
+import { CLOSE_CONFIRM_OVERLAY_ID } from './closeConfirm'
 import { log } from './logger'
 
-/** 活动标签是不是终端页(`bow://terminal`):决定 Ctrl+W / Ctrl+L 归 shell 还是归浏览器 */
+/** 标签是不是终端页(`bow://terminal`):决定 Ctrl+W / Ctrl+L 归 shell 还是归浏览器 */
 function isTerminalTab(tab: TabInfo | null): boolean {
   return !!tab && parseInternalUrl(tab.url) === 'terminal'
 }
@@ -41,14 +43,26 @@ export function setupTabShortcuts(
   getOverlay: () => OverlayManager,
   getKernel: () => PluginKernel
 ): void {
+  /**
+   * 「关闭窗口」确认框是否开着。它的文案里有「当前有 N 个标签页」,
+   * 所以这个框开着期间 `Ctrl+T` / `Ctrl+W` 一律不生效 —— 否则那个数字当场过时
+   * (只认这一个弹层,不禁其它 full 弹层如书签面板)。
+   */
+  const closeConfirmOpen = (): boolean => getOverlay().currentId === CLOSE_CONFIRM_OVERLAY_ID
+
   app.on('web-contents-created', (_e, contents) => {
     contents.on('before-input-event', (event, input) => {
       const hk = matchTabHotkey(input)
       if (hk) {
-        // 终端里的 Ctrl+W(删词)/ Ctrl+L(清屏)必须落到 shell 上。
+        // 放行规则看的是**按键来源的那个窗格**,不是「活动标签」:
+        // 焦点在地址栏/浮层时来源拿不到标签 → 一律按浏览器处理(否则 Ctrl+W / Ctrl+L 会变成什么都没做的死键)。
+        const srcTabId = getTabs().findTabIdByWebContents(contents)
+        const srcTab = srcTabId != null ? getTabs().getView(srcTabId)?.info ?? null : null
+        // 终端里的 Ctrl+L(清屏)必须落到 shell 上。
         // 关键点是**不能 preventDefault**:渲染层收不到被 preventDefault 的按键,
-        // xterm 也就无法把这两个组合送进 pty。
-        if (releasesToTerminal(hk) && isTerminalTab(getTabs().getActiveTabInfo())) {
+        // xterm 也就无法把这个组合送进 pty。
+        // (Ctrl+W 自 2026-09-19 不再放行:终端里也要能关聚焦窗格 —— 见 releasesToTerminal 的注释。)
+        if (releasesToTerminal(hk) && isTerminalTab(srcTab)) {
           log('快捷键放行给终端', hk.action)
           return
         }
@@ -57,6 +71,7 @@ export function setupTabShortcuts(
         const tabs = getTabs()
         switch (hk.action) {
           case 'new': {
+            if (closeConfirmOpen()) break
             tabs.create('about:blank', true)
             // 全窗弹层(modal)打开时不抢焦点;否则保持"新建即聚焦地址栏"的 UX
             if (!getOverlay().isFullOpen) {
@@ -83,12 +98,25 @@ export function setupTabShortcuts(
           case 'restore':
             if (tabs.restoreLastClosed()) log('快捷键:恢复标签(Ctrl+Shift+T)')
             break
+          case 'terminal': {
+            // 在聚焦窗格开终端(地址栏输 bow://terminal 的快捷键版):openUrl 会顶替聚焦窗格,
+            // 已是终端 → 空操作,没有活动窗格 → 开新标签 —— 与地址栏完全同一条路。
+            // 全窗弹层(mask)打开时不抢焦点(与 Ctrl+T / Ctrl+L 同策略)。
+            if (!getOverlay().isFullOpen) {
+              tabs.openUrl(TERMINAL_URL)
+              log('快捷键:在聚焦窗格打开终端(Ctrl+Shift+E)')
+            }
+            break
+          }
           case 'close': {
-            const active = tabs.getActiveTabInfo()
-            if (active) tabs.close(active.id)
+            // 关「按键来源的那个窗格」:焦点在某个窗格/标签里时用它反查最硬;
+            // 拿不到来源(焦点在 chrome / overlay / DevTools 窗口)才退回活动标签。
+            if (closeConfirmOpen()) break
+            const target = srcTabId ?? tabs.getActiveTabInfo()?.id ?? null
+            if (target != null) tabs.close(target)
             // 关闭最后一个标签后保留一个空白标签(与渲染层 closeTab 兜底一致)
             if (tabs.listTabs().length === 0) tabs.create('about:blank', true)
-            log('快捷键:关闭标签(Ctrl+W)')
+            log('快捷键:关闭标签(Ctrl+W)', target ?? '(无来源)')
             break
           }
           case 'switch': {

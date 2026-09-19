@@ -41,11 +41,18 @@ export type TabHotkey =
    * 共用 action 会让它在终端里被一起让给 shell —— 而「终端里也能用」正是这个快捷键要解决的问题。
    */
   | { action: 'focus-address-anywhere' }
+  /**
+   * Ctrl/Cmd+Shift+E:在**当前聚焦窗格**里开一个终端(顶替窗格,与地址栏输 `bow://terminal` 同一条路)。
+   * 同样必须独立成 action:① `releasesToTerminal` 按 action 放行,共用 action 会被一起让给 shell;
+   * ② 用户在终端里按它时要能被浏览器吃掉(已是终端 = 空操作,绝不能漏给 shell)。
+   */
+  | { action: 'terminal' }
 
 /**
  * 标签快捷键识别:Ctrl/Cmd+T(新建)、Ctrl/Cmd+Shift+T(恢复)、
  * Ctrl/Cmd+W(关闭)、Ctrl/Cmd+1..9(切换,9=最后一个标签)、Ctrl/Cmd+,(打开设置)、
- * Ctrl/Cmd+L(聚焦地址栏,页面内也生效)、Ctrl/Cmd+Shift+L(聚焦地址栏,**终端里也不例外**)。
+ * Ctrl/Cmd+L(聚焦地址栏,页面内也生效)、Ctrl/Cmd+Shift+L(聚焦地址栏,**终端里也不例外**)、
+ * Ctrl/Cmd+Shift+E(在聚焦窗格开终端)。
  * 与 isDevToolsHotkey 同风格:忽略自动重复与输入法组合;alt 修饰不参与。
  */
 export function matchTabHotkey(input: KeyInputLike): TabHotkey | null {
@@ -58,6 +65,8 @@ export function matchTabHotkey(input: KeyInputLike): TabHotkey | null {
     if (key === 't' || input.code === 'KeyT') return { action: 'restore' }
     // 与 Ctrl+L 同族,但**不**让给终端:readline/shell 没有 Ctrl+Shift+L 绑定,抢来不亏
     if (key === 'l' || input.code === 'KeyL') return { action: 'focus-address-anywhere' }
+    // 在聚焦窗格开终端(Ctrl/Cmd+Shift+E):shell 与常见网页都不用这个组合,抢来不亏
+    if (key === 'e' || input.code === 'KeyE') return { action: 'terminal' }
     return null // Ctrl+Shift+数字 等不作为标签切换
   }
   if (key === 't' || input.code === 'KeyT') return { action: 'new' }
@@ -73,15 +82,17 @@ export function matchTabHotkey(input: KeyInputLike): TabHotkey | null {
 }
 
 /**
- * 当前活动标签是终端页(`bow://terminal`)时,这两个快捷键必须还给 shell:
- * - `Ctrl+W` = 删除前一个词 —— 误拦会直接关掉终端标签、丢掉会话;
- * - `Ctrl+L` = 清屏。
- * 其余(新建/恢复/切换/设置/数字)在 shell 里没有对应语义,保持浏览器行为。
+ * 当前(按键来源的)标签是终端页(`bow://terminal`)时,必须还给 shell 的组合:
+ * - `Ctrl+L` = 清屏 —— shell 的高频键,且没有替代品;
+ * - (曾是 `Ctrl+W` = 删除前一个词)**2026-09-19 用户拍板改为归浏览器**:终端里也要能用 `Ctrl+W` 关掉
+ *   聚焦窗格;代价是 shell 的「删词」让位(README 里写明了)。
+ * 其余(新建/恢复/切换/设置/数字/开终端)在 shell 里没有对应语义,保持浏览器行为。
  *
- * ⚠️ `focus-address-anywhere`(`Ctrl/Cmd+Shift+L`)刻意**不在这里** —— 它就是为「终端里也能跳去地址栏」加的。
+ * ⚠️ `focus-address-anywhere`(`Ctrl/Cmd+Shift+L`)与 `terminal`(`Ctrl/Cmd+Shift+E`)刻意**不在这里** ——
+ * 前者就是为「终端里也能跳去地址栏」加的,后者在终端里是空操作、更不能漏给 shell。
  */
 export function releasesToTerminal(hotkey: TabHotkey): boolean {
-  return hotkey.action === 'close' || hotkey.action === 'focus-address'
+  return hotkey.action === 'focus-address'
 }
 
 /** 分屏快捷键:`split` = Ctrl/Cmd+Shift+方向(在聚焦窗格上分屏);`resize` = Alt+Shift+方向(向该方向扩张) */

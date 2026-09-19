@@ -58,6 +58,17 @@ describe('历史条目追加', () => {
     expect(list[0].title).toBe('https://x.com')
   })
 
+  // 2026-09-19:内部页(bow://terminal / bow://settings)也进历史 —— 纯逻辑层与协议无关,这条钉住意图
+  it('bow:// 内部页与普通页一样去重并置顶', () => {
+    let list = addHistoryEntry([], visit('一点别的', 'https://a.com'))
+    list = addHistoryEntry(list, visit('终端', 'bow://terminal', { visitedAt: 200 }))
+    expect(list[0].url).toBe('bow://terminal')
+    list = addHistoryEntry(list, visit('终端', 'bow://terminal', { visitedAt: 300 }))
+    expect(list).toHaveLength(2)
+    expect(list[0].url).toBe('bow://terminal')
+    expect(list[0].visitedAt).toBe(300)
+  })
+
   it('搜索词两端空白被修剪', () => {
     const list = addHistoryEntry([], visit('t', 'https://a.com', { query: '  hi  ' }))
     expect(list[0].query).toBe('hi')

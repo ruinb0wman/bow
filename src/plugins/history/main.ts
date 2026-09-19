@@ -13,6 +13,7 @@ import {
   removeHistoryEntries,
   trimHistory
 } from '@shared/history'
+import { isInternalUrl } from '@shared/internalPages'
 import { scoreFields } from '@shared/suggest'
 import { isHttpUrl } from '@shared/url'
 import type { PluginContext, PluginMain } from '../../main/plugins/types'
@@ -54,7 +55,9 @@ const plugin: PluginMain = {
 
     const record = (v: { title: string; url: string; kind?: HistoryKind; query?: string }): void => {
       const url = v.url.trim()
-      if (!isHttpUrl(url)) return
+      // 2026-09-19:内部页(`bow://terminal` / `bow://settings`)也进历史 —— 空地址栏的「最近」列表里
+      // 直接就有「终端」,输「终」/「term」也能模糊命中,不必再打整串 URL。
+      if (!isHttpUrl(url) && !isInternalUrl(url)) return
       store.setRaw(addHistoryEntry(store.get(), { ...v, url }, cap()))
     }
 
