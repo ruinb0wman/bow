@@ -95,7 +95,7 @@ src/
     ua.ts           bowUserAgent() 纯函数
     devtools.ts     DevTools 前端 URL 构造(tabManager 与设备检查插件共用的唯一来源)
     adblock.ts      广告规则模型/解析/索引/匹配/迁移(v3),~1400 行
-tests/            vitest 39 个测试文件(681 个用例)+ 3 个测试替身(fakeTabs/fakeWc/fakeKernel)
+tests/            vitest 39 个测试文件(692 个用例)+ 3 个测试替身(fakeTabs/fakeWc/fakeKernel)
 scripts/          构建与运维脚本(见 §11)
 docs/             本文件 + opencode-session-header.md
 .pi/skills/bow-browser/SKILL.md      给 AI 的能力索引(由 mcp:install 同步到 ~/.pi/agent/skills/)
@@ -871,7 +871,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
   ⚠️ 给主进程加新的 `tabs.*` / `wc.*` 调用时**必须同步补假实现**,否则测试会红得莫名其妙。
 - `tests/mcpServer.test.ts`(861 行)用 `InMemoryTransport` + 真实 `McpServer`/`Client` 握手,
   覆盖 instructions 下发、工具面与 schema、`waitUntil` 语义、失败一律 `isError`、内部页面边界、插件工具错误传播。
-- **当前基线(2026-09-19 复测)**:`npm test` → **39 个文件 / 681 个用例全绿**,约 3.7s。
+- **当前基线(2026-09-19 复测)**:`npm test` → **39 个文件 / 692 个用例全绿**,约 3.9s。
   38 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
   `fakeWc.ts`、`fakeKernel.ts`。
 
@@ -890,8 +890,8 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 
 其余:`ua`(5)、`pluginMatch`(13)、`settingsNav`(4)、`modalStack`(3)、`bundleScan`(6)、
 `adblockPickerScript`(4)、`elementFullscreenPlugin`(3)、`localFile`(6)、`navInput`(9)、`openArgs`(14)、
-`defaultBrowser`(60)、`closeConfirm`(6)、`split`(22)、`groups`(26)、`terminalShared`(28,纯逻辑:设置规范化 /
-平台预设 / spawn 参数 / 环境变量清洗 / 回放缓冲 / PATH 查找 / 参数文本)。合计 **681**。
+`defaultBrowser`(60)、`closeConfirm`(6)、`split`(22)、`groups`(26)、`terminalShared`(39,纯逻辑:设置规范化 /
+平台预设 / spawn 参数 / 环境变量清洗 / 回放缓冲 / PATH 查找 / 参数文本 / 复制粘贴键位)。合计 **692**。
 
 设备检查插件的三个测试文件(它们不在上表里:代码量不大,但每一条都在钉外部格式):
 
@@ -987,6 +987,14 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
     `session-closed` / `exit` 广播告诉页面 —— 不能指望 IPC 调用抛错来发现。
 21. 终端页的 `Ctrl+W` / `Ctrl+L` 是**故意放行**给 shell 的(`@shared/shortcuts.releasesToTerminal`):
     主进程 `preventDefault` 过的按键渲染层收不到,xterm 无法把组合送进 pty。
+22. 终端的**复制/粘贴也是自己接管的**(`ui/TerminalView.vue` 的 `attachCustomKeyEventHandler` +
+    `@plugins/terminal/shared` 的 `matchClipboardKey`),两个不好踩的坑:
+    ① **钩子返回 `false` 不会 `preventDefault`**(xterm `_keyDown` 里直接 `return !1`)——
+       而 `Ctrl+V` 的默认动作是往它的隐藏 textarea 原生粘贴,且 xterm 在 **textarea 与 element 上都**
+       挂了 `paste` 监听 ⇒ 不自己拦就会「原生粘一遍 + 我们 IPC 粘一遍」。
+    ② xterm 的选区**画在 canvas 上、不是 DOM 选区**,菜单栏/右键触发的原生 `copy` 事件默认什么也复制不到,
+       所以另在 `.terminal-host` 上监听 `copy`,自己把选区塞进 `clipboardData`。
+    另两条语义细节:mac 上认 ⌘(`Ctrl+C` 在 mac 上仍是中断信号),**带 Alt 一律不接管**(AltGr 会编码成 Ctrl+Alt)。
 
 **MCP 层**
 

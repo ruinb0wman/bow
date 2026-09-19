@@ -358,7 +358,8 @@ npm run test:mcp:http
 - `Ctrl+数字`:`Ctrl+1..8` 切到标签栏第 n 项(一个分屏组只算一项)、`Ctrl+9` 取最后一项
 - `Ctrl+D` 收藏当前页
 - 终端页(`bow://terminal`)里:`Ctrl+W`(删词)与 `Ctrl+L`(清屏)**归 shell** —— 要关终端标签用标签上的 × 或中键;
-  `Ctrl+Shift+C` / `Ctrl+Shift+V` 复制粘贴(走主进程剪贴板,不依赖渲染层的敏感上下文/权限)
+  `Ctrl+C` **有选中内容就复制**(不打扰 shell)、没有选中才照常发给 shell 当中断信号;`Ctrl+V` 粘贴
+  (`Ctrl+Shift+C` / `Ctrl+Shift+V` 是同一套动作的备用组合;都走主进程剪贴板,不依赖渲染层的敏感上下文/权限)
 - `Ctrl+Shift+F` 元素全屏:框选当前页面元素铺满网页视口(再按一次或 `Esc` 退出)
 - `Ctrl+Shift+I` / `F12`:为**当前聚焦的视图**(页面 / 浏览器 UI)打开或关闭 DevTools。
   DevTools 固定以**独立窗口**打开(不会停靠、也不会被标签页遮挡);焦点在 DevTools 窗口内时,
@@ -405,8 +406,9 @@ npm run test:mcp:http
   也能自己加配置(名称 / 可执行文件 / 参数 / 工作目录)。WSL 的启动目录用参数 `--cd ~` 表达
   (Windows 侧的 `cwd` 会被映射成 `/mnt/c/...`,不是 WSL 的 home)。
 - 外观:字体族 / 字号 / 滚动缓冲,**改完即时作用到已打开的终端**。
-- 键位:`Ctrl+W`(删词)、`Ctrl+L`(清屏)归 shell;`Ctrl+Shift+C` / `Ctrl+Shift+V` 复制粘贴;
-  `Ctrl+C` / `Ctrl+D` 照常。要关终端标签用 × / 中键(把焦点移到网页后再 `Ctrl+W` 也行)。
+- 键位:`Ctrl+W`(删词)、`Ctrl+L`(清屏)归 shell;**`Ctrl+C` 有选中就复制到剪贴板,没有选中则照常发给 shell 当中断信号**;
+  `Ctrl+V` 粘贴(多行文本按 xterm 的括号粘贴规则送进去),`Ctrl+Shift+C` / `Ctrl+Shift+V` 是备用组合;
+  `Ctrl+D` 照常。要关终端标签用 × / 中键(把焦点移到网页后再 `Ctrl+W` 也行)。
 - 同时最多 12 个会话(超了会提示);终端页是内部页面标签,MCP 的页面类工具不会拿它做操作目标。
 - node-pty 的预编译二进制只覆盖 Windows / macOS —— 这套终端主要在 Windows 侧的 bow.exe 上用。
 
