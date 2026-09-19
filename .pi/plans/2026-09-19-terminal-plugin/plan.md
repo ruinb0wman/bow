@@ -233,6 +233,9 @@ Windows 侧项目目录执行 `bun add @xterm/xterm @xterm/addon-fit` 与 `bun a
 - **打包验收**:`npm run dist` 通过;`verify-dist` 报「运行时外部依赖 3 个:@modelcontextprotocol/sdk, node-pty, zod」
   (node-pty 正是新扫出来的那一个);`node-pty` 落到 `resources/app.asar.unpacked/node_modules/node-pty/…`;
   **双击版实跑**——`dist/win-unpacked/bow.exe` 开终端 + echo 回显 **2/2 通过**(asar.unpacked 生效)。
+- **resize 全链路另一支验**(`D:/tmp/terminal-resize.mjs`,**5/5**):终端容器 164x42 → 缩到 60% → **97x25**
+  → 还原 **164x42**,而且判据用的是 **shell 自报的 `[Console]::WindowWidth/Height`**(ConPTY 视角),
+  与 xterm 的 `cols/rows` 两侧一致 —— 证明 `ResizeObserver → fit() → resize IPC → pty.resize` 真的到了 pty。
 
 ### 10.3 没能自动验证的(需真人一次)
 
@@ -240,7 +243,10 @@ Windows 侧项目目录执行 `bun add @xterm/xterm @xterm/addon-fit` 与 `bun a
   放行逻辑只有单测(`releasesToTerminal`)与「终端标签 URL 判据」的间接断言。请真人按一下确认「Ctrl+W 删词而不是关标签」。
 - 中文/emoji 宽字与粘贴多行、分屏里终端与网页并排的观感、字体族实测(Cascadia Mono 等)。
 - WSL / Git Bash 配置的**实际启动**(候选探测已验,两个没逐个跑)。
-- 窗口 resize 时 `stty size` 与 `term.rows/cols` 一致(strategy 已在 `refit()` 里接线,未做自动断言)。
+
+> 写入上面这份清单时的「resize 未验」已经补上了(见 §10.2 最后一条)。
+> 另记一个写 E2E 的坑:读 shell 回显时必须给每次命令带**一次性标记**,否则 `waitFor` 会匹配到缓冲里
+> 上一次的输出、拿到滞后一拍的旧值(第一次写 resize 脚本就是这么误判成「resize 没生效」的)。
 
 ### 10.4 环境注记(下次在 Windows 侧装依赖时)
 
@@ -248,4 +254,5 @@ Windows 侧项目目录执行 `bun add @xterm/xterm @xterm/addon-fit` 与 `bun a
    `electron.exe` 不存在。补法:`node scripts/ensure-electron.mjs`(走镜像)。
 - Windows 侧 bun 1.3.14 读不了 WSL bun 1.4.0 写的 `bun.lock`(`UnknownLockfileVersion` → 忽略并按
   `package.json` 重新解析、重写目标端 lockfile)。两边的 lockfile 会因此不一致(不影响运行,也不影响 wsync 的单向同步)。
-- E2E 脚本(不入库):`D:/tmp/terminal-e2e.mjs`(功能)、`D:/tmp/bow-dist-e2e.mjs`(打包版)、`D:/tmp/pty-smoke.cjs`(ABI 最小验证)。
+- E2E 脚本(不入库):`D:/tmp/terminal-e2e.mjs`(功能 21/21 ×3)、`D:/tmp/terminal-resize.mjs`(resize 5/5)、
+  `D:/tmp/bow-dist-e2e.mjs`(打包版)、`D:/tmp/pty-smoke.cjs`(ABI 最小验证)。
