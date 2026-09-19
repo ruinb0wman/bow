@@ -84,7 +84,7 @@ src/
     groups.ts       标签组记账(标签栏一项 = 一个组:分屏/摘窗格/塌缩/焦点/拆组;纯函数)
     split.ts        嵌套分屏树(LayoutNode)+ 几何(computeLayout)+ 布局形状/预设归一化
     localFile.ts    本地路径形态判定(isFileUrl / looksLikeLocalPath / expandHome)
-    internalPages.ts bow:// 内部页面标识与 parse(settings 单例 / terminal 可多开,见 singleton 字段)
+    internalPages.ts bow:// 内部页面标识与 parse(settings 单例 / terminal 可多开 + `openIn:'pane'` 顶替聚焦窗格,见 singleton / openIn 两轴)
     settingsNav.ts  设置页侧栏导航模型
     pluginMatch.ts  URL 通配 / host 与子域匹配
     suggest.ts      模糊打分 + 多来源合并 + 渲染行构建
@@ -95,7 +95,7 @@ src/
     ua.ts           bowUserAgent() 纯函数
     devtools.ts     DevTools 前端 URL 构造(tabManager 与设备检查插件共用的唯一来源)
     adblock.ts      广告规则模型/解析/索引/匹配/迁移(v3),~1400 行
-tests/            vitest 39 个测试文件(692 个用例)+ 3 个测试替身(fakeTabs/fakeWc/fakeKernel)
+tests/            vitest 39 个测试文件(730 个用例)+ 3 个测试替身(fakeTabs/fakeWc/fakeKernel)
 scripts/          构建与运维脚本(见 §11)
 docs/             本文件 + opencode-session-header.md
 .pi/skills/bow-browser/SKILL.md      给 AI 的能力索引(由 mcp:install 同步到 ~/.pi/agent/skills/)
@@ -223,16 +223,29 @@ InternalPageId = 'settings' | 'terminal'
 SETTINGS_URL = 'bow://settings'
 TERMINAL_URL = 'bow://terminal'
 INTERNAL_PAGES = {
-  settings: { url, title:'设置', entry:'settings', singleton: true },
-  terminal: { url, title:'终端', entry:'terminal', singleton: false }
+  settings: { url, title:'设置', entry:'settings', singleton: true,  openIn: 'tab'  },
+  terminal: { url, title:'终端', entry:'terminal', singleton: false, openIn: 'pane' }
 }
 parseInternalUrl(url)   // 只接受 bow://<id> 与 bow://<id>/,带路径/查询/其它 host 一律 null
+opensInPane(id)         // openIn === 'pane' 的内部页面(终端):地址栏通路走「顶替聚焦窗格」
 ```
 
-`singleton` 是**打开语义**的唯一开关:`TabManager.openInternal()` 对 `singleton:true` 先找已有标签
-(设置页:重复打开只聚焦),对 `singleton:false` 直接 `create()`(终端页:每次都是新标签 = 新 shell 会话)。
-注意 `create(internalPageUrl('terminal'))` 与 `openUrl()` / `Ctrl+Shift+T` 恢复 / MCP `browser_new_tab` 几条路径
-都直接走 `create()`,不受 `singleton` 影响。
+打开语义有**两根正交的轴**:
+
+| 轴 | 取值 | 消费者 |
+| --- | --- | --- |
+| `singleton` | `true`(设置页)已存在则只聚焦 / `false`(终端)不查找已有标签 | `TabManager.openInternal()` |
+| `openIn` | `'tab'` 新建标签(设置页) / `'pane'` **顶替当前聚焦窗格**(终端) | 地址栏通路 `TabManager.openUrl()` |
+
+所以地址栏输入 `bow://terminal` **不新建标签、也不自己造分屏**:它把聚焦窗格的叶子换成新开的内部页面视图
+(`spawn()` 一个带 preload 的 view + `replaceTabInGroups()` 换叶子 + `close()` 旧标签进关闭栈),
+`Ctrl+Shift+T` 仍能找回被顶替的页面。聚焦窗格**已经是**该内部页面时什么都不做。
+
+> ⚠️ 为什么不能 `navigate()` 过去:内部页面依赖应用 preload,而 preload 只能在 `WebContentsView`
+> **创建时**给 —— 普通标签的 webContents 永远变不成内部页面(见下表「跨边界拒绝」那条)。
+
+`TabManager.create(url)`(工具栏「新终端」按钮 / `Ctrl+Shift+T` 恢复)是更底层的入口,
+**不受这两根轴影响**——它永远是新标签;MCP 的 `browser_navigate`/`browser_search` 只接受 http(s),同样不经过 `openIn`。
 
 不变量:
 
@@ -245,6 +258,7 @@ parseInternalUrl(url)   // 只接受 bow://<id> 与 bow://<id>/,带路径/查询
 | 内部页面标签可以被**反查 tabId**(终端页据此把会话绑到标签上) | `ipcMain.handle('tab:self')` → `TabManager.findTabIdByWebContents(sender)` |
 | 内部页面不计入「最近浏览标签」(`lastBrowsingId`)且不可后退 | `activate()` / `syncNavigation()` |
 | 跨「内部 ↔ 普通」边界一律拒绝就地导航,必须另开标签 | `navigate()` 返回 false;`openUrl()` 判断后 `create()` |
+| `openIn:'pane'` 的内部页面(终端)从地址栏打开时**顶替聚焦窗格**(不新建标签) | `openUrl()` → `openInternalInPane()`:`spawn()` + `replaceTabInGroups()` + `close(旧)` |
 | 活动标签是内部页面时,MCP 的 `navigate`/`search` 另开标签并回 `createdTab:true` | `mcp.ts` 的 `target()` + `openUrl()` |
 
 `TabManager` 里与内部页面相关的取值口径(容易记错):
@@ -255,6 +269,7 @@ parseInternalUrl(url)   // 只接受 bow://<id> 与 bow://<id>/,带路径/查询
 | `getActiveBrowsingView()` | 活动标签优先,若是内部页面则退到最近浏览的普通标签 |
 | `getLastBrowsingView()` | 只认普通标签;记忆失效时回退为 **id 最大**的普通标签 |
 | `activateLastBrowsing()` | 激活最近浏览的普通标签(设置页里点「屏蔽元素」时先用它切回去) |
+| `openInternalInPane(page)` | `openIn:'pane'` 的页面(终端)**顶替聚焦窗格**打开;已是它 / 没有活动窗格 → `null`(不生效) |
 | `broadcastToInternal(ch, payload)` | 只发给内部页面标签(普通标签没有 preload,收不到) |
 
 ---
@@ -887,7 +902,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
   ⚠️ 给主进程加新的 `tabs.*` / `wc.*` 调用时**必须同步补假实现**,否则测试会红得莫名其妙。
 - `tests/mcpServer.test.ts`(861 行)用 `InMemoryTransport` + 真实 `McpServer`/`Client` 握手,
   覆盖 instructions 下发、工具面与 schema、`waitUntil` 语义、失败一律 `isError`、内部页面边界、插件工具错误传播。
-- **当前基线(2026-09-19 复测,嵌套分屏改动后)**:`bun run test` → **39 个文件 / 719 个用例全绿**,约 3.7s。
+- **当前基线(2026-09-19 复测,地址栏终端顶替窗格 + Ctrl+Shift+L 改动后)**:`bun run test` → **39 个文件 / 730 个用例全绿**,约 3.7s。
   39 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
   `fakeWc.ts`、`fakeKernel.ts`。
 
@@ -900,15 +915,15 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `suggest.test.ts` | 283 | 32 | `mcpHttpService.test.ts` | 184 | 7 |
 | `mcpHttp.test.ts` | 214 | 11 | `url.test.ts` | 105 | 11 |
 | `history.test.ts` | 208 | 22 | `singleInstance.test.ts` | 70 | 6 |
-| `shortcuts.test.ts` | 279 | 40 | `pluginUiSlots.test.ts` | 58 | 6 |
-| `bookmarkTree.test.ts` | 198 | 14 | `internalPages.test.ts` | 53 | 7 |
+| `shortcuts.test.ts` | 301 | 42 | `pluginUiSlots.test.ts` | 58 | 6 |
+| `bookmarkTree.test.ts` | 198 | 14 | `internalPages.test.ts` | 81 | 11 |
 | `pluginBoundaries.test.ts` | 47 | 3 | `elementFullscreenScript.test.ts` | 68 | 6 |
 
 其余:`ua`(5)、`pluginMatch`(13)、`settingsNav`(4)、`modalStack`(3)、`bundleScan`(6)、
 `adblockPickerScript`(4)、`elementFullscreenPlugin`(3)、`localFile`(6)、`navInput`(9)、`openArgs`(14)、
-`defaultBrowser`(60)、`closeConfirm`(6)、`split`(46,嵌套分屏树 / 几何 / 布局形状与归一化)、
-`groups`(22,树版组记账)、`terminalShared`(39,纯逻辑:设置规范化 /
-平台预设 / spawn 参数 / 环境变量清洗 / 回放缓冲 / PATH 查找 / 参数文本 / 复制粘贴键位)。合计 **719**。
+`defaultBrowser`(60)、`closeConfirm`(6)、`split`(50,嵌套分屏树 / 几何 / 原地换叶子 / 布局形状与归一化)、
+`groups`(26,树版组记账 + 原地换叶子)、`terminalShared`(39,纯逻辑:设置规范化 /
+平台预设 / spawn 参数 / 环境变量清洗 / 回放缓冲 / PATH 查找 / 参数文本 / 复制粘贴键位)。合计 **730**。
 
 设备检查插件的三个测试文件(它们不在上表里:代码量不大,但每一条都在钉外部格式):
 
@@ -1020,6 +1035,12 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
     ② xterm 的选区**画在 canvas 上、不是 DOM 选区**,菜单栏/右键触发的原生 `copy` 事件默认什么也复制不到,
        所以另在 `.terminal-host` 上监听 `copy`,自己把选区塞进 `clipboardData`。
     另两条语义细节:mac 上认 ⌘(`Ctrl+C` 在 mac 上仍是中断信号),**带 Alt 一律不接管**(AltGr 会编码成 Ctrl+Alt)。
+23. **内部页面只能在 `WebContentsView` 创建时拿到 preload** ⇒ 「把当前标签导航成 `bow://terminal`」不可实现。
+    「在聚焦窗格就地开终端」= `spawn()` 一个新内部页视图 + `replaceTabInGroups()` 换叶子 + `close(旧)`
+    (地址栏 `bow://terminal` 走的就是这条路,旧标签进关闭栈可 `Ctrl+Shift+T` 找回);
+    `TabManager.navigate()` 对跨「普通 ↔ 内部」边界一律拒绝,别为了这个去放宽它。
+24. `releasesToTerminal()` 是**按 action 放行**的:`Ctrl+Shift+L`(`focus-address-anywhere`)必须与 `Ctrl+L`
+    (`focus-address`)是两个不同的 action,否则会被一起让给 shell —— 而它存在的意义正是「终端里也能跳去地址栏」。
 
 **MCP 层**
 

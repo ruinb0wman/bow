@@ -21,6 +21,7 @@ import {
   paneCount,
   paneTabIds,
   removePane,
+  replacePane,
   resizePane,
   shapeOf,
   shapePaneCount,
@@ -108,6 +109,39 @@ describe('splitPane', () => {
   it('tabId 不在树里 → 原样返回(引用不变)', () => {
     const tree = row(leaf(1), leaf(2))
     expect(splitPane(tree, 99, 'right', 3)).toBe(tree)
+  })
+})
+
+describe('replacePane', () => {
+  it('换中间叶子:树结构与比例不变,只有目标叶子变成新 id', () => {
+    const tree = row(leaf(1), col(leaf(2), leaf(3), 0.4), 0.3)
+    const next = replacePane(tree, 3, 9)
+    expect(next).toEqual(row(leaf(1), col(leaf(2), leaf(9), 0.4), 0.3))
+    expect(paneTabIds(next)).toEqual([1, 2, 9])
+    expect(next.kind === 'split' && next.ratio).toBe(0.3)
+  })
+
+  it('换单叶(根就是叶子)', () => {
+    expect(replacePane(leaf(1), 1, 2)).toEqual(leaf(2))
+    expect(paneTabIds(replacePane(leaf(1), 1, 2))).toEqual([2])
+  })
+
+  it('tabId 不在树里 → 原样返回(引用不变)', () => {
+    const tree = row(leaf(1), leaf(2))
+    expect(replacePane(tree, 99, 3)).toBe(tree)
+  })
+
+  it('只重建路径上的祖先,路径外的子树引用不变(渲染层不会多余重画)', () => {
+    const left = leaf(1)
+    const tree = row(left, leaf(2))
+    const next = replacePane(tree, 2, 9)
+    expect(next).not.toBe(tree)
+    expect(next.kind === 'split' && next.a).toBe(left)
+    // 没有命中目标的那一支整棵子树都不动
+    const deepLeft = col(leaf(1), leaf(2))
+    const deep = row(deepLeft, leaf(3))
+    const nextDeep = replacePane(deep, 3, 9)
+    expect(nextDeep.kind === 'split' && nextDeep.a).toBe(deepLeft)
   })
 })
 

@@ -16,11 +16,12 @@ import {
   neighborGroupIdAfterRemoval,
   newTabGroup,
   removeTabFromGroups,
+  replaceTabInGroups,
   splitGroup,
   ungroup
 } from '@shared/groups'
 import type { TabGroup } from '@shared/groups'
-import { INTERNAL_PAGES, internalPageUrl, parseInternalUrl } from '@shared/internalPages'
+import { INTERNAL_PAGES, internalPageUrl, opensInPane, parseInternalUrl } from '@shared/internalPages'
 import type { InternalPageId } from '@shared/internalPages'
 import { isDevToolsFrontendUrl } from '@shared/devtools'
 import { loadRendererEntry } from './rendererEntry'
@@ -520,6 +521,9 @@ export class TabManager extends EventEmitter {
    * 打开/聚焦内部页面标签。`singleton`(由 `@shared/internalPages` 的登记表声明)决定语义:
    * - true(设置页):已存在则仅激活,不堆出第二个;
    * - false(终端页):**每次新建** —— 每个终端标签一个独立 shell 会话。
+   *
+   * 注:`openIn:'pane'` 的页面(终端)走地址栏时先试 `openInternalInPane()`(顶替聚焦窗格),
+   * 只有**没有活动窗格**时才回落到这里开新标签。
    */
   openInternal(page: InternalPageId): TabInfo {
     if (INTERNAL_PAGES[page].singleton) {
@@ -533,13 +537,49 @@ export class TabManager extends EventEmitter {
   }
 
   /**
+   * 在**当前聚焦窗格**就地打开内部页面(地址栏输入 `bow://terminal` 的通路):
+   * 不新建标签、也不自己造分屏 —— 新建一个带应用 preload 的内部页面视图**顶替**原窗格的叶子
+   * (树结构与几何不变,`replaceTabInGroups`),再把旧标签 `close()` 掉(进关闭栈,`Ctrl+Shift+T` 可找回)。
+   *
+   * 为什么必须换视图而不是 `navigate()`:内部页面依赖应用 preload,而 preload 只在 `WebContentsView`
+   * 创建时给(`spawn()`),普通标签的 webContents 永远变不成内部页面 —— 见 `navigate()` 的跨边界拒绝。
+   *
+   * 聚焦窗格**已经是**该内部页面 → 什么都不做(返回 null,调用方保持现状)。
+   */
+  openInternalInPane(page: InternalPageId): TabInfo | null {
+    const group = this.activeGroup()
+    const oldId = group ? focusedTabId(group) : null
+    if (group == null || oldId == null) return null
+    const old = this.views.get(oldId)
+    // 焦点 id 漂移(理论上不该发生):宁可不动,也不造一个不在任何组里的孤儿视图
+    if (!old) return null
+    if (old.internalId === page) return null
+    const { id, info } = this.spawn(internalPageUrl(page))
+    this.groups = replaceTabInGroups(this.groups, oldId, id)
+    // 先激活:新 id 已在树里,layout() 立刻把它摆到原窗格的 rect 上
+    this.activate(id)
+    // 再关旧标签:此时 activeId 已是 id,close() 不会把焦点清空
+    this.close(oldId)
+    this.emit('tab-created', this.decorate({ ...info, active: true }))
+    log('聚焦窗格内打开', page, oldId, '→', id)
+    return this.getActiveTabInfo()
+  }
+
+  /**
    * 统一导航入口(地址栏 / 书签 / 建议 / MCP 共用):
-   * - 内部页面 URL → 打开或聚焦对应内部页面标签;
+   * - 「顶替窗格」型内部页面(终端)→ 就地顶替聚焦窗格(已是它则不动);
+   * - 其它内部页面 URL → 打开或聚焦对应内部页面标签;
    * - 其它 URL → 活动标签可承载则就地导航,否则新建标签(活动标签是内部页面)。
    */
   openUrl(url: string, activate = true): TabInfo {
     const internal = parseInternalUrl(url)
-    if (internal) return this.openInternal(internal)
+    if (internal) {
+      if (opensInPane(internal)) {
+        // 顶替成功→新终端;已是终端→当前标签(不生效);没有活动窗格→回落到新标签
+        return this.openInternalInPane(internal) ?? this.getActiveTabInfo() ?? this.openInternal(internal)
+      }
+      return this.openInternal(internal)
+    }
     const active = this.getActiveRecord()
     if (active && !active.info.internal) {
       this.navigate(active.info.id, url)

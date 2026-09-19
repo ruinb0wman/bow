@@ -11,6 +11,7 @@ import {
   neighborGroupIdAfterRemoval,
   newTabGroup,
   removeTabFromGroups,
+  replaceTabInGroups,
   splitGroup,
   ungroup
 } from '../src/shared/groups'
@@ -112,6 +113,31 @@ describe('splitGroup', () => {
     expect(missGroup[0]).toBe(groups[0])
     const missTab = splitGroup(groups, 1, 99, 'right', 20)
     expect(missTab[0]).toBe(groups[0])
+  })
+})
+
+describe('replaceTabInGroups', () => {
+  it('分屏组里换聚焦叶子 → 树换叶子、焦点跟着换,别的组引用不变', () => {
+    const groups = [g(1, row(leaf(10), leaf(11)), 11), solo(2, 30)]
+    const next = replaceTabInGroups(groups, 11, 20)
+    expect(next[0]).toEqual({ id: 1, tree: row(leaf(10), leaf(20)), focus: 20 })
+    expect(next[1]).toBe(groups[1])
+  })
+
+  it('换非聚焦叶子 → 焦点不变', () => {
+    const next = replaceTabInGroups([g(1, row(leaf(10), leaf(11)), 11)], 10, 20)
+    expect(next[0]).toEqual({ id: 1, tree: row(leaf(20), leaf(11)), focus: 11 })
+  })
+
+  it('单窗格组:树与焦点一起换', () => {
+    expect(replaceTabInGroups([solo(1, 10)], 10, 20)[0]).toEqual(solo(1, 20))
+  })
+
+  it('id 不在任何组 → 原样(新数组,元素引用不变)', () => {
+    const groups = [solo(1, 10)]
+    const next = replaceTabInGroups(groups, 99, 20)
+    expect(next).toEqual(groups)
+    expect(next[0]).toBe(groups[0])
   })
 })
 

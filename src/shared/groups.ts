@@ -10,7 +10,7 @@
  */
 
 import type { LayoutNode, PaneDir } from './split'
-import { hasPane, paneTabIds, removePane, splitPane } from './split'
+import { hasPane, paneTabIds, removePane, replacePane, splitPane } from './split'
 
 export interface TabGroup {
   id: number
@@ -64,6 +64,20 @@ export function splitGroup(
   if (!target || !hasPane(target.tree, focusedTabId)) return [...groups]
   return groups.map((g) =>
     g.id === groupId ? { ...g, tree: splitPane(g.tree, focusedTabId, dir, newTabId), focus: newTabId } : g
+  )
+}
+
+/**
+ * 把一个窗格标签**原地换掉**(终端「顶替当前聚焦窗格」打开用):树结构与几何不变,只换叶子。
+ * 旧 id 是聚焦窗格时,焦点跟着换到新 id。标签不在任何组里时原样返回。
+ */
+export function replaceTabInGroups(groups: readonly TabGroup[], oldTabId: number, newTabId: number): TabGroup[] {
+  const group = findGroupOfTab(groups, oldTabId)
+  if (!group) return [...groups]
+  return groups.map((g) =>
+    g.id === group.id
+      ? { ...g, tree: replacePane(g.tree, oldTabId, newTabId), focus: g.focus === oldTabId ? newTabId : g.focus }
+      : g
   )
 }
 

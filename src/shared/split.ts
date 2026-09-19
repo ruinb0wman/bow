@@ -121,6 +121,21 @@ export function splitPane(root: LayoutNode, tabId: number, dir: PaneDir, newTabI
 }
 
 /**
+ * 把一个叶子**原地换成另一个标签 id**(树结构与几何都不变):终端「顶替当前聚焦窗格」靠它,
+ * 比 split+remove 的往返更直接(那条路会先嵌一层再塌缩)。
+ * 树里没有 `tabId` 时原样返回(引用不变);路径外的子树引用也保持不变。
+ */
+export function replacePane(root: LayoutNode, tabId: number, newTabId: number): LayoutNode {
+  const walk = (node: LayoutNode): LayoutNode => {
+    if (node.kind === 'leaf') return node.tabId === tabId ? leaf(newTabId) : node
+    const a = walk(node.a)
+    const b = walk(node.b)
+    return a === node.a && b === node.b ? node : { ...node, a, b }
+  }
+  return walk(root)
+}
+
+/**
  * 摘掉一个叶子:容器只剩一个孩子时**塌缩**(用那个孩子顶替本节点);树空了返回 `root: null`。
  * `nextFocusTabId` = 阅读顺序里的**下一个**叶子,没有就上一个(关窗格后的焦点回落)。
  */

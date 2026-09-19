@@ -33,12 +33,19 @@ export type TabHotkey =
   | { action: 'close' }
   | { action: 'switch'; digit: number }
   | { action: 'settings' }
+  /** Ctrl/Cmd+L:普通页聚焦地址栏;**终端页让给 shell**(清屏,见 releasesToTerminal) */
   | { action: 'focus-address' }
+  /**
+   * Ctrl/Cmd+Shift+L:任何焦点下都聚焦地址栏,**含终端页**。
+   * 刻意独立成一个 action(而不是并进 focus-address):releasesToTerminal 是**按 action** 放行的,
+   * 共用 action 会让它在终端里被一起让给 shell —— 而「终端里也能用」正是这个快捷键要解决的问题。
+   */
+  | { action: 'focus-address-anywhere' }
 
 /**
  * 标签快捷键识别:Ctrl/Cmd+T(新建)、Ctrl/Cmd+Shift+T(恢复)、
  * Ctrl/Cmd+W(关闭)、Ctrl/Cmd+1..9(切换,9=最后一个标签)、Ctrl/Cmd+,(打开设置)、
- * Ctrl/Cmd+L(聚焦地址栏,页面内也生效)。
+ * Ctrl/Cmd+L(聚焦地址栏,页面内也生效)、Ctrl/Cmd+Shift+L(聚焦地址栏,**终端里也不例外**)。
  * 与 isDevToolsHotkey 同风格:忽略自动重复与输入法组合;alt 修饰不参与。
  */
 export function matchTabHotkey(input: KeyInputLike): TabHotkey | null {
@@ -49,6 +56,8 @@ export function matchTabHotkey(input: KeyInputLike): TabHotkey | null {
   const key = input.key.toLowerCase()
   if (input.shift) {
     if (key === 't' || input.code === 'KeyT') return { action: 'restore' }
+    // 与 Ctrl+L 同族,但**不**让给终端:readline/shell 没有 Ctrl+Shift+L 绑定,抢来不亏
+    if (key === 'l' || input.code === 'KeyL') return { action: 'focus-address-anywhere' }
     return null // Ctrl+Shift+数字 等不作为标签切换
   }
   if (key === 't' || input.code === 'KeyT') return { action: 'new' }
@@ -68,6 +77,8 @@ export function matchTabHotkey(input: KeyInputLike): TabHotkey | null {
  * - `Ctrl+W` = 删除前一个词 —— 误拦会直接关掉终端标签、丢掉会话;
  * - `Ctrl+L` = 清屏。
  * 其余(新建/恢复/切换/设置/数字)在 shell 里没有对应语义,保持浏览器行为。
+ *
+ * ⚠️ `focus-address-anywhere`(`Ctrl/Cmd+Shift+L`)刻意**不在这里** —— 它就是为「终端里也能跳去地址栏」加的。
  */
 export function releasesToTerminal(hotkey: TabHotkey): boolean {
   return hotkey.action === 'close' || hotkey.action === 'focus-address'

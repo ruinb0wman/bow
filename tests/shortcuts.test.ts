@@ -96,13 +96,29 @@ describe('matchTabHotkey Tab 快捷键识别', () => {
     expect(matchTabHotkey(input({ key: 'ł', code: 'KeyL', shift: false }))).toEqual({ action: 'focus-address' })
   })
 
-  it('Ctrl+Shift+L / 带 Alt / 无修饰键 / 非 keyDown 不聚焦地址栏', () => {
-    expect(matchTabHotkey(input({ key: 'l', code: 'KeyL' }))).toBe(null) // Ctrl+Shift+L
+  it('Ctrl+Shift+其它键 / 带 Alt / 无修饰键 / 非 keyDown 不聚焦地址栏', () => {
+    expect(matchTabHotkey(input({ key: 'm', code: 'KeyM' }))).toBe(null) // Ctrl+Shift+M
     expect(matchTabHotkey(input({ key: 'l', code: 'KeyL', shift: false, alt: true }))).toBe(null)
     expect(matchTabHotkey(input({ key: 'l', code: 'KeyL', shift: false, control: false, meta: false }))).toBe(null)
     expect(matchTabHotkey(input({ type: 'keyUp', key: 'l', code: 'KeyL', shift: false }))).toBe(null)
     expect(matchTabHotkey(input({ isAutoRepeat: true, key: 'l', code: 'KeyL', shift: false }))).toBe(null)
     expect(matchTabHotkey(input({ isComposing: true, key: 'l', code: 'KeyL', shift: false }))).toBe(null)
+  })
+
+  it('Ctrl/Cmd+Shift+L 聚焦地址栏(任何焦点,含终端)', () => {
+    expect(matchTabHotkey(input({ key: 'l', code: 'KeyL' }))).toEqual({ action: 'focus-address-anywhere' })
+    expect(matchTabHotkey(input({ key: 'l', code: 'KeyL', control: false, meta: true }))).toEqual({
+      action: 'focus-address-anywhere'
+    })
+    expect(matchTabHotkey(input({ key: 'L', code: 'KeyL' }))).toEqual({ action: 'focus-address-anywhere' })
+    // 非 QWERTY:key 可能为空/其它字符,code 仍为 KeyL
+    expect(matchTabHotkey(input({ key: '', code: 'KeyL' }))).toEqual({ action: 'focus-address-anywhere' })
+    expect(matchTabHotkey(input({ key: 'ł', code: 'KeyL' }))).toEqual({ action: 'focus-address-anywhere' })
+    // 带 Alt / 非 keyDown / 自动重复 / 输入法组合不命中
+    expect(matchTabHotkey(input({ key: 'l', code: 'KeyL', alt: true }))).toBe(null)
+    expect(matchTabHotkey(input({ type: 'keyUp', key: 'l', code: 'KeyL' }))).toBe(null)
+    expect(matchTabHotkey(input({ isAutoRepeat: true, key: 'l', code: 'KeyL' }))).toBe(null)
+    expect(matchTabHotkey(input({ isComposing: true, key: 'l', code: 'KeyL' }))).toBe(null)
   })
 
   it('Ctrl/Cmd+1..9 切换(code 物理键行优先)', () => {
@@ -149,6 +165,12 @@ describe('releasesToTerminal 终端页的快捷键放行', () => {
     expect(releasesToTerminal(matchTabHotkey(input({ key: 't', code: 'KeyT' }))!)).toBe(false)
     expect(releasesToTerminal(matchTabHotkey(input({ key: ',', code: 'Comma', shift: false }))!)).toBe(false)
     expect(releasesToTerminal(matchTabHotkey(input({ key: '2', code: 'Digit2', shift: false }))!)).toBe(false)
+  })
+
+  it('Ctrl+Shift+L 不放行给终端(它的存在意义就是终端里也能聚焦地址栏)', () => {
+    const hk = matchTabHotkey(input({ key: 'l', code: 'KeyL' }))
+    expect(hk).toEqual({ action: 'focus-address-anywhere' })
+    expect(releasesToTerminal(hk!)).toBe(false)
   })
 })
 

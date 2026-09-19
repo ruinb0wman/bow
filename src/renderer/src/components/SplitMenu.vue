@@ -85,7 +85,7 @@ function cancel(): void {
         <div v-if="payload.panes.length === 0" class="sm-empty">当前没有窗格</div>
       </div>
       <div class="sm-hint">
-        `Ctrl+Shift+方向键` 在当前窗格上分屏(新窗格开空白标签并聚焦),`Alt+Shift+方向键` 调整当前窗格大小。
+        `Ctrl+Shift+方向键` 在当前窗格上分屏(新窗格开空白标签并聚焦),`Alt+Shift+方向键` 调整当前窗格大小;分屏后在地址栏输入 `bow://terminal` 即在该窗格开终端。
       </div>
 
       <button class="sm-new" :disabled="!canSave" @mousedown.prevent="save">

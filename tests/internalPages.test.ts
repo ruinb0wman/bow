@@ -6,6 +6,7 @@ import {
   internalPageTitle,
   internalPageUrl,
   isInternalUrl,
+  opensInPane,
   parseInternalUrl
 } from '../src/shared/internalPages'
 
@@ -62,6 +63,13 @@ describe('内部页面登记', () => {
   it('singleton 决定 openInternal 的语义:设置页单例、终端可多开', () => {
     expect(INTERNAL_PAGES.settings.singleton).toBe(true)
     expect(INTERNAL_PAGES.terminal.singleton).toBe(false)
+  })
+
+  it('openIn 决定地址栏通路:终端顶替聚焦窗格、设置页新标签', () => {
+    expect(INTERNAL_PAGES.terminal.openIn).toBe('pane')
+    expect(INTERNAL_PAGES.settings.openIn).toBe('tab')
+    expect(opensInPane('terminal')).toBe(true)
+    expect(opensInPane('settings')).toBe(false)
   })
 
   it('每个内部页面都有渲染入口名', () => {

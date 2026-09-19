@@ -1,6 +1,6 @@
 /**
  * Tab 快捷键全局拦截:对所有 webContents 的 before-input-event 统一处理,
- * 保证页面/地址栏/弹层任何焦点下 Ctrl+T / Ctrl+Shift+T / Ctrl+W / Ctrl+L / Ctrl+数字 / Ctrl+, 均可生效。
+ * 保证页面/地址栏/弹层任何焦点下 Ctrl+T / Ctrl+Shift+T / Ctrl+W / Ctrl+L / Ctrl+Shift+L / Ctrl+数字 / Ctrl+, 均可生效。
  *
  * 背景:标签页是独立 WebContentsView,按键事件只进入当前聚焦的 webContents,
  * 渲染层 keydown 在页面聚焦时收不到按键,因此必须在主进程拦截。
@@ -65,11 +65,14 @@ export function setupTabShortcuts(
             log('快捷键:新建标签(Ctrl+T)')
             break
           }
-          case 'focus-address': {
-            // 全窗弹层(modal)打开时地址栏被遮罩盖住,不抢焦点(与 Ctrl+T 同策略)
+          case 'focus-address':
+          case 'focus-address-anywhere': {
+            // 全窗弹层(modal)打开时地址栏被遮罩盖住,不抢焦点(与 Ctrl+T 同策略)。
+            // 两者唯一的区别在**放行规则**里:focus-address(Ctrl+L)在终端页让给 shell 当清屏,
+            // focus-address-anywhere(Ctrl+Shift+L)不过 releasesToTerminal —— 终端里也能跳去地址栏。
             if (!getOverlay().isFullOpen) {
               focusAddressBar(tabs)
-              log('快捷键:聚焦地址栏(Ctrl+L)')
+              log('快捷键:聚焦地址栏', hk.action === 'focus-address' ? '(Ctrl+L)' : '(Ctrl+Shift+L)')
             }
             break
           }
