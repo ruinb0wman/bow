@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isDevToolsHotkey, matchHotkey, matchSplitHotkey, matchTabHotkey, releasesToTerminal, switchIndexForDigit } from '../src/shared/shortcuts'
+import { isDevToolsHotkey, matchHotkey, matchSplitHotkey, matchTabHotkey, releasesToTerminal, shouldTakeSplitHotkey, switchIndexForDigit } from '../src/shared/shortcuts'
 import type { KeyInputLike } from '../src/shared/shortcuts'
 
 function input(patch: Partial<KeyInputLike> = {}): KeyInputLike {
@@ -311,5 +311,27 @@ describe('matchSplitHotkey 分屏快捷键识别', () => {
   it('与 matchTabHotkey 不冲突(Ctrl+Shift+T 仍是恢复标签)', () => {
     expect(matchSplitHotkey(input({ key: 't', code: 'KeyT' }))).toBe(null)
     expect(matchTabHotkey(input({ key: 't', code: 'KeyT' }))).toEqual({ action: 'restore' })
+  })
+})
+
+describe('shouldTakeSplitHotkey 分屏快捷键接管判据', () => {
+  it('普通网页标签 → 接管', () => {
+    expect(shouldTakeSplitHotkey({ internal: false, internalPageId: null })).toBe(true)
+  })
+
+  it('终端页 → 接管(终端里 xterm 只会把组合送进 pty,不拦就分不了屏)', () => {
+    expect(shouldTakeSplitHotkey({ internal: true, internalPageId: 'terminal' })).toBe(true)
+  })
+
+  it('设置页 → 不接管(输入框要保住 Ctrl+Shift+方向 的按词选择)', () => {
+    expect(shouldTakeSplitHotkey({ internal: true, internalPageId: 'settings' })).toBe(false)
+  })
+
+  it('DevTools 前端标签(internal=true 但没有内部页 id)→ 不接管', () => {
+    expect(shouldTakeSplitHotkey({ internal: true, internalPageId: null })).toBe(false)
+  })
+
+  it('null(地址栏 / 浮层 / 别的窗口)→ 不接管', () => {
+    expect(shouldTakeSplitHotkey(null)).toBe(false)
   })
 })

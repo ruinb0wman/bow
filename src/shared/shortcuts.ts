@@ -1,5 +1,6 @@
 /** 快捷键纯逻辑(三端安全,无 Electron/DOM 依赖):用于主进程识别 DevTools 快捷键 */
 
+import type { InternalPageId } from './internalPages'
 import type { PaneDir } from './split'
 
 /** Electron `Input`(webContents before-input-event)与本接口结构化兼容 */
@@ -101,6 +102,27 @@ export interface SplitHotkey {
   dir: PaneDir
 }
 
+/** 聚焦视图的「够用」形状(`TabRecord` 的子集,便于单测时不必造假 TabManager) */
+export interface SplitHotkeyTarget {
+  /** 是否为内部页面(`TabInfo.internal`) */
+  internal: boolean
+  /** 内部页面 id(`bow://` 页面才有,非内部页面为 null) */
+  internalPageId: InternalPageId | null
+}
+
+/**
+ * 分屏快捷键(`Ctrl+Shift+方向` / `Alt+Shift+方向`)该由浏览器接管吗?
+ * - 普通网页标签:接管(代价是网页 `<input>` 也拿不到,见 README);
+ * - 终端页(`bow://terminal`):**接管** —— 终端窗格也是「要分屏 / 要调大小」的地方,
+ *   而 xterm 只会把这两个组合当输入送进 pty,不拦就等于按键没反应;
+ * - 设置页、DevTools 前端标签(inspector):不接管(它们自己的文本选择 / 前端快捷键要留着);
+ * - `null`(地址栏 / 浮层 / 别的窗口的 webContents):不接管。
+ */
+export function shouldTakeSplitHotkey(target: SplitHotkeyTarget | null): boolean {
+  if (!target) return false
+  return !target.internal || target.internalPageId === 'terminal'
+}
+
 const ARROW_DIRS: Record<string, PaneDir> = {
   ArrowLeft: 'left',
   ArrowRight: 'right',
@@ -115,8 +137,13 @@ const ARROW_DIRS: Record<string, PaneDir> = {
  * - split **忽略自动重复**(长按方向键不会一口气开出一屏窗格);
  * - resize **允许自动重复**(按住不放连续调整大小)。
  *
- * 调用方还必须保证只在「聚焦的 webContents 是普通网页标签」时接管 —— 地址栏/设置页/终端/DevTools
- * 前端里的 `Ctrl+Shift+方向`(按词选择、xterm 选择扩展)要原样留给它们。
+ * 调用方用 `shouldTakeSplitHotkey()` 决定是否接管:普通网页标签与**终端页**都接管
+ * (终端里 xterm 会把组合编成 CSI 序列送进 pty,不拦就永远分不了屏 / 调不了大小),
+ * 地址栏 / 设置页 / DevTools 前端里的这些组合原样留给它们。
+ *
+ * ⚠️ 顺带更正一句老注释:终端页里 `Ctrl+Shift+方向` **不是**「xterm 的选择扩展」——
+ * xterm 的 `SelectionService.shouldForceSelection()` 只看鼠标事件,键盘上是 `evaluateKeyboardEvent()`
+ * 把带修饰的方向键编成 `\e[1;<modifier+1>{A,B,C,D}` 直接发进 pty。所以放行 = 纯丢键,不是「留着力气」。
  */
 export function matchSplitHotkey(input: KeyInputLike): SplitHotkey | null {
   if (input.type !== 'keyDown') return null
