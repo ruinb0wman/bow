@@ -1,12 +1,13 @@
 # MCP Browser — AI 可操纵的简易 Electron 浏览器
 
-多标签页浏览器:地址栏搜索(输历史/书签实时模糊建议)、浏览历史、书签(文件夹分组)、设置页(内部标签页 `bow://settings`);内置 **MCP 服务器(stdio)**,AI 编码工具(pi / Claude Code / Cursor 等)可以实时操纵这个浏览器:导航、搜索、点击、输入、滚动、切换标签、截图、读取页面快照。
+多标签页浏览器:地址栏搜索(输历史/书签实时模糊建议)、浏览历史、书签(文件夹分组)、设置页(内部标签页 `bow://settings`)、终端(内部标签页 `bow://terminal`,连本机 shell);内置 **MCP 服务器(stdio)**,AI 编码工具(pi / Claude Code / Cursor 等)可以实时操纵这个浏览器:导航、搜索、点击、输入、滚动、切换标签、截图、读取页面快照。
 
 ## 技术栈
 
 - Electron(≥ 33,WebContentsView 每标签一实例)+ TypeScript
 - Vue 3 + Vite(electron-vite 组织 main / preload / renderer 三端)
 - `@modelcontextprotocol/sdk`(stdio transport)
+- xterm.js + `node-pty`(内置「终端」插件:`bow://terminal` 内部页面连本机 shell;node-pty 是本仓库**唯一的原生模块**,见「打包成 bow.exe」一节)
 
 > 对外签名:网站收到的 User-Agent 为 `bow/<版本>`(无 `Electron/` 与应用名令牌);
 > `Sec-CH-UA` / `navigator.userAgentData` 保持 Chromium 原生(与 Chrome 一致,不做剥离)。
@@ -59,6 +60,10 @@ npm run dist
    electron-builder 会把**生产依赖闭包**自动打进去(`devDependencies` 不会);
    `npm run dist` 最后一步的 `scripts/verify-dist.mjs` 会从 bundle 里扫出实际的外部 require
    再逐个核对,不齐就直接失败。
+3. **原生模块**。`node-pty`(终端插件用)是 N-API 二进制,npm 包里自带 `prebuilds/win32-x64/…`,
+   **不需要** `@electron/rebuild` 也不需要 VS 工具链;但它必须在 asar 里**解包**才能加载 ——
+   `package.json` 的 `build.asarUnpack` 已配 `**/node_modules/node-pty/**`,产物里会落在
+   `resources/app.asar.unpacked/…`。改这行配置时请跑一次打包 + 开一个终端验证。
 
 ```bash
 node scripts/verify-dist.mjs            # 单独重跑产物自检(自动找 dist/<平台>-unpacked/resources/app.asar)
@@ -352,6 +357,8 @@ npm run test:mcp:http
 - `Ctrl+L` 聚焦地址栏(页面/地址栏/弹层任意焦点下都生效)、`Ctrl+R` 刷新、`Ctrl+,` 打开设置(设置是内部标签页 `bow://settings`,重复打开只聚焦已有标签)
 - `Ctrl+数字`:`Ctrl+1..8` 切到标签栏第 n 项(一个分屏组只算一项)、`Ctrl+9` 取最后一项
 - `Ctrl+D` 收藏当前页
+- 终端页(`bow://terminal`)里:`Ctrl+W`(删词)与 `Ctrl+L`(清屏)**归 shell** —— 要关终端标签用标签上的 × 或中键;
+  `Ctrl+Shift+C` / `Ctrl+Shift+V` 复制粘贴(走主进程剪贴板,不依赖渲染层的敏感上下文/权限)
 - `Ctrl+Shift+F` 元素全屏:框选当前页面元素铺满网页视口(再按一次或 `Esc` 退出)
 - `Ctrl+Shift+I` / `F12`:为**当前聚焦的视图**(页面 / 浏览器 UI)打开或关闭 DevTools。
   DevTools 固定以**独立窗口**打开(不会停靠、也不会被标签页遮挡);焦点在 DevTools 窗口内时,
@@ -388,6 +395,21 @@ npm run test:mcp:http
 - MCP 工具签名不变:`browser_close_tab {tabId}` 关的是**一个标签**(组降级,不会整组消失);
   `browser_list_tabs` 的每一项带 `groupId`,可以据此看出哪两个标签是一组。
 
+## 终端(bow://terminal)
+
+工具栏的终端按钮(或地址栏输入 `bow://terminal`)在**新标签页**里开一个连到本机 shell 的终端(xterm.js + node-pty):
+
+- **每个终端标签一个独立会话**(可多开,能与网页左右分屏)。标签刷新/崩溃重建会**接回同一个 shell** 并回放最近的输出;
+  标签关掉才回收(退出 bow 时全部回收)。
+- 默认 shell 在「设置页 → 终端」选:Windows 预设 Windows PowerShell / PowerShell 7 / 命令提示符 / WSL / Git Bash,
+  也能自己加配置(名称 / 可执行文件 / 参数 / 工作目录)。WSL 的启动目录用参数 `--cd ~` 表达
+  (Windows 侧的 `cwd` 会被映射成 `/mnt/c/...`,不是 WSL 的 home)。
+- 外观:字体族 / 字号 / 滚动缓冲,**改完即时作用到已打开的终端**。
+- 键位:`Ctrl+W`(删词)、`Ctrl+L`(清屏)归 shell;`Ctrl+Shift+C` / `Ctrl+Shift+V` 复制粘贴;
+  `Ctrl+C` / `Ctrl+D` 照常。要关终端标签用 × / 中键(把焦点移到网页后再 `Ctrl+W` 也行)。
+- 同时最多 12 个会话(超了会提示);终端页是内部页面标签,MCP 的页面类工具不会拿它做操作目标。
+- node-pty 的预编译二进制只覆盖 Windows / macOS —— 这套终端主要在 Windows 侧的 bow.exe 上用。
+
 ## 数据存储
 
 - 书签(「书签」插件):`<userData>/bookmarks.json`
@@ -395,6 +417,7 @@ npm run test:mcp:http
 - CORS 放行配置(「CORS 放行」插件,首次启动从 `settings.json` 迁移):`<userData>/cors.json`
 - 广告拦截配置与计数(「广告/追踪拦截」插件,含网络规则、元素规则、元素例外标记与订阅,自动从旧版本迁移到 v3;单行 JSON):`<userData>/adblock.json`
 - 设备检查(「设备检查」插件):`<userData>/device-inspect.json` —— 只存 adb 命令、前端来源策略与**端口转发记录**(转发登记在 adb server 里,bow 被强杀后靠这份记录在下次启动时回收)
+- 终端(「终端」插件):`<userData>/terminal.json` —— 字体族 / 字号 / 滚动缓冲与 shell 配置列表(每次读取都会夹紧/兜底)
 - 插件启停状态(内核):`<userData>/plugins.json`
 - 核心设置(默认搜索引擎/主页/分屏宽度预设):`<userData>/settings.json`
 - MCP 模式下日志:`<userData>/browser.log`
@@ -406,13 +429,13 @@ npm run test:mcp:http
 
 - **常规**:默认搜索引擎、主页(主页留空视为放弃修改并回填已存值)、分屏宽度预设(增删改比例或像素档,即时保存)。
 - **插件管理**:运行时启停(立即生效并持久化)、能力标签、核心提示;有设置分区的插件可一键跳到对应分区。
-- **插件设置**:CORS 放行 / 浏览历史 / 广告追踪拦截等分区直接内联展示(取消旧版的嵌套弹窗)。
+- **插件设置**:CORS 放行 / 浏览历史 / 广告追踪拦截 / 终端 等分区直接内联展示(取消旧版的嵌套弹窗)。
 
 边界约束:内部标签页只允许载入内部页面,因此**在设置页里输入普通网址会新开标签**,设置标签本身不会被导航走;地址栏星标、页面框选这类依赖真实页面的操作在设置标签下不可用(框选会先自动切回最近浏览的页面标签)。MCP 的页面类工具(`browser_eval` / `snapshot` / `click` 等)同样跳过内部页面标签,`browser_list_tabs` 会用 `internal: true` 标出它们。
 
 ## 插件体系
 
-书签、历史、CORS 放行、元素全屏、MCP HTTP 服务、默认浏览器、设备检查都是内置插件;广告/追踪拦截是参考插件。插件是**仓库内编译期模块**(无动态代码执行),
+书签、历史、CORS 放行、元素全屏、MCP HTTP 服务、默认浏览器、设备检查、终端都是内置插件;广告/追踪拦截是参考插件。插件是**仓库内编译期模块**(无动态代码执行),
 可在「设置页 → 插件管理」里运行时启停(无需重启),状态持久化到 `plugins.json`;停用时内核自动回收其 IPC、
 建议源、MCP 工具、网络钩子与已注入 CSS。
 
@@ -559,11 +582,18 @@ bow 自带的前端是 Electron 44(Chromium 152)的,它取 storage key 用的是
    - 边界约束:`main.ts` 不得 import `.vue` 或 `@renderer`;`ui.ts` 不得 import `electron`(由 `tests/pluginBoundaries.test.ts` 强制)。
 2. 在 `src/main/plugins/builtin.ts` 的 `BUILTIN_PLUGINS` 登记 main;在 `src/renderer/src/plugins/registry.ts` 的 `PLUGIN_UI` 登记 ui(新插件的按钮默认追加到插槽末尾;要在同一个插槽里插队就写进同文件的 `SLOT_PLUGIN_ORDER`)。
 3. 渲染层用 `window.browserAPI.plugins.invoke(id, method, ...args)` 调插件方法,`plugins.onEvent` 订阅插件事件。
+4. 想要**自己的页面**(而不是浮层):在 `@shared/internalPages` 里加一条并配一个渲染入口(html + vite input + `RendererEntryName`),
+   按钮用 `browserAPI.createTab(bow://…)` 打开;`singleton` 决定重复打开是聚焦还是新开(终端插件就是这么做的,
+   它的会话靠 `getSelfTabId()` + `tab:closed` 绑定到标签上)。
 
 ## 环境注意事项
 
 - **手机调试要 adb**:「设备检查」插件不会自带 adb。Windows 侧没有 adb 时,在插件面板的「设置」里填 `wsl adb`
   (或你实际的 adb 路径);跨 WSL 时还需 WSL2 镜像网络,详见「设备检查插件」一节。
+
+- **终端只在 Windows/macOS 有预编译二进制**:`node-pty` 的 `prebuilds/` 不含 linux。在 Linux/WSL 里装依赖时它
+  会落到 `node-gyp rebuild`(需要 `make`/`g++`/`python3`),否则终端页会显示「终端后端不可用(node-pty 加载失败)」——
+  浏览器其它功能不受影响。Windows 与 macOS 开箱即用,不需要任何编译器。
 
 - **Linux 依赖**:Electron 需要 `libasound.so.2`(ALSA)。精简容器若缺失,可在运行时指定
   `LD_LIBRARY_PATH=<包含 libasound.so.2 的目录>`,或安装 `libasound2` 系统包。
@@ -611,8 +641,9 @@ src/
   plugins/<id>/  内置插件(自包含):main.ts(主进程侧)/ ui.ts + ui/*.vue(渲染层侧)
                  / shared.ts|rules.ts(同构纯逻辑)
   preload/       contextBridge 暴露 window.browserAPI(含 plugins 调用面)
-  renderer/      Vue 3 三个渲染入口:chrome UI(index.html:标签栏/地址栏/插件插槽/建议下拉浮现层)、
-                 Overlay 宿主(overlay.html)、设置页(settings.html,内部标签页 bow://settings)
+  renderer/      Vue 3 四个渲染入口:chrome UI(index.html:标签栏/地址栏/插件插槽/建议下拉浮现层)、
+                 Overlay 宿主(overlay.html)、设置页(settings.html,内部标签页 bow://settings)、
+                 终端页(terminal.html,内部标签页 bow://terminal)
                  plugins/registry.ts = 渲染层插件 UI 注册表
   shared/        三端共享:类型、URL 解析、内部页面标识、设置页导航模型、标签组记账、分屏预设与两窗格几何、
                  书签树/历史/模糊匹配/建议合并/URL 匹配纯逻辑
