@@ -8,6 +8,7 @@ import { computed, markRaw, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { Component } from 'vue'
 import type { OverlayShowMessage } from '@shared/types'
 import SuggestPanel from '@renderer/components/SuggestPanel.vue'
+import SplitMenu from '@renderer/components/SplitMenu.vue'
 import CloseConfirmModal from '@renderer/components/CloseConfirmModal.vue'
 import { PLUGIN_UI } from '../plugins/registry'
 
@@ -15,7 +16,8 @@ const api = window.browserAPI
 
 const CORE: Record<string, Component> = {
   suggest: markRaw(SuggestPanel),
-  'confirm-close': markRaw(CloseConfirmModal)
+  'confirm-close': markRaw(CloseConfirmModal),
+  'split-menu': markRaw(SplitMenu)
 }
 
 const content = ref<OverlayShowMessage | null>(null)

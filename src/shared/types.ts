@@ -1,5 +1,7 @@
 /** 共享类型:main / preload / renderer 三端通用 */
 
+import type { SplitPreset, SplitState } from './split'
+
 export interface TabInfo {
   id: number
   url: string
@@ -52,9 +54,10 @@ export type OverlayPlacement = 'full' | 'below-chrome'
 /**
  * 核心 Overlay 内容标识(渲染层组件注册表的 key)。
  * 约定:`suggest` = 地址栏建议下拉;`confirm-close` = 关闭窗口确认(多标签时);
+ * `split-menu` = 分屏下拉面板(工具栏按钮触发);
  * 设置等浏览器自有页面已改为内部标签页(bow://settings),不再占用浮层。
  */
-export type CoreOverlayContentId = 'suggest' | 'confirm-close'
+export type CoreOverlayContentId = 'suggest' | 'confirm-close' | 'split-menu'
 
 /** 插件浮层 id 约定:`plugin:<pluginId>:<panelId>` */
 export type PluginOverlayContentId = `plugin:${string}`
@@ -66,10 +69,27 @@ export interface CloseConfirmPayload {
   tabCount: number
 }
 
+/**
+ * 分屏面板浮层的 payload(由 chrome 侧组装;面板只读它、回传事件)。
+ * `rect` 与 `SuggestPayload.rect` 同形 —— `OverlayManager.bandTopOf()` 就是靠它把条带贴到按钮底下。
+ */
+export interface SplitMenuPayload {
+  rect: { x: number; y: number; width: number; height: number }
+  /** 全部标签(面板自行排除左/右窗格,得到「在右侧打开」候选) */
+  tabs: TabInfo[]
+  /** 左侧窗格标签 id:已分屏时是分屏对的左半,未分屏时是当前活动标签(它将成为左半) */
+  leftTabId: number | null
+  /** 设置页定义的分屏宽度预设 */
+  presets: SplitPreset[]
+  /** 当前分屏状态 */
+  split: SplitState
+}
+
 /** 核心内容 id 的类型化 payload;插件浮层 payload 由插件自定义(unknown) */
 export interface OverlayContentMap {
   suggest: SuggestPayload
   'confirm-close': CloseConfirmPayload
+  'split-menu': SplitMenuPayload
 }
 
 export type OverlayPayload<K extends OverlayContentId> = K extends keyof OverlayContentMap
@@ -128,6 +148,8 @@ export interface Settings {
   corsBypassEnabled: boolean
   /** CORS 放行白名单:域名 / IP / host:端口 / *.子域,匹配规则见 @shared/cors */
   corsWhitelist: string[]
+  /** 分屏宽度预设(设置页「常规」里增删改;几何计算见 @shared/split) */
+  splitPresets: SplitPreset[]
 }
 
 export interface FlatBookmark {

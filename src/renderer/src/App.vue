@@ -1,8 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue'
 import type { Component } from 'vue'
-import type { Suggestion, SuggestPayload, SuggestRow, TabInfo } from '@shared/types'
+import type {
+  OverlayEvent,
+  SplitMenuPayload,
+  SplitState,
+  Suggestion,
+  SuggestPayload,
+  SuggestRow,
+  TabInfo
+} from '@shared/types'
 import type { PluginInfo } from '@shared/plugins'
+import type { SplitPreset } from '@shared/split'
+import { emptySplitState, normalizeSplitPresets } from '@shared/split'
 import type { PluginSlot } from './plugins/types'
 import { SETTINGS_URL } from '@shared/internalPages'
 import { faviconLetter } from './lib/avatar'
@@ -11,6 +21,7 @@ import { collectSlot } from './plugins/slots'
 import {
   ArrowLeft,
   ArrowRight,
+  Columns2,
   Minus,
   Plus,
   RotateCw,
@@ -52,6 +63,17 @@ const activeTab = computed(() => tabs.value.find((t) => t.active) ?? null)
 const currentUrl = computed(() => activeTab.value?.url ?? '')
 const loading = computed(() => !!activeTab.value?.loading)
 
+// ---------- 分屏(左右两窗格;状态在主进程,宽度预设存在 settings.json) ----------
+const split = ref<SplitState>(emptySplitState())
+const splitMenuOpen = ref(false)
+const splitBtn = ref<HTMLElement | null>(null)
+/** chrome 实测高度(既上报主进程,也用来定位分隔条的起点) */
+const chromeHeight = ref(0)
+
+function plainSplit(s: SplitState): SplitState {
+  return { ...s, level: s.level ? { ...s.level } : null }
+}
+
 // ---------- 事件订阅 ----------
 const unsubs: Array<() => void> = []
 
@@ -68,6 +90,7 @@ const addressBarEl = ref<HTMLElement | null>(null)
 
 onMounted(async () => {
   tabs.value = await api.listTabs()
+  split.value = await api.getSplitState()
   syncAddress()
   plugins.value = await api.plugins.list()
 
@@ -99,24 +122,34 @@ onMounted(async () => {
       explicitFocus = false
       selectOnFocus = false
     }),
-    // overlay → chrome 泛型事件:chrome 只处理 suggest 下拉
+    // overlay → chrome 泛型事件:chrome 只处理 suggest 下拉与分屏面板(两者都是 chrome 自己打开的)
     api.onOverlayEvent((ev) => {
-      if (ev.id !== 'suggest') return
-      if (ev.event === 'pick' && typeof ev.args === 'number') {
-        const s = suggestions.value[ev.args]
-        if (s) openSuggestion(s)
-      } else if (ev.event === 'hover' && typeof ev.args === 'number') {
-        activeIdx.value = ev.args
-      } else if (ev.event === 'cancel') {
-        hideSuggest()
-        focusAddress()
+      if (ev.id === 'suggest') {
+        if (ev.event === 'pick' && typeof ev.args === 'number') {
+          const s = suggestions.value[ev.args]
+          if (s) openSuggestion(s)
+        } else if (ev.event === 'hover' && typeof ev.args === 'number') {
+          activeIdx.value = ev.args
+        } else if (ev.event === 'cancel') {
+          hideSuggest()
+          focusAddress()
+        }
+        return
       }
+      if (ev.id === 'split-menu') handleSplitMenuEvent(ev)
+    }),
+    // 分屏状态由主进程变更(点其它标签退出、关标签、窗口缩放)→ 同步按钮态并重推面板
+    api.onSplitChanged((state) => {
+      split.value = state
+      if (splitMenuOpen.value) void pushSplitMenu()
     })
   )
 
-  // chrome 高度上报(主进程据此布局 WebContentsView)
+  // chrome 高度上报(主进程据此布局 WebContentsView,分隔条也用它作起点)
   const report = (): void => {
-    void api.reportChromeHeight(Math.ceil(chromeRoot.value?.getBoundingClientRect().height ?? 0))
+    const height = Math.ceil(chromeRoot.value?.getBoundingClientRect().height ?? 0)
+    chromeHeight.value = height
+    void api.reportChromeHeight(height)
   }
   report()
   const ro = new ResizeObserver(report)
@@ -153,6 +186,63 @@ async function closeTab(id: number, e?: MouseEvent): Promise<void> {
 
 function restoreTab(): void {
   void api.restoreTab()
+}
+
+// ---------- 分屏面板(chrome 是 owner,面板只回传事件) ----------
+function splitButtonRect(): SplitMenuPayload['rect'] {
+  const r = splitBtn.value?.getBoundingClientRect()
+  return { x: r?.x ?? 0, y: r?.y ?? 0, width: r?.width ?? 0, height: r?.height ?? 0 }
+}
+
+/** 组装并显示面板(已打开时重推 = 用最新标签/预设/分屏状态刷新) */
+async function pushSplitMenu(): Promise<void> {
+  const [tabList, settings] = await Promise.all([api.listTabs(), api.getSettings()])
+  const active = tabList.find((t) => t.active) ?? null
+  const payload: SplitMenuPayload = {
+    rect: splitButtonRect(),
+    tabs: tabList.map((t) => ({ ...t })),
+    leftTabId: split.value.active ? split.value.leftTabId : (active?.id ?? null),
+    presets: normalizeSplitPresets(settings.splitPresets),
+    split: plainSplit(split.value)
+  }
+  splitMenuOpen.value = true
+  await api.showOverlay({ id: 'split-menu', placement: 'below-chrome', payload })
+}
+
+async function toggleSplitMenu(): Promise<void> {
+  if (splitMenuOpen.value) {
+    closeSplitMenu()
+    return
+  }
+  await pushSplitMenu()
+}
+
+function closeSplitMenu(): void {
+  if (!splitMenuOpen.value) return
+  splitMenuOpen.value = false
+  void api.showOverlay(null)
+}
+
+function handleSplitMenuEvent(ev: OverlayEvent): void {
+  const arg = ev.args
+  switch (ev.event) {
+    case 'enter':
+      // 面板不关:马上能接着选宽度预设(状态回来后由 split:changed 重推面板)
+      if (typeof arg === 'number') void api.splitEnter(arg)
+      break
+    case 'enter-new':
+      void api.splitEnter()
+      break
+    case 'apply':
+      if (typeof arg === 'string') void api.splitApplyPreset(arg)
+      break
+    case 'exit':
+      void api.splitExit().then(() => closeSplitMenu())
+      break
+    case 'cancel':
+      closeSplitMenu()
+      break
+  }
 }
 
 async function activateTab(id: number): Promise<void> {
@@ -322,6 +412,11 @@ function focusAddress(): void {
 function onKeydown(e: KeyboardEvent): void {
   const mod = e.ctrlKey || e.metaKey
   const key = e.key.toLowerCase()
+  // Esc 关掉分屏面板(面板在 below-chrome 条带里,Esc 由 chrome 自己接)
+  if (e.key === 'Escape' && splitMenuOpen.value) {
+    closeSplitMenu()
+    return
+  }
   // Ctrl+T / Ctrl+Shift+T / Ctrl+W / Ctrl+L / Ctrl+数字 已由主进程统一拦截(tabShortcuts.ts),
   // 此处仅保留 chrome 聚焦时需要渲染层执行的快捷键
   if (mod && !e.shiftKey && key === 'r') {
@@ -347,7 +442,11 @@ onBeforeUnmount(() => {
           v-for="t in tabs"
           :key="t.id"
           class="tab no-drag"
-          :class="{ active: t.active, crashed: t.crashed }"
+          :class="{
+            active: t.active,
+            crashed: t.crashed,
+            'in-split': split.active && (t.id === split.leftTabId || t.id === split.rightTabId)
+          }"
           @click="activateTab(t.id)"
           @auxclick="(e) => { if (e.button === 1) closeTab(t.id) }"
         >
@@ -356,6 +455,8 @@ onBeforeUnmount(() => {
             <template v-else>{{ faviconLetter(t.title) }}</template>
           </span>
           <span class="tab-title">{{ t.crashed ? '页面崩溃' : t.title }}</span>
+          <span v-if="split.active && t.id === split.leftTabId" class="tab-split" title="分屏左窗格">左</span>
+          <span v-else-if="split.active && t.id === split.rightTabId" class="tab-split" title="分屏右窗格">右</span>
           <span v-if="t.loading" class="tab-spinner"></span>
           <button class="tab-close no-drag" title="关闭标签 (Ctrl+W)" @click.stop="closeTab(t.id)">
             <X :size="12" />
@@ -407,6 +508,15 @@ onBeforeUnmount(() => {
       </div>
       <!-- 插件工具栏按钮(书签管理等) -->
       <component v-for="(C, i) in toolbarSlots" :key="`tb-${i}`" :is="C" />
+      <button
+        ref="splitBtn"
+        class="tool-btn no-drag split-btn"
+        :class="{ on: split.active }"
+        :title="split.active ? '分屏中(调整宽度 / 关闭分屏)' : '左右分屏'"
+        @click="toggleSplitMenu"
+      >
+        <Columns2 :size="16" />
+      </button>
       <button class="tool-btn no-drag" title="恢复刚刚关闭的标签 (Ctrl+Shift+T)" @click="restoreTab">
         <Undo2 :size="14" />
       </button>
@@ -414,5 +524,16 @@ onBeforeUnmount(() => {
         <SettingsIcon :size="16" />
       </button>
     </div>
+
+    <!-- 分屏分隔条:画在两窗格之间的空隙上(不可拖,指针事件穿透) -->
+    <div
+      v-if="split.active && split.leftWidth != null"
+      class="split-divider"
+      :style="{
+        left: `${split.leftWidth}px`,
+        width: `${split.gap ?? 4}px`,
+        top: `${chromeHeight}px`
+      }"
+    />
   </div>
 </template>

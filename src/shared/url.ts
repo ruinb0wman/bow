@@ -1,4 +1,5 @@
 import { CORS_DEFAULT_LIST } from './cors'
+import { DEFAULT_SPLIT_PRESETS } from './split'
 import type { SearchEngineId } from './types'
 
 export const SEARCH_ENGINES: Record<SearchEngineId, { label: string; template: string }> = {
@@ -12,7 +13,8 @@ export const DEFAULT_SETTINGS = {
   searchEngine: 'google' as SearchEngineId,
   homepage: 'https://www.google.com',
   corsBypassEnabled: true,
-  corsWhitelist: CORS_DEFAULT_LIST
+  corsWhitelist: CORS_DEFAULT_LIST,
+  splitPresets: DEFAULT_SPLIT_PRESETS
 }
 
 /** 完整 scheme:// 前缀 */

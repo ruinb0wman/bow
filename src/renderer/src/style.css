@@ -272,6 +272,40 @@ select:focus {
   font-size: 12px;
 }
 
+/* 分屏激活中的工具栏按钮 */
+.tool-btn.on {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+/* ---------- 分屏 ---------- */
+.tab.in-split {
+  border-color: var(--border);
+}
+
+.tab-split {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  color: var(--accent);
+  font-size: 10px;
+  line-height: 14px;
+  text-align: center;
+}
+
+/* 两窗格之间的空隙(chrome 页面在合成底层,这里画的就是那条分隔带) */
+.split-divider {
+  position: fixed;
+  bottom: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: var(--bg3);
+  box-shadow:
+    inset 1px 0 0 var(--border),
+    inset -1px 0 0 var(--border);
+}
+
 .addressbar {
   flex: 1;
   min-width: 0;
