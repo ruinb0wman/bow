@@ -11,7 +11,7 @@ import type {
   TabInfo
 } from '../shared/types'
 import type { PluginInfo } from '../shared/plugins'
-import type { SplitState } from '../shared/split'
+import type { TabGroupInfo } from '../shared/types'
 
 export interface PluginHostEvent {
   id: string
@@ -44,11 +44,12 @@ export interface BrowserAPI {
   maximize: () => Promise<void>
   closeWindow: () => Promise<void>
   reportChromeHeight: (height: number) => Promise<boolean>
-  // 分屏(左右两窗格):状态在主进程,宽度预设存 settings.json
-  getSplitState: () => Promise<SplitState>
-  splitEnter: (rightTabId?: number, presetId?: string) => Promise<SplitState>
-  splitExit: () => Promise<SplitState>
-  splitApplyPreset: (presetId: string) => Promise<SplitState>
+  // 标签组(标签栏一项 = 一个组;分屏组的两个标签在同一项里)
+  getGroups: () => Promise<TabGroupInfo[]>
+  groupsActivate: (groupId: number) => Promise<TabGroupInfo[]>
+  groupsAddTab: (tabId?: number) => Promise<TabGroupInfo[]>
+  groupsUngroup: () => Promise<TabGroupInfo[]>
+  groupsSetPreset: (presetId: string) => Promise<TabGroupInfo[]>
   // 通用顶层浮层(chrome 侧):打开/更新/关闭任意 Overlay 内容
   showOverlay: (content: OverlayContent | null) => Promise<boolean>
   // 通用浮层事件(overlay 页面 → chrome / 所属插件)
@@ -57,8 +58,8 @@ export interface BrowserAPI {
   onFocusAddressRequest: (cb: () => void) => () => void
   // 主进程窗口失焦:chrome 侧主动释放地址栏焦点
   onWindowBlur: (cb: () => void) => () => void
-  // 分屏状态变化(进入/退出/换窗格/套用宽度预设/窗口缩放)
-  onSplitChanged: (cb: (state: SplitState) => void) => () => void
+  // 标签组变化(建组/拆组/换成员/聚焦成员变化/宽度档位变化/窗口缩放)
+  onGroupsChanged: (cb: (groups: TabGroupInfo[]) => void) => () => void
   // 以下仅 overlay 页面使用
   onOverlayShow: (cb: (msg: OverlayShowMessage | null) => void) => () => void
   overlayEmit: (id: OverlayContentId, event: string, args?: unknown) => Promise<boolean>
@@ -107,10 +108,11 @@ const api: BrowserAPI = {
   maximize: () => ipcRenderer.invoke('window:maximize'),
   closeWindow: () => ipcRenderer.invoke('window:close'),
   reportChromeHeight: (height) => ipcRenderer.invoke('ui:chrome-height', height),
-  getSplitState: () => ipcRenderer.invoke('split:get'),
-  splitEnter: (rightTabId, presetId) => ipcRenderer.invoke('split:enter', rightTabId, presetId),
-  splitExit: () => ipcRenderer.invoke('split:exit'),
-  splitApplyPreset: (presetId) => ipcRenderer.invoke('split:apply', presetId),
+  getGroups: () => ipcRenderer.invoke('groups:get'),
+  groupsActivate: (groupId) => ipcRenderer.invoke('groups:activate', groupId),
+  groupsAddTab: (tabId) => ipcRenderer.invoke('groups:add-tab', tabId),
+  groupsUngroup: () => ipcRenderer.invoke('groups:ungroup'),
+  groupsSetPreset: (presetId) => ipcRenderer.invoke('groups:set-preset', presetId),
   showOverlay: (content) => ipcRenderer.invoke('ui:overlay', content),
   onOverlayEvent: (cb) => subscribe('overlay-event', cb),
   onOverlayShow: (cb) => subscribe('overlay:show', cb),
@@ -129,7 +131,7 @@ const api: BrowserAPI = {
   onTabActivated: (cb) => subscribe('tab:activated', cb),
   onFocusAddressRequest: (cb) => subscribe('chrome:focus-address', cb),
   onWindowBlur: (cb) => subscribe('chrome:window-blur', cb),
-  onSplitChanged: (cb) => subscribe('split:changed', cb),
+  onGroupsChanged: (cb) => subscribe('groups:changed', cb),
   onSettingsChanged: (cb) => subscribe('settings:changed', cb)
 }
 

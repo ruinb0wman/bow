@@ -1,6 +1,7 @@
 /** 共享类型:main / preload / renderer 三端通用 */
 
-import type { SplitPreset, SplitState } from './split'
+import type { TabGroup } from './groups'
+import type { SplitPreset } from './split'
 
 export interface TabInfo {
   id: number
@@ -15,6 +16,19 @@ export interface TabInfo {
   internal?: boolean
   /** DevTools 前端标签(远程调试用,devtools://…):与内部页面一样不是「可浏览页面」,但不给 preload */
   inspector?: boolean
+  /** 所属标签组(标签栏的一项);MCP / 插件据此看出哪两个标签是一对 */
+  groupId?: number
+}
+
+/**
+ * 标签组快照(标签栏 + 分屏面板的渲染数据)。组本身的语义见 `@shared/groups`:
+ * **标签栏里的每一项就是一个组**,普通组 1 个标签、分屏组 2 个。
+ */
+export interface TabGroupInfo extends TabGroup {
+  /** 该组分屏时实际生效的左窗格宽度;单标签组 / 窗口太窄时为 null */
+  leftWidth: number | null
+  /** 两窗格之间的间隔宽度(px);同上 */
+  gap: number | null
 }
 
 export type BookmarkNode =
@@ -75,14 +89,14 @@ export interface CloseConfirmPayload {
  */
 export interface SplitMenuPayload {
   rect: { x: number; y: number; width: number; height: number }
-  /** 全部标签(面板自行排除左/右窗格,得到「在右侧打开」候选) */
+  /** 全部标签(面板用它的标题/头像;结构看 `groups`) */
   tabs: TabInfo[]
-  /** 左侧窗格标签 id:已分屏时是分屏对的左半,未分屏时是当前活动标签(它将成为左半) */
-  leftTabId: number | null
+  /** 全部标签组(顺序 = 标签栏顺序) */
+  groups: TabGroupInfo[]
+  /** 当前活动组 id(= 含活动标签的那个组) */
+  activeGroupId: number | null
   /** 设置页定义的分屏宽度预设 */
   presets: SplitPreset[]
-  /** 当前分屏状态 */
-  split: SplitState
 }
 
 /** 核心内容 id 的类型化 payload;插件浮层 payload 由插件自定义(unknown) */

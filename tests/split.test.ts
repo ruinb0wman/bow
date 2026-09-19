@@ -9,7 +9,6 @@ import {
   SPLIT_PRESET_LIMIT,
   clampSplitValue,
   computeSplitBounds,
-  emptySplitState,
   findSplitPreset,
   matchSplitPreset,
   nextSplitPresetId,
@@ -175,22 +174,5 @@ describe('computeSplitBounds', () => {
     })!
     expect(geo.gap).toBe(20)
     expect(geo.leftWidth).toBe(490)
-  })
-})
-
-describe('emptySplitState', () => {
-  it('每次都是新对象且字段齐全', () => {
-    const a = emptySplitState()
-    const b = emptySplitState()
-    expect(a).not.toBe(b)
-    expect(a).toEqual({
-      active: false,
-      leftTabId: null,
-      rightTabId: null,
-      level: null,
-      presetId: null,
-      leftWidth: null,
-      gap: null
-    })
   })
 })

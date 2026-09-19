@@ -1,13 +1,15 @@
 <script setup lang="ts">
 /**
- * 分屏下拉面板(核心 `below-chrome` 浮层,由工具栏「分屏」按钮触发)。
+ * 分屏面板(核心 `below-chrome` 浮层,由工具栏「分屏」按钮触发)。
+ *
+ * 语义是**标签组**:当前这一项(组)里已经有几个标签;「加入右侧」会把候选标签拼进本组(组已满则
+ * 把原来的非聚焦成员挤出去自成一组);「取消分屏」把组拆回两个单标签组(两个标签都保留)。
  *
  * 数据全部来自 payload(chrome 侧组装),本组件不发 IPC,只回传 overlay-event:
- * enter(选右窗格)/ enter-new(新建标签再分屏)/ apply(套用预设)/ exit / cancel。
- * chrome 才是面板状态的 owner(与地址栏建议面板同一套做法),面板自己不关心分屏怎么实现。
+ * add / add-new / apply / ungroup / cancel。
  */
 import { computed } from 'vue'
-import type { SplitMenuPayload } from '@shared/types'
+import type { SplitMenuPayload, TabInfo } from '@shared/types'
 import type { SplitPreset } from '@shared/split'
 import { matchSplitPreset, splitValueLabel } from '@shared/split'
 import { faviconLetter } from '../lib/avatar'
@@ -24,26 +26,36 @@ const box = computed(() => {
   return { top: `${top}px`, right: `${right}px` }
 })
 
-function titleOf(id: number | null): string {
-  if (id == null) return '—'
+const group = computed(() => props.payload.groups.find((g) => g.id === props.payload.activeGroupId) ?? null)
+
+function titleOf(id: number): string {
   const tab = props.payload.tabs.find((t) => t.id === id)
   if (!tab) return `标签 ${id}`
   return tab.crashed ? '页面崩溃' : tab.title || tab.url
 }
 
-const leftTitle = computed(() => titleOf(props.payload.leftTabId))
-const rightTitle = computed(() => titleOf(props.payload.split.rightTabId))
+const members = computed<TabInfo[]>(() => {
+  const g = group.value
+  if (!g) return []
+  return g.tabIds.map((id) => props.payload.tabs.find((t) => t.id === id)).filter((t): t is TabInfo => !!t)
+})
 
-/** 当前高亮的预设:优先用主进程记的 presetId;首次分屏(还没点过预设)则按「值+单位」反查 */
-const activePresetId = computed(
-  () => props.payload.split.presetId ?? matchSplitPreset(props.payload.presets, props.payload.split.level)?.id ?? null
-)
+const focusedId = computed(() => {
+  const g = group.value
+  return g ? g.tabIds[g.focus] ?? g.tabIds[0] : null
+})
 
-/** 候选 = 全部标签去掉左窗格(将成为左窗格的那个)与当前右窗格 */
+/** 候选 = 所有**不在本组**里的标签(包括其它分屏组里的单个标签;选中就从原组拿走) */
 const candidates = computed(() => {
-  const left = props.payload.leftTabId
-  const right = props.payload.split.rightTabId
-  return props.payload.tabs.filter((t) => t.id !== left && t.id !== right)
+  const inGroup = new Set(group.value?.tabIds ?? [])
+  return props.payload.tabs.filter((t) => !inGroup.has(t.id))
+})
+
+/** 当前高亮的预设:优先用组上记的 presetId,否则按「值+单位」反查 */
+const activePresetId = computed(() => {
+  const g = group.value
+  if (!g) return null
+  return g.presetId ?? matchSplitPreset(props.payload.presets, g.level)?.id ?? null
 })
 
 /** 预设小示意图里左侧色块的宽度(像素档按当前窗口宽度折算) */
@@ -53,17 +65,17 @@ function miniLeft(p: SplitPreset): string {
   return `${Math.min(88, Math.max(12, pct))}%`
 }
 
-function pick(id: number): void {
-  emit('overlay-event', 'enter', id)
+function add(id: number): void {
+  emit('overlay-event', 'add', id)
 }
-function newAndSplit(): void {
-  emit('overlay-event', 'enter-new')
+function addNew(): void {
+  emit('overlay-event', 'add-new')
 }
 function applyPreset(id: string): void {
   emit('overlay-event', 'apply', id)
 }
-function exitSplit(): void {
-  emit('overlay-event', 'exit')
+function ungroup(): void {
+  emit('overlay-event', 'ungroup')
 }
 function cancel(): void {
   emit('overlay-event', 'cancel')
@@ -78,16 +90,25 @@ function cancel(): void {
       <div class="sm-head">
         <Columns2 :size="14" />
         <span class="sm-title">分屏</span>
-        <button v-if="payload.split.active" class="sm-quiet" @click="exitSplit">关闭分屏</button>
+        <button v-if="members.length > 1" class="sm-quiet" @click="ungroup">取消分屏</button>
         <button class="sm-icon" title="关闭" @click="cancel"><X :size="13" /></button>
       </div>
 
-      <div v-if="payload.split.active" class="sm-pair">
-        <div class="sm-pane"><span class="sm-pane-tag">左</span>{{ leftTitle }}</div>
-        <div class="sm-pane"><span class="sm-pane-tag">右</span>{{ rightTitle }}</div>
+      <div v-if="members.length > 1" class="sm-pair">
+        <div
+          v-for="(t, i) in members"
+          :key="t.id"
+          class="sm-pane"
+          :class="{ focused: t.id === focusedId }"
+        >
+          <span class="sm-pane-tag">{{ i === 0 ? '左' : '右' }}</span>{{ titleOf(t.id) }}
+        </div>
+      </div>
+      <div v-else class="sm-solo">
+        当前组只有一个标签 —— 从下面挑一个拼到右侧,就是一个分屏组
       </div>
 
-      <template v-if="payload.split.active">
+      <template v-if="members.length > 1">
         <div class="sm-section">宽度预设</div>
         <div class="sm-presets">
           <button
@@ -103,19 +124,19 @@ function cancel(): void {
             <span class="sm-preset-sub">{{ splitValueLabel(p) }}</span>
           </button>
           <div v-if="payload.presets.length === 0" class="sm-empty">
-            还没有预设 —— 去「设置 → 常规 → 分屏宽度预设」里添加
+            还没有预设 —— 去「设置 → 常规 → 分屏预设」里添加
           </div>
         </div>
       </template>
 
-      <div class="sm-section">{{ payload.split.active ? '更换右侧标签' : '在右侧打开' }}</div>
+      <div class="sm-section">{{ members.length > 1 ? '更换右侧标签' : '在右侧打开' }}</div>
       <div class="sm-tabs">
         <button
           v-for="t in candidates"
           :key="t.id"
           class="sm-tab"
           :title="t.url"
-          @mousedown.prevent="pick(t.id)"
+          @mousedown.prevent="add(t.id)"
         >
           <span class="sm-letter">{{ faviconLetter(t.title) }}</span>
           <span class="sm-tab-title">{{ t.title || t.url }}</span>
@@ -123,10 +144,13 @@ function cancel(): void {
         <div v-if="candidates.length === 0" class="sm-empty">没有其它标签了</div>
       </div>
 
-      <button class="sm-new" @mousedown.prevent="newAndSplit">
+      <button class="sm-new" @mousedown.prevent="addNew">
         <Plus :size="13" /> 新建空白标签并在右侧分屏
       </button>
-      <div class="sm-foot">分屏只保留两个标签;点其它标签、或关掉其中任何一个,都会退出分屏。</div>
+      <div class="sm-foot">
+        标签栏里的每一项就是一个标签组:分屏的两个标签共用一项,`Ctrl+数字` 按组切,`Ctrl+W`/×
+        只关聚焦的那一半。
+      </div>
     </div>
   </div>
 </template>
@@ -206,6 +230,18 @@ function cancel(): void {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+.sm-pane.focused {
+  color: var(--fg);
+}
+
+.sm-solo {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-dim);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .sm-pane-tag {
@@ -353,5 +389,4 @@ function cancel(): void {
   color: var(--fg-dim);
   font-size: 11px;
   line-height: 1.5;
-}
-</style>
+}</style>

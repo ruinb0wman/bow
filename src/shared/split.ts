@@ -1,12 +1,9 @@
 /**
- * 左右分屏的纯逻辑:预设模型、档位解析、两窗格几何。
+ * 左右分屏(标签组)的纯逻辑:预设模型 + 两窗格几何。
  *
- * 为什么单独一个文件:宽度预设要落盘(`settings.json` 的 `splitPresets`)、要在设置页里增删改、
- * 要被主进程的 `TabManager` 用来算 bounds、还要被渲染层用来画分隔条 —— 三端共享的东西必须无
- * electron / DOM 依赖(vitest 直接跑,见 docs/ARCHITECTURE.md §11)。
- *
- * 几何只有一处实现(`computeSplitBounds`):主进程按它算 `WebContentsView` 的 bounds,
- * 渲染层拿主进程回传的 `leftWidth` 画分隔条 —— 不要在任何一侧重算。
+ * 组的记账在 `@shared/groups`(标签栏一项 = 一个组);这里只管「宽度档位」与「按档位算几何」:
+ * 主进程用 `computeSplitBounds()` 算 `WebContentsView` 的 bounds,渲染层拿回传的 `leftWidth` 画分隔条
+ * —— 几何只有这一处实现。
  */
 
 export type SplitUnit = 'percent' | 'px'
@@ -24,20 +21,6 @@ export interface SplitPreset {
 export interface SplitLevel {
   value: number
   unit: SplitUnit
-}
-
-/** 分屏状态快照(主进程算好,渲染层只读) */
-export interface SplitState {
-  active: boolean
-  leftTabId: number | null
-  rightTabId: number | null
-  level: SplitLevel | null
-  /** 当前套用的预设 id;预设被删掉后它可能指向一个不存在的预设(面板在这种情况下不高亮任何一项) */
-  presetId: string | null
-  /** 左窗格实际宽度(px);窗口窄到放不下两窗格时为 null */
-  leftWidth: number | null
-  /** 两窗格之间的间隔宽度(px) */
-  gap: number | null
 }
 
 /** `computeSplitBounds` 的结果:渲染层只需要 leftWidth/gap */
@@ -71,11 +54,6 @@ export const DEFAULT_SPLIT_PRESETS: SplitPreset[] = [
   { id: 'p67', label: '左 2/3', value: 67, unit: 'percent' },
   { id: 'p75', label: '左 3/4', value: 75, unit: 'percent' }
 ]
-
-/** 未分屏时的状态(渲染层初值;每次返回新对象,别共享引用) */
-export function emptySplitState(): SplitState {
-  return { active: false, leftTabId: null, rightTabId: null, level: null, presetId: null, leftWidth: null, gap: null }
-}
 
 /** 按单位取整 + 夹紧;非法数值给该单位的中位兜底 */
 export function clampSplitValue(unit: SplitUnit, value: number): number {

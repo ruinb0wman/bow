@@ -40,8 +40,8 @@ export function registerIpc(
 
   tabs.on('tab-updated', (tab) => sendToChrome('tab:updated', tab))
   tabs.on('tabs-changed', sendTabsList)
-  // 分屏状态只需通知 chrome(overlay 面板的数据由 chrome 组装并下发)
-  tabs.on('split-changed', (state) => sendToChrome('split:changed', state))
+  // 标签组结构只需通知 chrome(overlay 面板的数据由 chrome 组装并下发)
+  tabs.on('groups-changed', (groups) => sendToChrome('groups:changed', groups))
 
   ipcMain.handle('tab:create', (_e, url?: string, activate = true): TabInfo => tabs.create(url, activate))
   ipcMain.handle('tab:close', (_e, id: number) => tabs.close(id))
@@ -55,25 +55,25 @@ export function registerIpc(
   // 激活最近浏览的普通页面标签(设置页的「屏蔽元素」等需要回到真实页面执行)
   ipcMain.handle('tab:activate-last-browsing', () => tabs.activateLastBrowsing())
 
-  // ---------- 分屏(左右两窗格) ----------
+  // ---------- 标签组(标签栏一项 = 一个组;分屏组两个标签) ----------
   // 宽度预设存在 settings.json(设置页「常规」里增删改),由这里统一解析成档位再交给 TabManager。
   const splitPresets = (): SplitPreset[] => normalizeSplitPresets(getSettingsStore().get().splitPresets)
 
-  ipcMain.handle('split:get', () => tabs.splitState())
-  ipcMain.handle('split:enter', (_e, rightTabId?: number, presetId?: string) => {
-    // 只在用户明确点了预设时才传档位;否则沿用主进程记住的(首次是默认 50%)
-    const picked = typeof presetId === 'string' ? findSplitPreset(splitPresets(), presetId) : null
-    // 没指定右窗格(当前只有一个标签)→ 新建一个空白标签再分屏(不激活它,左窗格继续用当前页)
-    const rightId = typeof rightTabId === 'number' ? rightTabId : tabs.create('about:blank', false).id
-    tabs.enterSplit(rightId, picked ? { level: splitLevelOf(picked), presetId: picked.id } : null)
-    return tabs.splitState()
+  ipcMain.handle('groups:get', () => tabs.listGroups())
+  ipcMain.handle('groups:activate', (_e, groupId?: number) => {
+    if (typeof groupId === 'number') tabs.activateGroup(groupId)
+    return tabs.listGroups()
   })
-  ipcMain.handle('split:exit', () => tabs.exitSplit())
-  ipcMain.handle('split:apply', (_e, presetId?: string) => {
+  // 把某个标签拼进当前组(省略 tabId = 新建一个空白标签再拼进来)
+  ipcMain.handle('groups:add-tab', (_e, tabId?: number) =>
+    tabs.addTabToActiveGroup(typeof tabId === 'number' ? tabId : undefined)
+  )
+  ipcMain.handle('groups:ungroup', () => tabs.ungroupActive())
+  ipcMain.handle('groups:set-preset', (_e, presetId?: string) => {
     // 预设可能刚被删掉:找不到就忽略,不能落回第一个(那会让用户以为点错了档位)
     const hit = findSplitPreset(splitPresets(), typeof presetId === 'string' ? presetId : null)
-    if (hit) tabs.applySplitLevel(splitLevelOf(hit), hit.id)
-    return tabs.splitState()
+    if (hit) tabs.setActiveGroupLevel(splitLevelOf(hit), hit.id)
+    return tabs.listGroups()
   })
 
   ipcMain.handle('nav:go', (_e, input: string) => {

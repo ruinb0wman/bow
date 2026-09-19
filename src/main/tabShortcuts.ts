@@ -75,11 +75,12 @@ export function setupTabShortcuts(
             break
           }
           case 'switch': {
-            const list = tabs.listTabs()
+            // 数字指的是**标签栏第几项 = 第几个标签组**(普通组一个标签、分屏组两个标签)
+            const list = tabs.listGroups()
             const idx = switchIndexForDigit(hk.digit, list.length)
             if (idx !== null) {
-              tabs.activate(list[idx].id)
-              log('快捷键:切换标签', hk.digit, '→', list[idx].id)
+              tabs.activateGroup(list[idx].id)
+              log('快捷键:切换标签组', hk.digit, '→', list[idx].id)
             }
             break
           }

@@ -88,10 +88,13 @@ export function matchHotkey(input: KeyInputLike, spec: HotkeySpec): boolean {
   return input.key.toLowerCase() === spec.key.toLowerCase()
 }
 
-/** 数字键 → 标签索引:1..8 取第 digit 个;9 取最后一个(Chrome 惯例);越界/无标签返回 null */
-export function switchIndexForDigit(digit: number, tabCount: number): number | null {
-  if (tabCount <= 0) return null
-  if (digit === 9) return tabCount - 1
-  if (digit >= 1 && digit <= 8 && digit - 1 < tabCount) return digit - 1
+/**
+ * 第 digit 项 → 下标:1..8 取第 digit 项;9 取最后一项(Chrome 惯例);越界/空列表返回 null。
+ * 注意这里传的是**标签栏项数**(= 标签组数,一个分屏组只算一项),不是标签页数。
+ */
+export function switchIndexForDigit(digit: number, itemCount: number): number | null {
+  if (itemCount <= 0) return null
+  if (digit === 9) return itemCount - 1
+  if (digit >= 1 && digit <= 8 && digit - 1 < itemCount) return digit - 1
   return null
 }

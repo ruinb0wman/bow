@@ -277,21 +277,45 @@ select:focus {
   background: color-mix(in srgb, var(--accent) 24%, transparent);
 }
 
-/* ---------- 分屏 ---------- */
-.tab.in-split {
-  border-color: var(--border);
+/* ---------- 标签组(分屏) ---------- */
+/* 分屏组的一项里塞两个标题,需要比普通标签宽一些 */
+.tab.group-split {
+  min-width: 160px;
+  max-width: 300px;
+  gap: 4px;
+  padding-left: 6px;
 }
 
-.tab-split {
+.tab-split-icon {
   flex: none;
+  color: var(--fg-dim);
+}
+
+.tab-half {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  color: var(--fg-dim);
+}
+
+.tab-half:hover {
+  background: var(--bg3);
+}
+
+/* 聚焦的那半:地址栏/前进后退跟着它 */
+.tab-half.focused {
+  background: var(--bg3);
+  color: var(--fg);
+}
+
+.tab-half .tab-letter {
   width: 14px;
   height: 14px;
-  border-radius: 3px;
-  background: color-mix(in srgb, var(--accent) 26%, transparent);
-  color: var(--accent);
-  font-size: 10px;
-  line-height: 14px;
-  text-align: center;
+  font-size: 9px;
 }
 
 /* 两窗格之间的空隙(chrome 页面在合成底层,这里画的就是那条分隔带) */

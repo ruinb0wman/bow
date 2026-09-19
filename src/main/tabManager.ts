@@ -4,9 +4,22 @@ import { BrowserWindow, WebContentsView } from 'electron'
 import type { WebContents } from 'electron'
 import { EventEmitter } from 'node:events'
 import { join } from 'node:path'
-import type { TabInfo } from '@shared/types'
-import { DEFAULT_SPLIT_LEVEL, computeSplitBounds, emptySplitState } from '@shared/split'
-import type { SplitLevel, SplitState } from '@shared/split'
+import type { TabGroupInfo, TabInfo } from '@shared/types'
+import { DEFAULT_SPLIT_LEVEL, computeSplitBounds } from '@shared/split'
+import type { SplitLevel } from '@shared/split'
+import {
+  addTabToGroup,
+  findGroupOfTab,
+  focusTab,
+  focusedTabId,
+  insertIndexAfterGroup,
+  neighborGroupIdAfterRemoval,
+  newTabGroup,
+  removeTabFromGroups,
+  setGroupLevel,
+  ungroup
+} from '@shared/groups'
+import type { TabGroup } from '@shared/groups'
 import { INTERNAL_PAGES, internalPageUrl, parseInternalUrl } from '@shared/internalPages'
 import type { InternalPageId } from '@shared/internalPages'
 import { isDevToolsFrontendUrl } from '@shared/devtools'
@@ -19,8 +32,8 @@ export interface TabEvents {
   'tab-created': (tab: TabInfo) => void
   'tab-closed': (tab: TabInfo) => void
   'tab-activated': (tab: TabInfo) => void
-  /** 分屏状态变化(进入/退出/换窗格/套用宽度预设/窗口缩放) */
-  'split-changed': (state: SplitState) => void
+  /** 标签组变化(建组/拆组/换成员/聚焦成员变化/宽度档位变化/窗口缩放) */
+  'groups-changed': (groups: TabGroupInfo[]) => void
   /** 主框架导航完成(http(s) 主文档),供插件记录历史等 */
   'tab-navigated': (payload: { tabId: number; url: string; title: string }) => void
 }
@@ -47,12 +60,6 @@ interface TabRecord {
   internalId: InternalPageId | null
 }
 
-/** 分屏的一对窗格:左 = 进入分屏时的活动标签,右 = 用户选的那个 */
-interface SplitPair {
-  leftId: number
-  rightId: number
-}
-
 /** `https://host/path` → `https://host`;非 http(s)(含 `devtools://`)或者解析不出来 → null */
 function originOf(url: string): string | null {
   try {
@@ -73,12 +80,13 @@ export class TabManager extends EventEmitter {
   private pageTracker: PageTracker | null = null
   /** 最近处于激活状态的「普通网页标签」(内部页面标签不计入),供插件页面 API 与设置页跳转使用 */
   private lastBrowsingId: number | null = null
-  /** 分屏(左右并排的两个标签);null = 不分屏。状态只在内存,重启不恢复 */
-  private split: SplitPair | null = null
-  /** 左窗格宽度(套用过的预设档位;进入分屏时如果调用方没给就用它) */
-  private splitLevel: SplitLevel = { ...DEFAULT_SPLIT_LEVEL }
-  /** 当前套用的预设 id(面板据此高亮;预设被删掉后会指向一个不存在的 id) */
-  private splitPresetId: string | null = null
+  /**
+   * 标签组列表;顺序 = 标签栏顺序。**标签栏里的每一项就是一个组** —— 普通组 1 个标签,
+   * 分屏组 2 个。活动组由 `activeId` 推出(不另存 `activeGroupId`,省得两边不同步)。
+   * 状态只在内存,重启不恢复;记账规则见 `@shared/groups`。
+   */
+  private groups: TabGroup[] = []
+  private nextGroupId = 1
 
   constructor(window: BrowserWindow) {
     super()
@@ -111,7 +119,7 @@ export class TabManager extends EventEmitter {
   getActiveTabInfo(): TabInfo | null {
     if (this.activeId == null) return null
     const hit = this.views.get(this.activeId)
-    return hit ? { ...hit.info } : null
+    return hit ? this.decorate(hit.info) : null
   }
 
   /** 活动标签(可能是内部页面标签) */
@@ -157,10 +165,16 @@ export class TabManager extends EventEmitter {
   listTabs(): TabInfo[] {
     const out: TabInfo[] = []
     for (const [, v] of this.views) {
-      out.push({ ...v.info })
+      out.push(this.decorate(v.info))
     }
     out.sort((a, b) => a.id - b.id)
     return out
+  }
+
+  /** 对外暴露的 TabInfo:补上所属组 id(MCP/插件据此看出哪两个标签是一对) */
+  private decorate(info: TabInfo): TabInfo {
+    const group = findGroupOfTab(this.groups, info.id)
+    return group ? { ...info, groupId: group.id } : { ...info }
   }
 
   getView(id: number): TabRecord | null {
@@ -202,6 +216,8 @@ export class TabManager extends EventEmitter {
       ...(internalId ? { internal: true } : {})
     }
     this.views.set(id, { view, info, kind, internalId })
+    // 新标签 = 新组(插在活动组后面)—— **绝不拆已有的分屏组**
+    this.insertNewGroup(id)
 
     wc.on('page-title-updated', (_e, title) => {
       info.title = title || (internalId ? INTERNAL_PAGES[internalId].title : '新标签页')
@@ -232,11 +248,12 @@ export class TabManager extends EventEmitter {
     if (activate) this.activate(id, true)
     if (kind === 'internal') loadRendererEntry(wc, INTERNAL_PAGES[internalId!].entry)
     else if (kind === 'page' && url) this.navigate(id, url)
+    this.publishGroups()
     this.emit('tabs-changed')
     this.layout()
-    this.emit('tab-created', { ...info, active: activate })
+    this.emit('tab-created', this.decorate({ ...info, active: activate }))
     log('创建标签', id, url ?? '(blank)')
-    return { ...info, active: activate }
+    return this.decorate({ ...info, active: activate })
   }
 
   /**
@@ -280,6 +297,8 @@ export class TabManager extends EventEmitter {
       inspector: true
     }
     this.views.set(id, { view, info, kind: 'inspector', internalId: null })
+    // DevTools 前端标签同样自成一组(不让它挤进当前正在分屏的组)
+    this.insertNewGroup(id)
     this.wireLifecycle(wc, id, info, 'DevTools 前端标签')
     // 前端加载失败不会抛到我们这里(loadURL 的 rejection 只给一部分错误),
     // 单独记一条带错误码的日志:排查「白屏」时 browser.log 是第一现场
@@ -297,11 +316,12 @@ export class TabManager extends EventEmitter {
     void wc.loadURL(frontend).catch((e) => {
       logError('DevTools 前端加载失败', id, frontend, String(e))
     })
+    this.publishGroups()
     this.emit('tabs-changed')
     this.layout()
-    this.emit('tab-created', { ...info, active: activate })
+    this.emit('tab-created', this.decorate({ ...info, active: activate }))
     log('创建 DevTools 前端标签', id, frontend)
-    return { ...info, active: activate }
+    return this.decorate({ ...info, active: activate })
   }
 
   /**
@@ -323,28 +343,26 @@ export class TabManager extends EventEmitter {
       this.publish(id)
       logError(`${label}崩溃`, id, details.reason)
     })
-    // 分屏:点到/敲到哪半就激活哪半(地址栏、前进后退、Ctrl+L 都跟随聚焦的那个窗格)。
+    // 分屏:点到/敲到活动组的另一半就切过去(地址栏、前进后退、Ctrl+L 都跟随聚焦的那个窗格)。
     // 两个触发源:`focus` 是常规路径;`input-event` 兜底 —— 鼠标点击/滚轮/键盘都会先经过它,
     // 即使某个平台/版本不发 focus 也不会出现「看着右半却在操作左半」。
-    // `activate()` 的 `activeId === id` 早退 + 下面的成员判断共同保证不会递归。
-    const activatePaneIfSplitMember = (): void => {
-      if (!this.split) return
+    // 非活动组的视图是隐藏的,收不到输入,所以只需判「是不是活动组的成员」。
+    // `activate()` 的 `activeId === id` 早退保证不会递归。
+    const activatePaneIfGroupMember = (): void => {
+      const group = this.activeGroup()
+      if (!group || group.tabIds.length < 2) return
       if (this.activeId === id) return
-      if (this.split.leftId !== id && this.split.rightId !== id) return
+      if (!group.tabIds.includes(id)) return
       this.activate(id)
     }
-    wc.on('focus', activatePaneIfSplitMember)
-    wc.on('input-event', activatePaneIfSplitMember)
+    wc.on('focus', activatePaneIfGroupMember)
+    wc.on('input-event', activatePaneIfGroupMember)
     wc.on('destroyed', () => {
       this.views.delete(id)
       if (this.lastBrowsingId === id) this.lastBrowsingId = null
-      // 分屏成员没了 → 退出分屏并让幸存那半接管;要在 activeId 回落之前做,
-      // 否则会先被 activateLastVisible() 抢到「id 最大」的那个标签
-      this.forgetSplitMember(id)
-      if (this.activeId === id) {
-        this.activeId = null
-        this.activateLastVisible()
-      }
+      // 从组里摘掉(组空了就整组消失并切到邻组);先于 activeId 回落,否则会被
+      // activateLastVisible() 的「id 最大」抢走焦点
+      this.unregisterTab(id)
       this.emit('tabs-changed')
       this.layout()
     })
@@ -378,7 +396,7 @@ export class TabManager extends EventEmitter {
     const hit = this.views.get(id)
     if (!hit) return
     hit.info.active = id === this.activeId
-    this.emit('tab-updated', { ...hit.info })
+    this.emit('tab-updated', this.decorate(hit.info))
   }
 
   activate(id: number, silent = false): void {
@@ -388,12 +406,13 @@ export class TabManager extends EventEmitter {
     // (触发路径:窗口关闭 → 各标签 webContents 依次 destroyed → activateLastVisible)
     if (this.window.isDestroyed()) return
     if (this.activeId === id) return
-    // 点了不属于当前分屏对的标签 → 退出分屏(分屏只对「一对标签」有意义);
-    // 点了分屏成员则只切焦点,两半都还在。
-    const leavingSplit = this.split != null && id !== this.split.leftId && id !== this.split.rightId
+    // 切标签 = 切到它所在的组(活动组由 activeId 推出);**不拆任何组** ——
+    // 这就是「新建 tab3 不再弄丢 tab1|tab2 的分屏」的关键。
     this.activeId = id
     // 内部页面标签不参与「最近浏览标签」记忆
     if (!hit.info.internal) this.lastBrowsingId = id
+    // 组内的聚焦成员跟着切(标签栏里高亮哪半、地址栏跟着谁,都看它)
+    this.groups = focusTab(this.groups, id)
     for (const [vid, v] of this.views) {
       if (vid === id) {
         v.info.active = true
@@ -403,14 +422,15 @@ export class TabManager extends EventEmitter {
       }
     }
     // 可见性由 layout() 统一决定(不再在这里 setVisible):分屏时两半都可见
-    if (leavingSplit) this.setSplit(null) // setSplit 内部会 layout + 通知
-    else this.layout()
+    this.layout()
     this.window.webContents.send('tab:activated', id)
     this.emit('tab-activated', { ...hit.info, active: true })
     if (!silent) {
       for (const [, v] of this.views) this.publish(v.info.id)
       this.emit('tabs-changed')
     }
+    // 组内聚焦成员变了 → 标签栏要重画哪半高亮
+    this.publishGroups()
   }
 
   private activateLastVisible(): void {
@@ -424,15 +444,16 @@ export class TabManager extends EventEmitter {
   close(id: number): { ok: boolean } {
     const hit = this.views.get(id)
     if (!hit) return { ok: false }
-    // 关掉分屏的一半 → 退出分屏,剩下的那半独占整窗
-    this.forgetSplitMember(id)
+    // 关掉组里的一个标签:组降级为单标签(剩下的那半独占整窗);组空了就整个项消失
+    const closing = this.decorate(hit.info)
+    this.unregisterTab(id)
     // DevTools 前端标签不进恢复栈:它的意义随目标(可能已消失)与转发(已回收)一起失效
     if (hit.kind !== 'inspector') {
       this.closedStack.push({ ...hit.info })
       if (this.closedStack.length > 10) this.closedStack.shift()
     }
     if (this.lastBrowsingId === id) this.lastBrowsingId = null
-    this.emit('tab-closed', { ...hit.info })
+    this.emit('tab-closed', closing)
     this.emit('tabs-changed')
     this.window.contentView.removeChildView(hit.view)
     hit.view.webContents.close()
@@ -530,91 +551,124 @@ export class TabManager extends EventEmitter {
     if (hit) hit.view.webContents.stop()
   }
 
-  // ---------- 分屏(左右两窗格) ----------
+  // ---------- 标签组(标签栏的一项 = 一个组;分屏组两个标签) ----------
 
-  /**
-   * 分屏状态快照(渲染层的唯一数据源)。
-   * `leftWidth/gap` **每次现算** —— 窗口缩放后渲染层才能拿到新的分隔条位置;
-   * 算不出来(窗口太窄)时为 null,此时渲染层不画分隔条。
-   */
-  splitState(): SplitState {
-    const pair = this.split
-    if (!pair) return emptySplitState()
+  /** 标签组快照(渲染层标签栏与分屏面板的唯一数据源) */
+  listGroups(): TabGroupInfo[] {
     const width = this.window.isDestroyed() ? 0 : this.window.getContentSize()[0]
-    const geo = computeSplitBounds({ totalWidth: width, level: this.splitLevel })
-    return {
-      active: true,
-      leftTabId: pair.leftId,
-      rightTabId: pair.rightId,
-      level: { ...this.splitLevel },
-      presetId: this.splitPresetId,
-      leftWidth: geo ? geo.leftWidth : null,
-      gap: geo ? geo.gap : null
+    const active = this.activeGroup()
+    return this.groups.map((g) => {
+      // 几何只给当前显示的那个 2 标签组算(其它组根本没显示);每次现算,窗口缩放后渲染层才拿得到新值
+      const geo =
+        g.id === active?.id && g.tabIds.length === 2
+          ? computeSplitBounds({ totalWidth: width, level: g.level })
+          : null
+      return {
+        ...g,
+        tabIds: [...g.tabIds],
+        leftWidth: geo ? geo.leftWidth : null,
+        gap: geo ? geo.gap : null
+      }
+    })
+  }
+
+  /** 活动组 = 含 `activeId` 的那个(不另存 activeGroupId,省得两边不同步) */
+  private activeGroup(): TabGroup | null {
+    return this.activeId == null ? null : findGroupOfTab(this.groups, this.activeId)
+  }
+
+  private publishGroups(): void {
+    this.emit('groups-changed', this.listGroups())
+  }
+
+  /** 新标签 → 新组,插在活动组后面(新标签**绝不**拆已有的组) */
+  private insertNewGroup(tabId: number): TabGroup {
+    const group = newTabGroup(this.nextGroupId++, tabId, DEFAULT_SPLIT_LEVEL)
+    const at = insertIndexAfterGroup(this.groups, this.activeGroup()?.id ?? null)
+    this.groups = [...this.groups.slice(0, at), group, ...this.groups.slice(at)]
+    return group
+  }
+
+  /**
+   * 把一个标签从组列表里摘掉(`close()` 与 `destroyed` 共用)。
+   * - 组还剩成员 → 焦点交给幸存那个(它独占整窗);
+   * - 组空了 → 整组移除,活动组换到**最近的邻组**;
+   * - 被摘掉的标签本来就是活动标签时,`activeId` 会落到新选中的那个上。
+   * 反复调用是幂等的(标签不在任何组里就什么都不做)。
+   */
+  private unregisterTab(id: number): void {
+    const before = this.groups
+    const res = removeTabFromGroups(this.groups, id)
+    this.groups = res.groups
+    const wasActive = this.activeId === id
+    if (wasActive) this.activeId = null
+    if (wasActive && res.focusTabId != null) {
+      // 组还在:焦点交给幸存的那半(activate 内部会 layout + 通知)
+      this.activate(res.focusTabId)
+    } else if (wasActive && res.removedGroupId != null) {
+      // 整个组没了:切到最近的邻组
+      const nextGroupId = neighborGroupIdAfterRemoval(before, [res.removedGroupId])
+      const next = nextGroupId != null ? this.groups.find((g) => g.id === nextGroupId) ?? null : null
+      const focus = next ? focusedTabId(next) : null
+      if (focus != null) this.activate(focus)
+      else this.activateLastVisible()
     }
+    this.publishGroups()
   }
 
   /**
-   * 进入分屏:左窗格 = **当前活动标签**,右窗格 = `rightTabId`。
-   * 已在分屏时只更换右窗格(左窗格不动);目标不存在或与左窗格相同时什么都不做。
-   * `preset` 省略时沿用记住的档位(首次是 `DEFAULT_SPLIT_LEVEL` 50%)—— 调用方(Settings 里的预设)
-   * 只在用户明确点了某个预设时才传它。
+   * 分屏面板:「把某个标签拼进当前组」(省略 `tabId` = 新建一个空白标签再拼进来)。
+   * 新标签进右槽并成为聚焦成员(可以立刻在地址栏里给它输网址);
+   * 组已满时原来的非聚焦成员被挤出去自成一组;该标签原来所在的组也会跟着降级。
    */
-  enterSplit(rightTabId: number, preset: { level: SplitLevel; presetId: string } | null = null): SplitState {
-    const right = this.views.get(rightTabId)
-    if (!right) return this.splitState()
-    const leftId = this.split ? this.split.leftId : this.getActiveRecord()?.info.id ?? null
-    if (leftId == null || leftId === rightTabId) return this.splitState()
-    if (preset) {
-      this.splitLevel = { ...preset.level }
-      this.splitPresetId = preset.presetId
-    }
-    this.setSplit({ leftId, rightId: rightTabId })
-    return this.splitState()
-  }
-
-  exitSplit(): SplitState {
-    if (this.split) this.setSplit(null)
-    return this.splitState()
+  addTabToActiveGroup(tabId?: number): TabGroupInfo[] {
+    const active = this.activeGroup()
+    if (!active) return this.listGroups()
+    const memberId = typeof tabId === 'number' ? tabId : this.create('about:blank', false).id
+    if (!this.views.has(memberId) || memberId === this.activeId) return this.listGroups()
+    const res = addTabToGroup(this.groups, active.id, memberId, this.nextGroupId)
+    if (res.evicted != null) this.nextGroupId += 1
+    this.groups = res.groups
+    this.activate(memberId)
+    this.publishGroups()
+    return this.listGroups()
   }
 
   /**
-   * 套用宽度预设。未分屏时只记住档位(下次 `enterSplit` 之前由调用方传入),不产生任何可见变化。
+   * 取消分屏:把当前组拆成两个单标签组(两个标签都保留,左右顺序不变,档位都继承)。
+   * 活动标签不变 ⇒ 它所在的那个新组仍是活动组,于是它独占整窗。
    */
-  applySplitLevel(level: SplitLevel, presetId: string | null): SplitState {
-    this.splitLevel = { ...level }
-    this.splitPresetId = presetId
-    if (this.split) this.layout() // layout 会在分屏时广播新几何
-    return this.splitState()
+  ungroupActive(): TabGroupInfo[] {
+    const active = this.activeGroup()
+    if (!active || active.tabIds.length < 2) return this.listGroups()
+    this.groups = ungroup(this.groups, active.id, this.nextGroupId++)
+    this.layout()
+    this.publishGroups()
+    return this.listGroups()
   }
 
-  /** 设置分屏对;layout() 负责两窗格可见性与 bounds(非分屏时只显示活动标签) */
-  private setSplit(next: SplitPair | null): void {
-    const had = this.split != null
-    this.split = next
-    this.layout() // 分屏时已在这一步广播 split-changed
-    if (!this.split && had) this.publishSplit() // 退出分屏要显式通知(否则渲染层的分隔条/按钮态会残留)
+  /** 套用宽度预设到当前组(单标签组也记下,下次拼第二个标签时直接用) */
+  setActiveGroupLevel(level: SplitLevel, presetId: string | null): TabGroupInfo[] {
+    const active = this.activeGroup()
+    if (!active) return this.listGroups()
+    this.groups = setGroupLevel(this.groups, active.id, level, presetId)
+    this.layout()
+    this.publishGroups()
+    return this.listGroups()
   }
 
-  private publishSplit(): void {
-    this.emit('split-changed', this.splitState())
-  }
-
-  /**
-   * 分屏成员被关掉时退出分屏,幸存那半接管整窗。
-   * 两个调用点:`close()`(主动关标签)与 `wireLifecycle` 的 `destroyed`(窗口销毁/崩溃);
-   * 后者会撞上已销毁的窗口,`layout()`/`activate()` 开头的守卫负责兜住。
-   */
-  private forgetSplitMember(id: number): void {
-    const pair = this.split
-    if (!pair || (pair.leftId !== id && pair.rightId !== id)) return
-    const survivor = pair.leftId === id ? pair.rightId : pair.leftId
-    this.setSplit(null)
-    if (this.views.has(survivor)) this.activate(survivor)
+  /** 激活某个组(默认聚焦它记住的那一半)—— Ctrl+数字用 */
+  activateGroup(groupId: number): TabInfo | null {
+    const group = this.groups.find((g) => g.id === groupId)
+    const focus = group ? focusedTabId(group) : null
+    if (focus == null) return null
+    this.activate(focus)
+    return this.getActiveTabInfo()
   }
 
   /**
-   * 布局:普通标签铺满页面区,**分屏时左/右两窗格各自一半**。
-   * 也是**可见性的唯一来源** —— 只有活动标签(或分屏的两个成员)可见。
+   * 布局:普通组铺满页面区,**活动组是 2 标签组时左/右两窗格各占一半**。
+   * 也是**可见性的唯一来源** —— 只有活动组的标签可见(单标签组只有那一个)。
    * 旧实现把 `setVisible` 放在 `activate()` 里,导致 `create(url, activate=false)` 的后台标签视图
    * (View 默认可见)盖在当前页上。
    */
@@ -626,13 +680,16 @@ export class TabManager extends EventEmitter {
     const [w, h] = this.window.getContentSize()
     const top = this.chromeHeight
     const viewH = Math.max(0, h - top)
-    const pair = this.split
-    const geo = pair ? computeSplitBounds({ totalWidth: w, level: this.splitLevel }) : null
+    const active = this.activeGroup()
+    const split = active && active.tabIds.length === 2 ? active : null
+    const geo = split ? computeSplitBounds({ totalWidth: w, level: split.level }) : null
+    const leftId = geo && split ? split.tabIds[0] : null
+    const rightId = geo && split ? split.tabIds[1] : null
     for (const [id, v] of this.views) {
-      const isLeft = geo != null && pair != null && id === pair.leftId
-      const isRight = geo != null && pair != null && id === pair.rightId
-      // 窗口太窄放不下两窗格时退化为「活动标签铺满」—— 分屏状态本身不清空,窗口变宽后自动恢复
-      const visible = geo != null ? isLeft || isRight : id === this.activeId
+      const isLeft = id === leftId
+      const isRight = id === rightId
+      // 窗口太窄放不下两窗格时退化为「聚焦那半铺满」—— 组本身不拆,窗口变宽后自动恢复
+      const visible = isLeft || isRight ? true : id === this.activeId
       if (visible) {
         if (isLeft && geo) {
           v.view.setBounds({ x: 0, y: top, width: geo.leftWidth, height: viewH })
@@ -650,6 +707,6 @@ export class TabManager extends EventEmitter {
       v.view.setVisible(visible)
     }
     // 分屏几何(左窗格宽度 / 窗口缩放)变了 → 渲染层重画分隔条
-    if (pair) this.publishSplit()
+    if (split) this.publishGroups()
   }
 }
