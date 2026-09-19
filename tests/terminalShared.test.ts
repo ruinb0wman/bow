@@ -22,7 +22,8 @@ import {
   platformProfiles,
   pushReplay,
   renderSettingsOf,
-  replayText
+  replayText,
+  matchClipboardKey
 } from '../src/plugins/terminal/shared'
 
 const WIN = defaultSettings('win32', undefined)
@@ -230,5 +231,70 @@ describe('常量', () => {
   it('会话上限是正整数', () => {
     expect(Number.isInteger(MAX_SESSIONS)).toBe(true)
     expect(MAX_SESSIONS).toBeGreaterThan(0)
+  })
+})
+
+/** 构造按键事件:默认 keydown + 无修饰,按需覆盖 */
+function key(patch: Partial<Parameters<typeof matchClipboardKey>[0]>): Parameters<typeof matchClipboardKey>[0] {
+  return { type: 'keydown', ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, ...patch }
+}
+
+describe('matchClipboardKey(终端里的复制/粘贴)', () => {
+  describe('Windows / Linux(Ctrl)', () => {
+    it('Ctrl+C = 有选区才复制,没选区放行给 shell 发中断', () => {
+      expect(matchClipboardKey(key({ code: 'KeyC', key: 'c', ctrlKey: true }), false)).toBe('copy-if-selection')
+    })
+
+    it('Ctrl+V / Ctrl+Shift+V 都是粘贴', () => {
+      expect(matchClipboardKey(key({ code: 'KeyV', key: 'v', ctrlKey: true }), false)).toBe('paste')
+      expect(matchClipboardKey(key({ code: 'KeyV', key: 'V', ctrlKey: true, shiftKey: true }), false)).toBe('paste')
+    })
+
+    it('Ctrl+Shift+C 是强制复制(没选区也不会误发中断)', () => {
+      expect(matchClipboardKey(key({ code: 'KeyC', key: 'C', ctrlKey: true, shiftKey: true }), false)).toBe('copy')
+    })
+
+    it('不带 Ctrl 的 C / Shift+C / Ctrl+其它键 都不接管', () => {
+      expect(matchClipboardKey(key({ code: 'KeyC', key: 'c' }), false)).toBeNull()
+      expect(matchClipboardKey(key({ code: 'KeyC', key: 'C', shiftKey: true }), false)).toBeNull()
+      expect(matchClipboardKey(key({ code: 'KeyZ', key: 'z', ctrlKey: true }), false)).toBeNull()
+    })
+  })
+
+  describe('macOS(⌘)', () => {
+    it('⌘C / ⌘V 接管', () => {
+      expect(matchClipboardKey(key({ code: 'KeyC', key: 'c', metaKey: true }), true)).toBe('copy-if-selection')
+      expect(matchClipboardKey(key({ code: 'KeyV', key: 'v', metaKey: true }), true)).toBe('paste')
+    })
+
+    it('Ctrl+C 在 mac 上仍然归 shell(中断信号不能被抢)', () => {
+      expect(matchClipboardKey(key({ code: 'KeyC', key: 'c', ctrlKey: true }), true)).toBeNull()
+    })
+
+    it('⌃⇧C / ⌃⇧V(带 Shift)也认,兼容老习惯', () => {
+      expect(matchClipboardKey(key({ code: 'KeyC', key: 'C', ctrlKey: true, shiftKey: true }), true)).toBe('copy')
+      expect(matchClipboardKey(key({ code: 'KeyV', key: 'V', ctrlKey: true, shiftKey: true }), true)).toBe('paste')
+    })
+  })
+
+  it('带 Alt 一律不接管:AltGr 在部分键盘布局上就是 Ctrl+Alt', () => {
+    expect(matchClipboardKey(key({ code: 'KeyC', key: 'c', ctrlKey: true, altKey: true }), false)).toBeNull()
+    expect(matchClipboardKey(key({ code: 'KeyV', key: 'v', ctrlKey: true, altKey: true }), false)).toBeNull()
+    expect(matchClipboardKey(key({ code: 'KeyV', key: 'v', metaKey: true, altKey: true }), true)).toBeNull()
+  })
+
+  it('只认 keydown(keyup / keypress 都不接管)', () => {
+    expect(matchClipboardKey(key({ code: 'KeyC', key: 'c', ctrlKey: true, type: 'keyup' }), false)).toBeNull()
+    expect(matchClipboardKey(key({ code: 'KeyV', key: 'v', ctrlKey: true, type: 'keypress' }), false)).toBeNull()
+  })
+
+  it('code 缺失时用 key 兜底(合成事件/异常输入法)', () => {
+    expect(matchClipboardKey(key({ key: 'c', ctrlKey: true }), false)).toBe('copy-if-selection')
+    expect(matchClipboardKey(key({ key: 'V', ctrlKey: true }), false)).toBe('paste')
+    expect(matchClipboardKey(key({ key: '', code: '', ctrlKey: true }), false)).toBeNull()
+  })
+
+  it('大写 key 与 code 一致处理(Shift 场景)', () => {
+    expect(matchClipboardKey(key({ key: 'C', code: 'KeyC', ctrlKey: true }), false)).toBe('copy-if-selection')
   })
 })

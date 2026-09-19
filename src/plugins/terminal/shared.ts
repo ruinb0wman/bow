@@ -331,6 +331,58 @@ export function formatArgsLine(args: readonly string[]): string {
     .join(' ')
 }
 
+// ---------- 键盘:复制 / 粘贴 ----------
+
+/** 识别复制/粘贴所需的按键字段(与 DOM `KeyboardEvent` 结构化兼容,好让单测直接构造) */
+export interface TerminalKeyLike {
+  type: string
+  /** 字符键(受 Shift/布局影响,如 `'C'`) */
+  key?: string
+  /** 物理键(`'KeyC'`),布局无关,优先用它 */
+  code?: string
+  ctrlKey: boolean
+  metaKey: boolean
+  shiftKey: boolean
+  altKey: boolean
+}
+
+/** 终端页对 `Ctrl/⌘ + C/V` 的处置意图 */
+export type TerminalClipboardIntent = 'copy' | 'copy-if-selection' | 'paste'
+
+/** 主键字符:优先物理 code(AZERTY 等布局下 `key` 可能是符号),退化用 key */
+function clipboardKeyChar(input: TerminalKeyLike): string {
+  const code = (input.code ?? '').toLowerCase()
+  if (/^key[a-z]$/.test(code)) return code.slice(3)
+  return (input.key ?? '').toLowerCase()
+}
+
+/**
+ * 终端里 `Ctrl/⌘+C`、`Ctrl/⌘+V` 的意图;返回 `null` = 不接管,交给 xterm / shell。
+ *
+ * 三条语义:
+ * - `copy-if-selection`(`Ctrl+C`):**有选区才复制**,没有选区放行 —— xterm 会把 `\x03` 送进 pty,
+ *   shell 于是收到中断信号(这才是终端里 Ctrl+C 的本义);
+ * - `copy`(`Ctrl+Shift+C`):强制复制(无选区则什么都不做),绝不会误发中断;
+ * - `paste`(`Ctrl+V` / `Ctrl+Shift+V`)。
+ *
+ * 两个不能省的细节:
+ * - mac 上复制粘贴用 ⌘,而 `Ctrl+C` 在 mac 上仍是中断信号(`Ctrl+V` 在 bash 里是 quoted-insert,
+ *   所以 mac 上也不接管它);
+ * - **带 Alt 一律不接管** —— 部分键盘布局(AltGr)把特殊字符编码成 Ctrl+Alt,抢了会打断输入。
+ */
+export function matchClipboardKey(input: TerminalKeyLike, isMac: boolean): TerminalClipboardIntent | null {
+  if (input.type !== 'keydown') return null
+  if (input.altKey) return null
+  const primary = isMac ? input.metaKey : input.ctrlKey
+  // 带 Shift 时 Ctrl/⌘ 都认,兼容 Ctrl+Shift+C/V 这个老习惯(mac 上是 ⌃⇧C / ⌃⇧V)
+  const shifted = input.shiftKey && (input.ctrlKey || input.metaKey)
+  if (!primary && !shifted) return null
+  const key = clipboardKeyChar(input)
+  if (key === 'c') return input.shiftKey ? 'copy' : 'copy-if-selection'
+  if (key === 'v') return 'paste'
+  return null
+}
+
 // ---------- 插件 IPC / 广播契约(主进程与终端页共用同一份形状) ----------
 
 /** 设置页「添加配置」列表项:预设 shell + 本机是否真的找得到 */

@@ -18,11 +18,15 @@ import {
   DEFAULT_FONT_SIZE,
   DEFAULT_SCROLLBACK,
   TERMINAL_EVENTS,
-  TERMINAL_THEME
+  TERMINAL_THEME,
+  matchClipboardKey
 } from '@plugins/terminal/shared'
 import type { TerminalAttachResult, TerminalRenderSettings } from '@plugins/terminal/shared'
 
 const api = window.browserAPI
+
+/** mac 上复制粘贴用 ⌘(`Ctrl+C` 在 mac 上仍是中断信号,见 matchClipboardKey) */
+const IS_MAC = /Mac/i.test(navigator.userAgent)
 
 const host = ref<HTMLElement | null>(null)
 const status = ref<'connecting' | 'ready' | 'error'>('connecting')
@@ -67,23 +71,39 @@ function refit(): void {
   }, 120)
 }
 
-/** xterm 的键盘钩子:只接管复制/粘贴,Ctrl+W / Ctrl+L 之类交给 shell(见 tabShortcuts 的放行) */
+/**
+ * xterm 的键盘钩子:只接管复制/粘贴 —— `Ctrl+W` / `Ctrl+L` 之类交给 shell(见 tabShortcuts 的放行)。
+ *
+ * ⚠️ 这里必须自己 `event.preventDefault()`:xterm 的 `_keyDown` 在钩子返回 `false` 时**直接返回**、
+ * 不会阻止浏览器的默认动作,而 `Ctrl+V` 的默认动作就是往它的隐藏 textarea 原生粘贴 ——
+ * xterm 自己在 textarea 与 element 上都挂了 `paste` 监听,不拦就会「原生粘一次 + 我们粘一次」。
+ */
 function onKey(event: KeyboardEvent): boolean {
-  if (event.type !== 'keydown') return true
-  const mod = event.ctrlKey || event.metaKey
-  if (!mod || !event.shiftKey) return true
-  if (event.code === 'KeyC') {
-    const selection = term?.getSelection() ?? ''
-    if (selection) void api.writeClipboardText(selection)
-    return false
-  }
-  if (event.code === 'KeyV') {
+  const intent = matchClipboardKey(event, IS_MAC)
+  if (!intent) return true
+  event.preventDefault()
+  if (intent === 'paste') {
     void api.readClipboardText().then((text) => {
       if (text) term?.paste(text)
     })
     return false
   }
-  return true
+  const selection = term?.getSelection() ?? ''
+  // `Ctrl+C` 且没有选区 = 不接管:xterm 会把它变成 \x03 送进 pty(shell 收到中断信号)
+  if (!selection) return intent === 'copy-if-selection'
+  void api.writeClipboardText(selection)
+  return false
+}
+
+/**
+ * 原生 `copy` 事件的兜底:菜单栏 / 右键菜单的「复制」不走 keydown(菜单 role 直接派发 copy 事件)。
+ * xterm 的选区画在 canvas 上、**不是 DOM 选区**,浏览器默认什么也复制不到,所以这里自己塞进去。
+ */
+function onNativeCopy(event: ClipboardEvent): void {
+  const selection = term?.getSelection() ?? ''
+  if (!selection) return
+  event.preventDefault()
+  event.clipboardData?.setData('text/plain', selection)
 }
 
 function subscribe(): void {
@@ -207,6 +227,8 @@ onMounted(async () => {
   exposeDebugHandle()
   await boot()
   if (host.value) {
+    // 菜单栏 / 右键的复制走原生 copy 事件(不经过键盘钩子)
+    host.value.addEventListener('copy', onNativeCopy)
     observer = new ResizeObserver(() => refit())
     observer.observe(host.value)
   }
@@ -217,6 +239,7 @@ onBeforeUnmount(() => {
   alive = false
   unsubs.forEach((u) => u())
   unsubs = []
+  host.value?.removeEventListener('copy', onNativeCopy)
   window.removeEventListener('resize', refit)
   observer?.disconnect()
   observer = null
