@@ -14,12 +14,13 @@
  * 页面拦不住它,所以只能把窗口压小 —— 这是 README 里写明的代价。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { CalendarDays, ChevronLeft, ChevronRight, FolderOpen, RefreshCw, Search } from 'lucide-vue-next'
+import { CalendarDays, ChevronLeft, ChevronRight, FolderOpen, RefreshCw, Search, Star, X } from 'lucide-vue-next'
 import { LOGSEQ_URL } from '@shared/internalPages'
 import type { PaneDir } from '@shared/split'
 import {
   blockLinesForDisplay,
   DEFAULT_HIDDEN_PROPERTIES,
+  DEFAULT_LOGSEQ_FONT_SIZE,
   deleteBlock,
   detectIndentUnit,
   findBlock,
@@ -28,6 +29,7 @@ import {
   indentBlock,
   insertFirstBlock,
   insertSiblingAfter,
+  LOGSEQ_EVENT,
   mergeWithPrevious,
   outdentBlock,
   parseLogseqFile,
@@ -44,6 +46,7 @@ import {
   type FileRead,
   type GraphState,
   type GraphSwitchResult,
+  type LogseqClientSettings,
   type LogseqView,
   type ParsedFile,
   type SaveResult
@@ -104,6 +107,16 @@ const searchDraft = ref('')
 const searchHits = ref<PageHit[]>([])
 const searchOpen = ref(false)
 const dayDraft = ref(todayDay())
+
+// ---------- 页面偏好(字号 / 收藏) ----------
+
+/** 正文字号(px):挂在 `.logseq-page` 上向下继承,`em` 标题按比例;页头控件是固定 px 不受影响 */
+const fontSize = ref(DEFAULT_LOGSEQ_FONT_SIZE)
+/** 当前图的收藏(最近收藏在前);收藏按图分开存在 logseq.json 里 */
+const favorites = ref<LogseqView[]>([])
+const favOpen = ref(false)
+const favWrap = ref<HTMLElement | null>(null)
+const isFavorite = computed(() => favorites.value.some((fav) => viewKey(fav) === viewKey(view.value)))
 
 const undoStack = ref<string[]>([])
 const redoStack = ref<string[]>([])
@@ -233,6 +246,7 @@ async function boot(): Promise<void> {
     }
     const attached = await invoke<{ view: LogseqView }>('attach', tabId.value ?? 0)
     await openView(attached.view)
+    void refreshClientSettings()
   } catch (e) {
     const text = e instanceof Error ? e.message : String(e)
     if (text.includes('插件已停用')) fail('「笔记」插件已被停用(设置页 → 插件管理可以重新启用)', 'disabled')
@@ -242,6 +256,51 @@ async function boot(): Promise<void> {
 
 async function refreshState(): Promise<void> {
   graphState.value = await invoke<GraphState>('getState')
+}
+
+// ---------- 偏好:字号 / 收藏 ----------
+
+async function refreshClientSettings(): Promise<void> {
+  try {
+    const settings = await invoke<LogseqClientSettings>('getSettings')
+    fontSize.value = settings.fontSize
+    favorites.value = settings.favorites
+  } catch {
+    // 拿不到就保持默认(不影响读写正文)
+  }
+}
+
+/** 收藏/取消收藏指定视图(下拉里的 ✕ 与标题旁的星标共用) */
+async function toggleFavoriteView(target: LogseqView): Promise<void> {
+  try {
+    // 传**普通对象**:`view.value` 是 Vue 的响应式 Proxy,直接过 IPC 可能过不了结构化克隆
+    const payload: LogseqView =
+      target.kind === 'journal'
+        ? { kind: 'journal', day: target.day }
+        : { kind: 'page', name: target.name }
+    const res = await invoke<{ favorites: LogseqView[]; on: boolean }>('toggleFavorite', payload)
+    favorites.value = res.favorites
+  } catch (e) {
+    message.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+function toggleFavorite(): void {
+  void toggleFavoriteView(view.value)
+}
+
+async function openFavorite(target: LogseqView): Promise<void> {
+  favOpen.value = false
+  await saveNow()
+  await openView(target)
+}
+
+/** 点在下拉之外就关掉(星标/搜索那种 `blur` 在这里不适用:按钮与列表不是同一个可聚焦元素) */
+function onDocumentMousedown(event: MouseEvent): void {
+  if (!favOpen.value) return
+  const el = favWrap.value
+  if (el && event.target instanceof Node && el.contains(event.target)) return
+  favOpen.value = false
 }
 
 // ---------- 保存 ----------
@@ -621,7 +680,20 @@ function onWindowKeydown(event: KeyboardEvent): void {
 function subscribe(): void {
   unsubs.push(
     api.plugins.onEvent((payload) => {
-      if (payload.id !== 'logseq' || payload.event !== 'graph-changed') return
+      if (payload.id !== 'logseq') return
+      // 设置页改了字号:本页即时应用(事件只带 fontSize,不拿它覆盖收藏)
+      if (payload.event === LOGSEQ_EVENT.settingsChanged) {
+        const next = payload.args as LogseqClientSettings | undefined
+        if (next && typeof next.fontSize === 'number') fontSize.value = next.fontSize
+        return
+      }
+      // 别的窗格/本页刚改了收藏:列表以主进程为准
+      if (payload.event === LOGSEQ_EVENT.favoritesChanged) {
+        const next = payload.args as LogseqView[] | undefined
+        if (Array.isArray(next)) favorites.value = next
+        return
+      }
+      if (payload.event !== LOGSEQ_EVENT.graphChanged) return
       if (!meta.value) return
       const args = payload.args as { paths?: string[] } | undefined
       const paths = args?.paths ?? []
@@ -677,7 +749,19 @@ function exposeDebugHandle(): void {
     },
     get rows() {
       return visibleRows.value.map((row) => ({ key: row.block.key, depth: row.depth, text: blockPreview(row) }))
-    },    openPage,
+    },
+    get fontSize() {
+      return fontSize.value
+    },
+    get favorites() {
+      return plain(favorites.value)
+    },
+    get isFavorite() {
+      return isFavorite.value
+    },
+    toggleFavorite: toggleFavoriteView,
+    openFavorite,
+    openPage,
     goDay,
     goToday,
     save: doSave,
@@ -695,6 +779,7 @@ onMounted(async () => {
   exposeDebugHandle()
   subscribe()
   window.addEventListener('keydown', onWindowKeydown, true)
+  document.addEventListener('mousedown', onDocumentMousedown, true)
   await boot()
 })
 
@@ -702,6 +787,7 @@ onBeforeUnmount(() => {
   unsubs.forEach((unsub) => unsub())
   unsubs.length = 0
   window.removeEventListener('keydown', onWindowKeydown, true)
+  document.removeEventListener('mousedown', onDocumentMousedown, true)
   if (saveTimer != null) clearTimeout(saveTimer)
   if (searchTimer != null) clearTimeout(searchTimer)
   delete (window as unknown as Record<string, unknown>).__bowLogseq
@@ -716,7 +802,7 @@ watch(
 </script>
 
 <template>
-  <div class="logseq-page">
+  <div class="logseq-page" :style="{ fontSize: `${fontSize}px` }">
     <!-- 没选图 / 插件停用 / 出错 -->
     <div v-if="status === 'nograph' || status === 'disabled' || status === 'error'" class="notice">
       <h1 class="notice-title">{{ status === 'disabled' ? '插件已停用' : '笔记' }}</h1>
@@ -744,6 +830,14 @@ watch(
             {{ view.kind === 'journal' ? formatDayTitle(view.day) : view.name }}
             <span v-if="view.kind === 'journal'" class="head-kind">日志</span>
           </h1>
+          <button
+            class="icon star"
+            :class="{ on: isFavorite }"
+            :title="isFavorite ? '取消收藏本页' : '收藏本页'"
+            @click="toggleFavorite"
+          >
+            <Star :size="15" :fill="isFavorite ? 'currentColor' : 'none'" />
+          </button>
           <button class="icon" title="后一天" @click="goDay(1)"><ChevronRight :size="16" /></button>
           <button class="ghost" @click="goToday">今天</button>
           <span class="date-jump">
@@ -753,6 +847,32 @@ watch(
         </div>
 
         <div class="head-side">
+          <span ref="favWrap" class="fav">
+            <button
+              class="ghost fav-btn"
+              :class="{ on: favOpen }"
+              title="收藏的页面"
+              @click="favOpen = !favOpen"
+            >
+              <Star :size="13" :fill="favorites.length > 0 ? 'currentColor' : 'none'" />
+              <span v-if="favorites.length > 0">{{ favorites.length }}</span>
+            </button>
+            <ul v-if="favOpen" class="fav-hits">
+              <li v-if="favorites.length === 0" class="fav-empty">点标题旁的星标收藏本页</li>
+              <li v-for="fav in favorites" :key="viewKey(fav)" @mousedown.prevent="openFavorite(fav)">
+                <span class="fav-name">{{ fav.kind === 'journal' ? fav.day : fav.name }}</span>
+                <span class="fav-kind">{{ fav.kind === 'journal' ? '日志' : '页面' }}</span>
+                <button
+                  class="fav-del"
+                  title="取消收藏"
+                  @mousedown.stop.prevent
+                  @click.stop="toggleFavoriteView(fav)"
+                >
+                  <X :size="12" />
+                </button>
+              </li>
+            </ul>
+          </span>
           <span class="search">
             <Search :size="13" />
             <input
@@ -959,6 +1079,89 @@ body {
 .icon:hover {
   color: var(--fg);
   background: var(--bg3);
+}
+
+/* 标题旁星标:已收藏时用强调色(与地址栏星标同语义) */
+.icon.star.on {
+  color: var(--accent);
+}
+
+/* 收藏下拉:与 `.search-hits` 同款浮层,靠右展开(它在页头右半部分) */
+.fav {
+  position: relative;
+  display: inline-flex;
+}
+
+.fav-btn {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.fav-btn.on {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.fav-hits {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 30;
+  min-width: 200px;
+  max-height: 260px;
+  margin: 4px 0 0;
+  padding: 4px;
+  overflow: auto;
+  list-style: none;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+}
+
+.fav-hits li {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.fav-hits li:not(.fav-empty):hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.fav-empty {
+  color: var(--fg-dim);
+  cursor: default;
+}
+
+.fav-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fav-kind {
+  flex: none;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.fav-del {
+  flex: none;
+  display: inline-flex;
+  padding: 1px;
+  color: var(--fg-dim);
+  border-radius: 3px;
+}
+
+.fav-del:hover {
+  color: var(--fg);
+  background: var(--bg2);
 }
 
 .ghost,

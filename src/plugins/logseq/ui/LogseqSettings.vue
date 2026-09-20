@@ -7,13 +7,17 @@
  */
 import { onMounted, ref } from 'vue'
 import { FolderOpen, RefreshCw } from 'lucide-vue-next'
-import type { GraphState } from '@plugins/logseq/shared'
+import { DEFAULT_LOGSEQ_FONT_SIZE, LOGSEQ_FONT_SIZE_RANGE } from '@plugins/logseq/shared'
+import type { GraphState, LogseqClientSettings } from '@plugins/logseq/shared'
 
 const api = window.browserAPI
 
 const state = ref<GraphState | null>(null)
 const busy = ref(false)
 const message = ref('')
+
+// 字号存在本插件自己的 logseq.json 里(与图里的 config.edn 无关)
+const fontSize = ref(DEFAULT_LOGSEQ_FONT_SIZE)
 
 function invoke<T>(method: string, ...args: unknown[]): Promise<T> {
   return api.plugins.invoke<T>('logseq', method, ...args)
@@ -27,6 +31,23 @@ async function refresh(): Promise<void> {
     message.value = e instanceof Error ? e.message : String(e)
   } finally {
     busy.value = false
+  }
+}
+
+async function refreshSettings(): Promise<void> {
+  try {
+    fontSize.value = (await invoke<LogseqClientSettings>('getSettings')).fontSize
+  } catch {
+    // 拿不到就用默认值
+  }
+}
+
+async function saveFontSize(value: number): Promise<void> {
+  try {
+    const next = await invoke<LogseqClientSettings>('setSettings', { fontSize: value })
+    fontSize.value = next.fontSize
+  } catch (e) {
+    message.value = e instanceof Error ? e.message : String(e)
   }
 }
 
@@ -65,11 +86,27 @@ async function rebuild(): Promise<void> {
 
 onMounted(() => {
   void refresh()
+  void refreshSettings()
 })
 </script>
 
 <template>
   <section class="logseq-settings">
+    <h3 class="section-title">外观</h3>
+    <p class="row">
+      <span class="label">正文字号</span>
+      <input
+        class="range"
+        type="range"
+        :min="LOGSEQ_FONT_SIZE_RANGE.min"
+        :max="LOGSEQ_FONT_SIZE_RANGE.max"
+        :value="fontSize"
+        @change="saveFontSize(Number(($event.target as HTMLInputElement).value))"
+      />
+      <span class="value">{{ fontSize }} px</span>
+    </p>
+    <p class="hint">作用于整个笔记正文(块文本与行内标题按比例),页头控件不受影响;即时保存。</p>
+
     <h3 class="section-title">图目录</h3>
     <p class="row">
       <code class="path">{{ state?.graphPath || '(还没选)' }}</code>
@@ -118,8 +155,9 @@ onMounted(() => {
         <li v-if="state.config.hidden.length > 0">索引时跳过:<code>{{ state.config.hidden.join(' ') }}</code></li>
       </ul>
       <p class="hint">
-        这一节是**只读**的:模板与目录都写在 Logseq 自己的 <code>logseq/config.edn</code> 里,本插件从不写回它
-        (在 Logseq 里改设置,这里刷新即可)。
+        从 <code>config.edn</code> 读到的那几条(目录、日期格式、默认模板)是**只读**的:它们写在 Logseq 自己的
+        <code>logseq/config.edn</code> 里,本插件从不写回(在 Logseq 里改设置,这里刷新即可)。上面的字号与笔记页里的收藏
+        存在 bow 自己的 <code>logseq.json</code> 里。
       </p>
     </template>
 
@@ -151,6 +189,24 @@ onMounted(() => {
   gap: 8px;
   align-items: center;
   margin: 0 0 8px;
+}
+
+.label {
+  color: var(--fg-dim);
+}
+
+.range {
+  flex: 1;
+  min-width: 140px;
+  max-width: 320px;
+  accent-color: var(--accent);
+}
+
+.value {
+  flex: none;
+  min-width: 48px;
+  font-size: 12px;
+  color: var(--fg-dim);
 }
 
 .path {

@@ -7,6 +7,9 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  DEFAULT_LOGSEQ_FONT_SIZE,
+  LOGSEQ_FONT_SIZE_RANGE,
+  MAX_FAVORITES_PER_GRAPH,
   MAX_FILE_STEM,
   detectIndentUnit,
   MAX_RECENT_GRAPHS,
@@ -25,6 +28,7 @@ import {
   insertFirstBlock,
   insertSiblingAfter,
   isJournalDay,
+  favoritesFor,
   mergeWithPrevious,
   normalizeSettings,
   normalizeView,
@@ -33,6 +37,7 @@ import {
   parseLogseqFile,
   parseJournalStem,
   parseLooseDay,
+  parseView,
   serializeLogseqFile,
   setBlockContentLines,
   setBlockText,
@@ -212,12 +217,71 @@ describe('插件设置', () => {
     expect(normalizeSettings(null)).toEqual(defaultSettings())
   })
 
+  it('字号:越界夹紧、坏输入兜底', () => {
+    expect(defaultSettings().fontSize).toBe(DEFAULT_LOGSEQ_FONT_SIZE)
+    expect(normalizeSettings({ fontSize: 999 }).fontSize).toBe(LOGSEQ_FONT_SIZE_RANGE.max)
+    expect(normalizeSettings({ fontSize: 1 }).fontSize).toBe(LOGSEQ_FONT_SIZE_RANGE.min)
+    expect(normalizeSettings({ fontSize: 'abc' }).fontSize).toBe(DEFAULT_LOGSEQ_FONT_SIZE)
+    expect(normalizeSettings({ fontSize: Number.NaN }).fontSize).toBe(DEFAULT_LOGSEQ_FONT_SIZE)
+    expect(normalizeSettings({ fontSize: 16.6 }).fontSize).toBe(17)
+  })
+
+  it('收藏:按图规范化(去重、丢坏项、截断、空数组不保留)', () => {
+    const many = Array.from({ length: MAX_FAVORITES_PER_GRAPH + 5 }, (_, i) => ({ kind: 'page', name: `p${i}` }))
+    const settings = normalizeSettings({
+      favorites: {
+        '/g': [
+          { kind: 'page', name: ' a ' },
+          { kind: 'page', name: 'a' }, // 与上一条同 key(去重)
+          { kind: 'journal', day: '2026-09-20' },
+          { kind: 'journal', day: '2026-1-2' }, // 非法日期
+          { kind: 'nope' },
+          null
+        ],
+        '/empty': [],
+        '   ': [{ kind: 'page', name: 'x' }],
+        '/many': many
+      }
+    })
+    expect(settings.favorites['/g']).toEqual([
+      { kind: 'page', name: 'a' },
+      { kind: 'journal', day: '2026-09-20' }
+    ])
+    expect(settings.favorites['/empty']).toBeUndefined()
+    expect(Object.keys(settings.favorites)).not.toContain('   ')
+    expect(settings.favorites['/many']).toHaveLength(MAX_FAVORITES_PER_GRAPH)
+    // 非对象/缺失一律兜底成空表
+    expect(normalizeSettings({ favorites: 'nope' }).favorites).toEqual({})
+    expect(normalizeSettings(null).favorites).toEqual({})
+  })
+
+  it('parseView:合法视图原样,非法输入返回 null', () => {
+    expect(parseView({ kind: 'journal', day: '2026-09-20' })).toEqual({ kind: 'journal', day: '2026-09-20' })
+    expect(parseView({ kind: 'page', name: ' x ' })).toEqual({ kind: 'page', name: 'x' })
+    expect(parseView({ kind: 'journal', day: '2026-1-2' })).toBeNull()
+    expect(parseView({ kind: 'page', name: '  ' })).toBeNull()
+    expect(parseView(null)).toBeNull()
+    // normalizeView 仍是「回落到兜底」
+    expect(normalizeView(null, { kind: 'journal', day: '2026-09-20' })).toEqual({ kind: 'journal', day: '2026-09-20' })
+  })
+
+  it('favoritesFor:只给对应那张图,切图互不影响', () => {
+    const settings = normalizeSettings({
+      favorites: { '/g': [{ kind: 'page', name: 'a' }], '/h': [{ kind: 'journal', day: '2026-09-20' }] }
+    })
+    expect(favoritesFor(settings, '/g')).toEqual([{ kind: 'page', name: 'a' }])
+    expect(favoritesFor(settings, '/h')).toEqual([{ kind: 'journal', day: '2026-09-20' }])
+    expect(favoritesFor(settings, '/none')).toEqual([])
+  })
+
   it('切图把旧图推进最近列表', () => {
-    const settings = normalizeSettings({ graphPath: '/g', recentGraphs: ['/a'] })
+    const settings = normalizeSettings({ graphPath: '/g', recentGraphs: ['/a'], fontSize: 18 })
     expect(withGraph(settings, '/h')).toEqual({
       version: 1,
       graphPath: '/h',
-      recentGraphs: ['/g', '/a']
+      recentGraphs: ['/g', '/a'],
+      fontSize: 18,
+      favorites: {}
     })
     // 切到已在最近列表里的图:不重复,顺序重排
     expect(withGraph(normalizeSettings({ graphPath: '/g', recentGraphs: ['/a', '/h'] }), '/h').recentGraphs).toEqual([
@@ -225,6 +289,18 @@ describe('插件设置', () => {
       '/a'
     ])
     expect(withGraph(settings, '')).toBe(settings)
+  })
+
+  it('切图不能丢字号与收藏(回归:withGraph 曾只挑两个字段)', () => {
+    const settings = normalizeSettings({
+      graphPath: '/g',
+      recentGraphs: [],
+      fontSize: 20,
+      favorites: { '/g': [{ kind: 'page', name: 'a' }] }
+    })
+    const next = withGraph(settings, '/h')
+    expect(next.fontSize).toBe(20)
+    expect(next.favorites).toEqual({ '/g': [{ kind: 'page', name: 'a' }] })
   })
 
   it('视图状态按 kind 规范化(坏的输入回落到兜底)', () => {

@@ -20,9 +20,12 @@ vi.mock('electron', () => ({
 }))
 
 const { default: logseq } = await import('../src/plugins/logseq/main')
+const { DEFAULT_LOGSEQ_FONT_SIZE, LOGSEQ_FONT_SIZE_RANGE } = await import('../src/plugins/logseq/shared')
 type FileRead = import('../src/plugins/logseq/shared').FileRead
 type GraphState = import('../src/plugins/logseq/shared').GraphState
 type SaveResult = import('../src/plugins/logseq/shared').SaveResult
+type LogseqClientSettings = import('../src/plugins/logseq/shared').LogseqClientSettings
+type LogseqView = import('../src/plugins/logseq/shared').LogseqView
 
 interface Harness {
   handlers: Map<string, (...args: any[]) => unknown>
@@ -429,5 +432,62 @@ describe('索引查询与视图状态', () => {
   it('坏的视图状态回落到今天', async () => {
     await call('setView', 11, { kind: 'page', name: '   ' })
     expect((await call<{ view: unknown }>('attach', 11)).view).toMatchObject({ kind: 'journal' })
+  })
+})
+
+describe('页面偏好(字号 / 收藏)', () => {
+  it('默认字号 = 全局字号;setSettings 夹紧并落盘', async () => {
+    const first = await call<LogseqClientSettings>('getSettings')
+    expect(first.fontSize).toBe(DEFAULT_LOGSEQ_FONT_SIZE)
+    expect(first.favorites).toEqual([])
+
+    const changed = await call<LogseqClientSettings>('setSettings', { fontSize: 999 })
+    expect(changed.fontSize).toBe(LOGSEQ_FONT_SIZE_RANGE.max)
+    // 真的写进了 store(不是只回给页面)
+    expect(h.settings.value.fontSize).toBe(LOGSEQ_FONT_SIZE_RANGE.max)
+    expect((await call<LogseqClientSettings>('getSettings')).fontSize).toBe(LOGSEQ_FONT_SIZE_RANGE.max)
+
+    // 坏输入/缺字段保留上一次的好值,不把字号写坏
+    expect((await call<LogseqClientSettings>('setSettings', { fontSize: 'abc' })).fontSize).toBe(
+      LOGSEQ_FONT_SIZE_RANGE.max
+    )
+    expect((await call<LogseqClientSettings>('setSettings', {})).fontSize).toBe(LOGSEQ_FONT_SIZE_RANGE.max)
+  })
+
+  it('toggleFavorite:加 / 删 / 不重复;按图分开记', async () => {
+    const view: LogseqView = { kind: 'page', name: 'cardinality' }
+    const added = await call<{ favorites: LogseqView[]; on: boolean }>('toggleFavorite', view)
+    expect(added.on).toBe(true)
+    expect(added.favorites).toEqual([view])
+    // 再点一次同一个 = 取消(不会留下重复项)
+    expect((await call<{ favorites: LogseqView[]; on: boolean }>('toggleFavorite', view)).favorites).toEqual([])
+    // 再收回来
+    expect((await call<{ favorites: LogseqView[] }>('toggleFavorite', view)).favorites).toEqual([view])
+
+    const journal: LogseqView = { kind: 'journal', day: '2026-09-19' }
+    const two = await call<{ favorites: LogseqView[] }>('toggleFavorite', journal)
+    expect(two.favorites[0]).toEqual(journal) // 最近收藏在前
+    // 再点一次 = 取消收藏
+    const removed = await call<{ favorites: LogseqView[]; on: boolean }>('toggleFavorite', journal)
+    expect(removed.on).toBe(false)
+    expect(removed.favorites).toEqual([view])
+
+    // 换一个图:看不到上一个图的收藏;切回来仍在
+    const other = makeGraph()
+    try {
+      await call('setGraph', other)
+      expect((await call<LogseqClientSettings>('getSettings')).favorites).toEqual([])
+      await call('setGraph', graph)
+      expect((await call<LogseqClientSettings>('getSettings')).favorites).toEqual([view])
+    } finally {
+      rmSync(other, { recursive: true, force: true })
+    }
+  })
+
+  it('toggleFavorite:坏输入不写入,当前列表原样返回', async () => {
+    await call('toggleFavorite', { kind: 'page', name: 'cardinality' })
+    const bad = await call<{ favorites: LogseqView[]; on: boolean }>('toggleFavorite', { kind: 'nope' })
+    expect(bad.on).toBe(false)
+    expect(bad.favorites).toEqual([{ kind: 'page', name: 'cardinality' }])
   })
 })

@@ -32,6 +32,19 @@ export * from './format'
 export const SETTINGS_VERSION = 1
 /** 记住的最近图数量上限 */
 export const MAX_RECENT_GRAPHS = 5
+/** 每个图最多收藏多少页(收藏按图分开记,见 `favorites`) */
+export const MAX_FAVORITES_PER_GRAPH = 30
+/** 笔记正文字号的可选范围(px) */
+export const LOGSEQ_FONT_SIZE_RANGE = { min: 12, max: 24 } as const
+/** 默认字号与全局 `body`(13px)一致:什么都没配时观感不变 */
+export const DEFAULT_LOGSEQ_FONT_SIZE = 13
+
+/** 笔记插件广播的事件名(主进程与页面共用一处,避免字符串漂移) */
+export const LOGSEQ_EVENT = {
+  graphChanged: 'graph-changed',
+  settingsChanged: 'settings-changed',
+  favoritesChanged: 'favorites-changed'
+} as const
 
 export interface LogseqSettings {
   version: number
@@ -39,14 +52,61 @@ export interface LogseqSettings {
   graphPath: string
   /** 最近打开的图目录(最近优先) */
   recentGraphs: string[]
+  /** 笔记正文字号(px) */
+  fontSize: number
+  /** 图目录(规范化后的绝对路径)→ 该图的收藏(最近收藏在前) */
+  favorites: Record<string, LogseqView[]>
+}
+
+/**
+ * 渲染页面需要的偏好(IPC 面)。
+ * 收藏只给**当前图**的那一份:图是页面里的上下文,页面不该看到别的图收藏了什么。
+ */
+export interface LogseqClientSettings {
+  fontSize: number
+  favorites: LogseqView[]
 }
 
 export function defaultSettings(): LogseqSettings {
-  return { version: SETTINGS_VERSION, graphPath: '', recentGraphs: [] }
+  return {
+    version: SETTINGS_VERSION,
+    graphPath: '',
+    recentGraphs: [],
+    fontSize: DEFAULT_LOGSEQ_FONT_SIZE,
+    favorites: {}
+  }
 }
 
 function str(value: unknown): string {
   return typeof value === 'string' ? value : ''
+}
+
+/** 字号夹紧:非有限数落回兜底,越界夹到边界 */
+function clampFontSize(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+  return Math.min(LOGSEQ_FONT_SIZE_RANGE.max, Math.max(LOGSEQ_FONT_SIZE_RANGE.min, Math.round(value)))
+}
+
+function normalizeFavorites(input: unknown): Record<string, LogseqView[]> {
+  const out: Record<string, LogseqView[]> = {}
+  if (!input || typeof input !== 'object') return out
+  for (const [graph, list] of Object.entries(input as Record<string, unknown>)) {
+    const key = graph.trim()
+    if (!key || !Array.isArray(list)) continue
+    const seen = new Set<string>()
+    const views: LogseqView[] = []
+    for (const item of list) {
+      const view = parseView(item)
+      if (!view) continue
+      const id = viewKey(view)
+      if (seen.has(id)) continue
+      seen.add(id)
+      views.push(view)
+      if (views.length >= MAX_FAVORITES_PER_GRAPH) break
+    }
+    if (views.length > 0) out[key] = views
+  }
+  return out
 }
 
 export function normalizeSettings(input: unknown, fallback: LogseqSettings = defaultSettings()): LogseqSettings {
@@ -61,15 +121,29 @@ export function normalizeSettings(input: unknown, fallback: LogseqSettings = def
       if (recent.length >= MAX_RECENT_GRAPHS) break
     }
   }
-  return { version: SETTINGS_VERSION, graphPath, recentGraphs: recent }
+  return {
+    version: SETTINGS_VERSION,
+    graphPath,
+    recentGraphs: recent,
+    fontSize: clampFontSize(raw.fontSize, fallback.fontSize),
+    favorites: normalizeFavorites(raw.favorites)
+  }
 }
 
-/** 切换图目录:把旧图推进最近列表并去重 */
+/**
+ * 切换图目录:把旧图推进最近列表并去重。
+ * ⚠️ 必须 `...settings` 展开:字号与收藏都要原样带过去(早先只挑两个字段的写法会让切图清空它们)。
+ */
 export function withGraph(settings: LogseqSettings, graphPath: string): LogseqSettings {
   const path = graphPath.trim()
   if (!path) return settings
   const recent = [settings.graphPath, ...settings.recentGraphs].filter((p): p is string => Boolean(p) && p !== path)
-  return normalizeSettings({ graphPath: path, recentGraphs: recent })
+  return normalizeSettings({ ...settings, graphPath: path, recentGraphs: recent })
+}
+
+/** 某个图的收藏列表(没配过 = 空数组) */
+export function favoritesFor(settings: LogseqSettings, graphPath: string): LogseqView[] {
+  return settings.favorites[graphPath.trim()] ?? []
 }
 
 /** 编辑器标签的视图状态(按 tabId 记在主进程,标签刷新后回到同一页) */
@@ -79,18 +153,23 @@ export function viewKey(view: LogseqView): string {
   return view.kind === 'journal' ? `journal:${view.day}` : `page:${view.name}`
 }
 
-export function normalizeView(input: unknown, fallback: LogseqView): LogseqView {
+/** 把任意输入解析成合法视图;不合法返回 null(与「回落到兜底」的 `normalizeView` 分开) */
+export function parseView(input: unknown): LogseqView | null {
   const raw = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
   const kind = str(raw.kind)
   if (kind === 'journal') {
     const day = str(raw.day).trim()
-    return isJournalDay(day) ? { kind: 'journal', day } : fallback
+    return isJournalDay(day) ? { kind: 'journal', day } : null
   }
   if (kind === 'page') {
     const name = str(raw.name).trim()
-    return name ? { kind: 'page', name } : fallback
+    return name ? { kind: 'page', name } : null
   }
-  return fallback
+  return null
+}
+
+export function normalizeView(input: unknown, fallback: LogseqView): LogseqView {
+  return parseView(input) ?? fallback
 }
 
 // ---------- IPC 面(主进程 ↔ `bow://logseq` 页面)的载荷类型 ----------

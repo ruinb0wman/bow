@@ -31,17 +31,22 @@ import {
   defaultSettings,
   encodePageName,
   expandTemplate,
+  favoritesFor,
   formatJournalStem,
   isJournalDay,
+  LOGSEQ_EVENT,
   normalizeSettings,
   normalizeView,
   parseConfigEdn,
+  parseView,
   todayDay,
+  viewKey,
   withGraph,
   type FileRead,
   type GraphConfig,
   type GraphState,
   type GraphSwitchResult,
+  type LogseqClientSettings,
   type LogseqSettings,
   type LogseqView,
   type SaveResult
@@ -245,7 +250,7 @@ function createLogseqPlugin(): PluginMain {
     } else {
       for (const rel of kept) await refreshIndexedFile(rel)
     }
-    context?.ipc.emit('graph-changed', { paths: kept })
+    context?.ipc.emit(LOGSEQ_EVENT.graphChanged, { paths: kept })
   }
 
   /**
@@ -483,6 +488,31 @@ function createLogseqPlugin(): PluginMain {
     return names.filter((n) => /\.md$/i.test(n)).map((n) => n.replace(/\.md$/i, ''))
   }
 
+  function dateFormatState(format: string): GraphState['dateFormat'] {
+    const spec = compileDateFormat(format)
+    return { format: spec.format, ok: spec.ok, unsupported: spec.unsupported }
+  }
+
+  // ---------- 渲染页面偏好(字号 / 收藏) ----------
+
+  /**
+   * 页面需要的偏好。收藏只给**当前图**的一份(图还没打开就为空) ——
+   * 与 `state()` 一样是「现读 store + runtime」,不缓存。
+   */
+  function clientSettings(): LogseqClientSettings {
+    const settings = store!.get()
+    return {
+      fontSize: settings.fontSize,
+      favorites: runtime ? favoritesFor(settings, runtime.root) : []
+    }
+  }
+
+  /** 把某个图的一份收藏写回 store(按图分开存;空数组会被规范化掉,等于删掉该图的键) */
+  function setFavorites(root: string, views: LogseqView[]): void {
+    const current = store!.get()
+    store!.setRaw(normalizeSettings({ ...current, favorites: { ...current.favorites, [root]: views } }))
+  }
+
   async function state(): Promise<GraphState> {
     const settings = store!.get()
     const base: GraphState = {
@@ -505,11 +535,6 @@ function createLogseqPlugin(): PluginMain {
     return base
   }
 
-  function dateFormatState(format: string): GraphState['dateFormat'] {
-    const spec = compileDateFormat(format)
-    return { format: spec.format, ok: spec.ok, unsupported: spec.unsupported }
-  }
-
   // ---------- 生命周期 ----------
 
   return {
@@ -530,6 +555,35 @@ function createLogseqPlugin(): PluginMain {
 
       // ---------- 状态 ----------
       ctx.ipc.handle('getState', () => state())
+
+      // ---------- 页面偏好(字号 / 收藏) ----------
+      ctx.ipc.handle('getSettings', (): LogseqClientSettings => clientSettings())
+      ctx.ipc.handle('setSettings', (patch: unknown): LogseqClientSettings => {
+        const raw = patch && typeof patch === 'object' ? (patch as Record<string, unknown>) : {}
+        const current = store!.get()
+        // 只认字号:收藏走 toggleFavorite(避免两个入口互相覆盖)。
+        // fallback 传 current:坏输入/缺字段都保留上一次的好值,而不是跳回默认
+        store!.setRaw(normalizeSettings({ ...current, fontSize: raw.fontSize }, current))
+        const next = clientSettings()
+        ctx.ipc.emit(LOGSEQ_EVENT.settingsChanged, next)
+        return next
+      })
+      ctx.ipc.handle('toggleFavorite', (view: unknown) => {
+        const parsed = parseView(view)
+        if (!runtime || !parsed) {
+          return { favorites: runtime ? favoritesFor(store!.get(), runtime.root) : [], on: false }
+        }
+        const root = runtime.root
+        const list = favoritesFor(store!.get(), root)
+        const key = viewKey(parsed)
+        const exists = list.some((item) => viewKey(item) === key)
+        // 新增插到最前(最近收藏优先);删除直接滤掉。上限由 normalizeSettings 兜底
+        const next = exists ? list.filter((item) => viewKey(item) !== key) : [parsed, ...list]
+        setFavorites(root, next)
+        const favorites = favoritesFor(store!.get(), root)
+        ctx.ipc.emit(LOGSEQ_EVENT.favoritesChanged, favorites)
+        return { favorites, on: !exists }
+      })
       ctx.ipc.handle('pickGraph', async (): Promise<GraphSwitchResult> => {
         const options: Electron.OpenDialogOptions = {
           title: '选择 Logseq 图目录',

@@ -3,8 +3,8 @@
  * 一个块:圆点 + 折叠箭头 + 「渲染态 / 就地编辑态」。
  *
  * 交互(计划 §3.7):
- * - 渲染态点一下 → 就地进入编辑态,光标落到**点中的那个 token 的原文偏移**(token 上带 `data-src`,
- *   这就是手写 tokenizer 而不是用 markdown 库的第二个理由);
+ * - 渲染态点一下 → 就地进入编辑态,光标落到**被点那一行的行尾**(多行块 = 那一行,不是整块);
+ *   行尾偏移由 `analyzeBlockLines` 给每行算出的 `base + text.length`(`data-end`)提供;
  * - 编辑态是一个 textarea,内容是块的**全部正文行**(多行内容也在里面),Enter/Tab/Backspace 全部
  *   交给上层换算成块操作;`Shift+Enter` 才真的换行;
  * - `[[` / `#[[` 输入中给出页面补全(数据源是上图索引,由上层注入 `suggest`);
@@ -56,12 +56,11 @@ const visibleProps = computed(() =>
 function startEdit(event: MouseEvent): void {
   if (props.editing) return
   const target = event.target as HTMLElement | null
-  // 优先落成被点的那个 token 的原文偏移;点在行首空白 / 引用边框 / 被隐藏的标记行上时
-  // 退到本行的起始偏移(`data-base`)—— 第 2 行以后也能精确落点
-  const src =
-    target?.closest('[data-src]')?.getAttribute('data-src') ??
-    target?.closest('[data-line]')?.getAttribute('data-base')
-  emit('action', { type: 'start-edit', key: props.block.key, offset: src ? Number(src) : undefined })
+  // 光标落在**被点那一行的行尾**(行内偏移 `data-end` = 该行 display 文本在 textarea 全文里的结束偏移)
+  // —— 点空白 / 引用边框 / 被隐藏的标记行时退到整块末尾(offset 为 undefined)。
+  // 链接/标签/复选框的点击各自 `stopPropagation`,到不了这里。
+  const end = target?.closest('[data-line]')?.getAttribute('data-end')
+  emit('action', { type: 'start-edit', key: props.block.key, offset: end != null ? Number(end) : undefined })
 }
 
 function onInput(): void {
@@ -106,7 +105,11 @@ function applySuggestion(hit: PageHit): void {
 
 function onKeydown(event: KeyboardEvent): void {
   const el = area.value
-  const caret = el?.selectionStart ?? 0
+  const start = el?.selectionStart ?? 0
+  const end = el?.selectionEnd ?? start
+  const caret = start
+  /** 有选区时不能把按键当成「块首」去合并/跳块 —— 全选后按 Backspace 会把整块并进上一行(见下方) */
+  const hasSelection = start !== end
 
   if (suggestions.value.length > 0 && (event.key === 'Enter' || event.key === 'Tab')) {
     event.preventDefault()
@@ -159,19 +162,21 @@ function onKeydown(event: KeyboardEvent): void {
     return
   }
 
-  if (event.key === 'Backspace' && caret === 0) {
+  // 块首 Backspace 才合并。**必须排除有选区的情况**:全选后 `selectionStart === 0`,
+  // 若在这里 preventDefault 并走 merge,删不掉内容,反而会把整块文本接到上一行末尾。
+  if (event.key === 'Backspace' && caret === 0 && !hasSelection) {
     event.preventDefault()
     emit('action', { type: 'merge', key: props.block.key })
     return
   }
 
-  if (event.key === 'ArrowUp' && caret === 0) {
+  if (event.key === 'ArrowUp' && caret === 0 && !hasSelection) {
     event.preventDefault()
     emit('action', { type: 'move', key: props.block.key, offset: -1 })
     return
   }
 
-  if (event.key === 'ArrowDown' && caret >= draft.value.length) {
+  if (event.key === 'ArrowDown' && caret >= draft.value.length && !hasSelection) {
     event.preventDefault()
     emit('action', { type: 'move', key: props.block.key, offset: 1 })
   }
@@ -248,7 +253,7 @@ function onFocus(): void {
       <template v-else>
         <div class="block-rendered" @click="startEdit">
           <template v-for="(line, index) in renderLines" :key="index">
-            <div class="block-line" :data-line="index" :data-base="line.base">
+            <div class="block-line" :data-line="index" :data-base="line.base" :data-end="line.base + line.text.length">
               <MarkdownLine
                 :line="line"
                 :line-index="index"
