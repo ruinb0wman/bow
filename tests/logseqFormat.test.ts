@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   allBlocks,
+  analyzeBlockLines,
   blockLinesForDisplay,
   blockText,
   DEFAULT_HIDDEN_PROPERTIES,
@@ -16,6 +17,7 @@ import {
   findBlock,
   indentText,
   matchBlockLine,
+  matchLineMark,
   parseLogseqFile,
   propertyOf,
   refsOfTokens,
@@ -209,5 +211,95 @@ describe('行内 tokenizer', () => {
     const refs = refsOfTokens(tokenizeInline('见 **[[A]]** 与 #b 和 #[[C D]] 与 [[A]]'))
     expect(refs.pages).toEqual(['A'])
     expect(refs.tags).toEqual(['b', 'C D'])
+  })
+})
+
+describe('行级标记', () => {
+  it('matchLineMark:顺序与优先级(task 先于 bullet,标题先于标签)', () => {
+    const cases: Array<{ text: string; expect: Record<string, unknown> }> = [
+      { text: '# 标题', expect: { kind: 'heading', raw: '# ', level: 1 } },
+      { text: '###### 六级', expect: { kind: 'heading', raw: '###### ', level: 6 } },
+      { text: '####### 七级不是标题', expect: { kind: 'plain', raw: '' } },
+      { text: '#标签', expect: { kind: 'plain', raw: '' } },
+      { text: '##', expect: { kind: 'heading', raw: '##', level: 2 } },
+      { text: '---', expect: { kind: 'hr', raw: '---' } },
+      { text: '   ***', expect: { kind: 'hr', raw: '   ***' } },
+      { text: '[ ] 块首任务', expect: { kind: 'task', raw: '[ ] ', checked: false } },
+      { text: '[x] 已完成', expect: { kind: 'task', raw: '[x] ', checked: true } },
+      { text: '[X] 大写也算勾选', expect: { kind: 'task', raw: '[X] ', checked: true } },
+      { text: '* [ ] 块内清单', expect: { kind: 'task', raw: '* [ ] ', checked: false } },
+      { text: '- [x] 子块首', expect: { kind: 'task', raw: '- [x] ', checked: true } },
+      { text: '* 只是列表项', expect: { kind: 'bullet', raw: '* ', marker: '*' } },
+      { text: '+ 也是列表项', expect: { kind: 'bullet', raw: '+ ', marker: '+' } },
+      { text: '1. 有序', expect: { kind: 'ordered', raw: '1. ', marker: '1.' } },
+      { text: '2) 有序', expect: { kind: 'ordered', raw: '2) ', marker: '2)' } },
+      { text: '> 引用', expect: { kind: 'quote', raw: '> ', depth: 1 } },
+      { text: '>> 嵌套引用', expect: { kind: 'quote', raw: '>> ', depth: 2 } },
+      { text: '>无空格也认', expect: { kind: 'quote', raw: '>', depth: 1 } },
+      { text: '普通文本', expect: { kind: 'plain', raw: '' } },
+      { text: '**粗体**开头', expect: { kind: 'plain', raw: '' } },
+      { text: '[ ]', expect: { kind: 'task', raw: '[ ]', checked: false } }
+    ]
+    for (const item of cases) {
+      expect(matchLineMark(item.text), item.text).toMatchObject(item.expect)
+    }
+  })
+
+  it('analyzeBlockLines:每行 base 累积正确', () => {
+    const lines = ['# 标题', '正文', '> 引用']
+    const out = analyzeBlockLines(lines)
+    expect(out.map((l) => l.base)).toEqual([0, 5, 8])
+    expect(out.map((l) => l.index)).toEqual([0, 1, 2])
+    expect(out.map((l) => l.mark.kind)).toEqual(['heading', 'plain', 'quote'])
+  })
+
+  it('零丢字:标记原文 + token 拼接 === 整行原文(srcStart 也是全局偏移)', () => {
+    const lines = [
+      '# 标题里有 [[页]]',
+      '## 二级 **粗**',
+      '#标签不是标题',
+      '---',
+      '* [ ] 清单 [[甲]]',
+      '[x] 块首 #tag',
+      '> 引用 `code`',
+      '>> 嵌套 #[[多字 标签]]',
+      '1. 有序项',
+      '普通 https://x.test 文本',
+      '` ``` ` 反引号里的围栏不算',
+      '```js',
+      'const x = [[不是链接]]',
+      '```'
+    ]
+    const joined = lines.join('\n')
+    const out = analyzeBlockLines(lines)
+    expect(out).toHaveLength(lines.length)
+    for (const line of out) {
+      expect(line.mark.raw + tokensToRaw(line.tokens), line.text).toBe(line.text)
+      for (const token of line.tokens) {
+        expect(joined.slice(token.srcStart, token.srcEnd), `${line.text} / ${token.raw}`).toBe(token.raw)
+        expect(token.srcStart).toBeGreaterThanOrEqual(line.base)
+      }
+    }
+  })
+
+  it('围栏分组:开 / 内容 / 闭合,代码里的双链不 token 化', () => {
+    const out = analyzeBlockLines(['```js', 'const [[x]] = 1', '```', '之后'])
+    expect(out.map((l) => l.mark.role)).toEqual(['open', 'content', 'close', undefined])
+    expect(out.map((l) => l.mark.kind)).toEqual(['fence', 'fence', 'fence', 'plain'])
+    expect(out[1].tokens.map((t) => t.kind)).toEqual(['text'])
+    expect(out[3].mark.raw).toBe('')
+  })
+
+  it('未闭合围栏:后面的行全当代码内容(CommonMark 行为)', () => {
+    const out = analyzeBlockLines(['```', 'a', '# 不是标题'])
+    expect(out.map((l) => l.mark.kind)).toEqual(['fence', 'fence', 'fence'])
+    expect(out.map((l) => l.mark.role)).toEqual(['open', 'content', 'content'])
+  })
+
+  it('~~~ 围栏只在同字符且不短于开启时闭合', () => {
+    const backtickInside = analyzeBlockLines(['~~~', '```', '~~~'])
+    expect(backtickInside.map((l) => l.mark.role)).toEqual(['open', 'content', 'close'])
+    const shorter = analyzeBlockLines(['`````', '```', '`````'])
+    expect(shorter.map((l) => l.mark.role)).toEqual(['open', 'content', 'close'])
   })
 })

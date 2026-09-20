@@ -35,6 +35,7 @@ import {
   shiftDay,
   splitBlock,
   todayDay,
+  toggleTaskMarker,
   topBlocks,
   type BlockNode,
   type EditResult,
@@ -356,6 +357,7 @@ interface BlockAction {
   key: string
   lines?: string[]
   offset?: number
+  lineIndex?: number
 }
 
 function onBlockAction(payload: BlockAction): void {
@@ -385,8 +387,15 @@ function onBlockAction(payload: BlockAction): void {
       return
     }
     case 'split':
-      commit(splitBlock(current, payload.key, payload.offset ?? 0))
+      commit(splitBlock(current, payload.key, payload.offset ?? 0, unit.value))
       return
+    case 'toggle-task': {
+      const next = toggleTaskMarker(current, payload.key, payload.lineIndex ?? 0)
+      // no-op(行里没有 `[ ]` / `[x]`)时返回同一个对象:不推 undo、不标脏
+      if (next === current) return
+      commit({ file: next, focusKey: null })
+      return
+    }
     case 'new-sibling':
       commit(insertSiblingAfter(current, payload.key))
       return

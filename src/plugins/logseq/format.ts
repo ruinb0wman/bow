@@ -509,6 +509,134 @@ function matchEmphasis(
   return null
 }
 
+// ---------- 行级标记(标题 / 复选框 / 引用 / 列表 / 水平线 / 围栏) ----------
+
+/**
+ * 一行开头的「标记」—— 渲染时这些字符**不显示原文**,而是变成结构(标题样式、勾选框、引用条、圆点)。
+ * 与行内 token 一样带 `raw`(被吃掉的原文切片),所以「标记原文 + 剩余文本的 token 拼接 === 整行原文」
+ * 这条零丢字不变式在行级也成立(见 `tests/logseqFormat.test.ts`)。
+ */
+export type LineMarkKind = 'plain' | 'heading' | 'task' | 'quote' | 'bullet' | 'ordered' | 'hr' | 'fence'
+
+export interface LineMark {
+  kind: LineMarkKind
+  /** 行首被标记吃掉的原文(`plain` / 围栏内容行为 `''`) */
+  raw: string
+  /** heading 级别 1..6 */
+  level?: number
+  /** task 是否勾选(`[x]` / `[X]`) */
+  checked?: boolean
+  /** quote 嵌套层数(`>>` = 2) */
+  depth?: number
+  /** bullet 的 `*`/`+`/`-`,或 ordered 的 `1.` */
+  marker?: string
+  /** 围栏字符(``` / ~~~),由 `analyzeBlockLines` 填 */
+  fence?: string
+  role?: 'open' | 'content' | 'close'
+}
+
+/** ATX 标题:要求 `#` 后有空白(或行尾)⇒ 与 `#标签`(无空格)天然互斥 */
+const HEADING_RE = /^(#{1,6})(?:[ \t]+|$)/
+/** 水平线:整行只有 3 个以上的 `-` / `*` / `_` */
+const HR_RE = /^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$/
+/** 复选框:可选前置 bullet(`* [ ]` / `- [ ]`),也支持块首裸 `[ ]`(`- ` 已被块语法吃掉) */
+const TASK_RE = /^([-*+][ \t]+)?\[([ xX])\](?:[ \t]+|$)/
+/** 引用:一个或多个 `>`,后面可跟一个空格 */
+const QUOTE_RE = /^(>+)[ \t]?/
+/** 无序列表 */
+const BULLET_RE = /^([-*+])[ \t]+/
+/** 有序列表(`1.` / `1)`) */
+const ORDERED_RE = /^(\d+[.)])[ \t]+/
+/** 围栏代码块的开/闭行 */
+const FENCE_LINE_RE = /^[ \t]*(`{3,}|~{3,})(.*)$/
+
+/**
+ * 只看**行首前缀**判断行级标记(不处理围栏的跨行状态,那是 `analyzeBlockLines` 的事)。
+ * 顺序即优先级:task 必须在 bullet 之前,否则 `* [ ]` 会被当成列表项。
+ */
+export function matchLineMark(text: string): LineMark {
+  const heading = HEADING_RE.exec(text)
+  if (heading) return { kind: 'heading', raw: heading[0], level: heading[1].length }
+
+  if (HR_RE.test(text)) return { kind: 'hr', raw: text }
+
+  const task = TASK_RE.exec(text)
+  if (task) return { kind: 'task', raw: task[0], checked: (task[2] ?? '').toLowerCase() === 'x' }
+
+  const quote = QUOTE_RE.exec(text)
+  if (quote) return { kind: 'quote', raw: quote[0], depth: quote[1].length }
+
+  const bullet = BULLET_RE.exec(text)
+  if (bullet) return { kind: 'bullet', raw: bullet[0], marker: bullet[1] }
+
+  const ordered = ORDERED_RE.exec(text)
+  if (ordered) return { kind: 'ordered', raw: ordered[0], marker: ordered[1] }
+
+  return { kind: 'plain', raw: '' }
+}
+
+/** 一行渲染所需的一切:结构标记 + 标记之后剩余文本的 token(带全局源码偏移) */
+export interface RenderedLine {
+  /** 显示行号(0 = 块头,>0 = 第 N 条内容行),也是 textarea 里 `\n` 分隔的行号 */
+  index: number
+  text: string
+  /** 本行在 `displayLines.join('\n')`(也就是 textarea 全文)里的起始偏移 */
+  base: number
+  mark: LineMark
+  tokens: Token[]
+}
+
+function isFenceClose(text: string, fence: { char: string; len: number }): boolean {
+  const m = /^[ \t]*(`{3,}|~{3,})[ \t]*$/.exec(text)
+  if (!m) return false
+  return m[1][0] === fence.char && m[1].length >= fence.len
+}
+
+/**
+ * 把 `blockLinesForDisplay()` 出来的多行文本变成「可直接渲染的行」——
+ * 跨行维护围栏状态,并给每行算出**全局 base 偏移**(textarea 里回车劈块、点哪落哪都靠它)。
+ *
+ * 围栏内容**不 token 化**(代码里的 `[[x]]` / `#tag` 不该变成可点链接),只作为纯文本 token;
+ * 于是「`mark.raw` + token 原文拼接 === 整行原文」对每一行都成立。
+ */
+export function analyzeBlockLines(lines: readonly string[]): RenderedLine[] {
+  const out: RenderedLine[] = []
+  let base = 0
+  let open: { char: string; len: number } | null = null
+
+  lines.forEach((text, index) => {
+    const line = (mark: LineMark, tokens: Token[]): void => {
+      out.push({ index, text, base, mark, tokens })
+      base += text.length + 1
+    }
+
+    if (open) {
+      if (isFenceClose(text, open)) {
+        line({ kind: 'fence', raw: text, fence: open.char.repeat(open.len), role: 'close' }, [])
+        open = null
+      } else {
+        line({ kind: 'fence', raw: '', role: 'content' }, [
+          { kind: 'text', raw: text, srcStart: base, srcEnd: base + text.length }
+        ])
+      }
+      return
+    }
+
+    const fence = FENCE_LINE_RE.exec(text)
+    if (fence) {
+      open = { char: fence[1][0], len: fence[1].length }
+      line({ kind: 'fence', raw: text, fence: fence[1], role: 'open' }, [])
+      return
+    }
+
+    const mark = matchLineMark(text)
+    const tokens = mark.kind === 'hr' ? [] : tokenizeInline(text.slice(mark.raw.length), base + mark.raw.length)
+    line(mark, tokens)
+  })
+
+  return out
+}
+
 /** token 里的页面引用([[页]] 与 #标签 都算 Logseq 的页面引用) */
 export function refsOfTokens(tokens: readonly Token[]): { pages: string[]; tags: string[] } {
   const pages = new Set<string>()

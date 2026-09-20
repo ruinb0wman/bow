@@ -14,6 +14,7 @@
  */
 
 import {
+  blockLinesForDisplay,
   blockText,
   cloneFile,
   detectIndentUnit,
@@ -731,21 +732,43 @@ export function insertFirstBlock(file: ParsedFile, text = ''): EditResult {
 
 /**
  * 按光标偏移把一个块劈成两个(中间回车)。子块留在前半 —— 与 Logseq 一致。
- * ⚠️ 只劈第一行:多行内容行的进一步分裂不做(渲染层把光标限制在第一行)。
+ *
+ * `unit` 省略时只劈第一行(旧行为,多行内容原样留在左块);传入 `unit` 时 `offset` 是
+ * `blockLinesForDisplay(block, unit).join('\n')`(= textarea 全文)里的偏移,任意一行都能劈,
+ * 光标后的行归新块。UI 一律传 `unit`。
  */
-export function splitBlock(file: ParsedFile, key: string, offset: number): EditResult {
+export function splitBlock(file: ParsedFile, key: string, offset: number, unit?: string): EditResult {
   const next = cloneFile(file)
   const target = locate(next, key)
   if (!target) return { file, focusKey: null }
-  const text = blockText(target.block)
-  const at = Math.max(0, Math.min(text.length, offset))
-  const left = text.slice(0, at).replace(/\s+$/, '')
-  const right = text.slice(at)
   const eol = fileEol(next)
   ensureEolOnBlockTail(target.block, eol)
   const indent = indentText(target.block.head.text)
-  setHeadText(target.block, `${indent}- ${left}`)
-  const block = newBlock(right, indent, eol)
+
+  let before: string[]
+  let after: string[]
+  if (unit === undefined) {
+    const text = blockText(target.block)
+    const at = Math.max(0, Math.min(text.length, offset))
+    before = [text.slice(0, at).replace(/\s+$/, '')]
+    after = [text.slice(at)]
+  } else {
+    const lines = blockLinesForDisplay(target.block, unit)
+    const text = lines.join('\n')
+    const at = Math.max(0, Math.min(text.length, offset))
+    const lineIndex = text.slice(0, at).split('\n').length - 1
+    const lineStart = at === 0 ? 0 : text.lastIndexOf('\n', at - 1) + 1
+    const col = at - lineStart
+    const cur = lines[lineIndex] ?? ''
+    before = [...lines.slice(0, lineIndex), ...(col > 0 ? [cur.slice(0, col)] : [])]
+    after = [...(col < cur.length ? [cur.slice(col)] : []), ...lines.slice(lineIndex + 1)]
+    before[0] = (before[0] ?? '').replace(/\s+$/, '')
+  }
+
+  setHeadText(target.block, `${indent}- ${before[0] ?? ''}`)
+  if (unit !== undefined) writeContentLines(target.block, before.slice(1), indent, unit, eol)
+  const block = newBlock(after[0] ?? '', indent, eol)
+  if (unit !== undefined) writeContentLines(block, after.slice(1), indent, unit, eol)
   insertAfter(next, target, block)
   reindex(next)
   return { file: next, focusKey: block.key }
@@ -763,6 +786,72 @@ export function setBlockText(file: ParsedFile, key: string, text: string): Parse
   if (!target) return file
   setHeadText(target.block, `${indentText(target.block.head.text)}- ${text}`)
   return next
+}
+
+/** 把「界面上的内容行」写回 `extra`(插在第一条原有内容行处,原有属性行保序留在原位) */
+function writeContentLines(
+  block: BlockNode,
+  lines: readonly string[],
+  indent: string,
+  unit: string,
+  eol: string
+): void {
+  const fresh = lines.map((line) => ({
+    line: { text: `${indent}${unit}${line}`, eol },
+    kind: 'content' as const
+  }))
+  const firstContent = block.extra.findIndex((x) => x.kind === 'content')
+  if (firstContent === -1) {
+    block.extra.push(...fresh)
+  } else {
+    block.extra = [
+      ...block.extra.slice(0, firstContent),
+      ...fresh,
+      ...block.extra.slice(firstContent).filter((x) => x.kind === 'prop')
+    ]
+  }
+}
+
+/** 任务标记:`[ ]` / `[x]`,可选前置 bullet(`* [ ]` / `- [ ]`)与前导缩进(文件里的内容行带缩进) */
+const TASK_MARK_RE = /^[ \t]*([-*+][ \t]+)?\[([ xX])\]/
+
+/**
+ * 翻转块内某一行的任务标记(`[ ]` ↔ `[x]`)。
+ * `lineIndex` 0 = 块头(`- ` 之后,块首裸 `[ ]` 或 `* [ ]`);>0 = 第 N 条**内容行**。
+ *
+ * 找不到标记 / 行号越界 / 块不存在 → 返回**同一个 file**(调用方据此判 no-op,不推 undo)。
+ * 改内容行时**必须换 `SourceLine` 新对象**(`cloneFile` 是共享式拷贝)。
+ */
+export function toggleTaskMarker(file: ParsedFile, key: string, lineIndex: number): ParsedFile {
+  const next = cloneFile(file)
+  const target = locate(next, key)
+  if (!target) return file
+
+  const flip = (text: string): string | null => {
+    const m = TASK_MARK_RE.exec(text)
+    if (!m) return null
+    const at = m[0].indexOf('[') + 1
+    const checked = (m[2] ?? '').toLowerCase() === 'x' ? ' ' : 'x'
+    return `${text.slice(0, at)}${checked}${text.slice(at + 1)}`
+  }
+
+  if (lineIndex <= 0) {
+    const flipped = flip(blockText(target.block))
+    if (flipped === null) return file
+    setHeadText(target.block, `${indentText(target.block.head.text)}- ${flipped}`)
+    return next
+  }
+
+  let seen = 0
+  for (const item of target.block.extra) {
+    if (item.kind !== 'content') continue
+    if (seen++ !== lineIndex - 1) continue
+    const flipped = flip(item.line.text)
+    if (flipped === null) return file
+    item.line = { text: flipped, eol: item.line.eol }
+    return next
+  }
+  return file
 }
 
 /**
@@ -783,20 +872,7 @@ export function setBlockContentLines(file: ParsedFile, key: string, lines: reado
   const unit = detectIndentUnit(next)
   const indent = indentText(target.block.head.text)
   setHeadText(target.block, `${indent}- ${lines[0] ?? ''}`)
-  const fresh = lines.slice(1).map((line) => ({
-    line: { text: `${indent}${unit}${line}`, eol },
-    kind: 'content' as const
-  }))
-  const firstContent = target.block.extra.findIndex((x) => x.kind === 'content')
-  if (firstContent === -1) {
-    target.block.extra.push(...fresh)
-  } else {
-    target.block.extra = [
-      ...target.block.extra.slice(0, firstContent),
-      ...fresh,
-      ...target.block.extra.slice(firstContent).filter((x) => x.kind === 'prop')
-    ]
-  }
+  writeContentLines(target.block, lines.slice(1), indent, unit, eol)
   return next
 }
 

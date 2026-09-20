@@ -39,6 +39,7 @@ import {
   shiftDay,
   splitBlock,
   todayDay,
+  toggleTaskMarker,
   topBlocks,
   withGraph
 } from '../src/plugins/logseq/shared'
@@ -300,7 +301,9 @@ describe('块编辑命令', () => {
       FIXTURE,
       '- a\n  ```js\n  const x = 1\n  ```\n',
       '- 单行\n',
-      'title:: T\n- a\n  id:: u\n   深缩进内容\n- b\n'
+      'title:: T\n- a\n  id:: u\n   深缩进内容\n- b\n',
+      // 行级标记:块内清单只能用 `*`(以 `-` 开头的行会被解析成子块,那是 Logseq 语义)
+      '- 任务\n  * [ ] 甲\n  * [x] 乙\n  > 引用\n  # 标题\n'
     ]) {
       const file = parseLogseqFile(raw)
       const unit = detectIndentUnit(file)
@@ -311,6 +314,39 @@ describe('块编辑命令', () => {
       }
       expect(serializeLogseqFile(next), raw).toBe(raw)
     }
+  })
+
+  it('多行劈块:光标在任意一行都能劈,后面的行归新块', () => {
+    const raw = '- 甲\n  * [ ] 一\n  二\n'
+    const file = parseLogseqFile(raw)
+    const unit = detectIndentUnit(file)
+    // displayLines = ['甲', '* [ ] 一', '二'] → full = '甲\n* [ ] 一\n二'
+    // offset 1 = '甲' 末尾
+    expect(serializeLogseqFile(splitBlock(file, '0', 1, unit).file)).toBe('- 甲\n- * [ ] 一\n  二\n')
+    // offset 4 = '* [ ] 一' 的列 2 → 前半 head 甲 + content '* '
+    expect(serializeLogseqFile(splitBlock(file, '0', 4, unit).file)).toBe('- 甲\n  * \n- [ ] 一\n  二\n')
+    // offset 9 = 第二行行尾(换行符之前)→ before 两行、after 只剩第三行
+    expect(serializeLogseqFile(splitBlock(file, '0', 9, unit).file)).toBe('- 甲\n  * [ ] 一\n- 二\n')
+  })
+
+  it('toggleTaskMarker:块头裸 `[ ]` 与 `* [ ]` 内容行都能翻转,且不动别的行', () => {
+    const raw = ['- [ ] 任务甲', '  正文', '  * [x] 清单乙', '  id:: u', '- 普通块', ''].join('\n')
+    const file = parseLogseqFile(raw)
+    // 块头 '[ ] 任务甲' → 勾选
+    expect(serializeLogseqFile(toggleTaskMarker(file, '0', 0))).toBe(
+      ['- [x] 任务甲', '  正文', '  * [x] 清单乙', '  id:: u', '- 普通块', ''].join('\n')
+    )
+    // 第 2 条内容行 '* [x] 清单乙'(显示行号 2)→ 取消勾选;属性行与正文行原样
+    expect(serializeLogseqFile(toggleTaskMarker(file, '0', 2))).toBe(
+      ['- [ ] 任务甲', '  正文', '  * [ ] 清单乙', '  id:: u', '- 普通块', ''].join('\n')
+    )
+    // 没有标记 / 行号越界 / 块不存在 → 同一个 file(调用方据此判 no-op)
+    expect(toggleTaskMarker(file, '1', 0)).toBe(file)
+    expect(toggleTaskMarker(file, '0', 1)).toBe(file)
+    expect(toggleTaskMarker(file, '0', 9)).toBe(file)
+    expect(toggleTaskMarker(file, '9', 0)).toBe(file)
+    // 纯函数:不改动输入文件
+    expect(serializeLogseqFile(file)).toBe(raw)
   })
 
   it('删除块与它的子树,焦点落到下一个兄弟', () => {

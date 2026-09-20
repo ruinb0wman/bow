@@ -13,9 +13,9 @@
  * 组件本身**不改数据**,只 emit 意图 —— 状态与保存策略全在 `JournalView` 里。
  */
 import { computed, nextTick, ref, watch } from 'vue'
-import { blockLinesForDisplay, type BlockNode } from '@plugins/logseq/shared'
+import { analyzeBlockLines, blockLinesForDisplay, type BlockNode } from '@plugins/logseq/shared'
 import type { PageHit } from '@plugins/logseq/graph'
-import BlockText from './BlockText.vue'
+import MarkdownLine from './MarkdownLine.vue'
 
 const props = defineProps<{
   block: BlockNode
@@ -33,7 +33,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'action', payload: { type: string; key: string; lines?: string[]; offset?: number }): void
+  (e: 'action', payload: { type: string; key: string; lines?: string[]; offset?: number; lineIndex?: number }): void
   (e: 'open-page', name: string): void
   (e: 'open-url', url: string): void
 }>()
@@ -44,8 +44,8 @@ const suggestions = ref<PageHit[]>([])
 const suggestionIndex = ref(0)
 
 const displayLines = computed(() => blockLinesForDisplay(props.block, props.unit))
-/** 含围栏代码的块整块用等宽字体(多行内容里出现 ``` 就算) */
-const fenced = computed(() => displayLines.value.slice(1).some((line) => /^\s*(```|~~~)/.test(line)))
+/** 行级渲染数据:结构标记 + 带全局偏移的行内 token(点哪落哪靠它) */
+const renderLines = computed(() => analyzeBlockLines(displayLines.value))
 const visibleProps = computed(() =>
   props.block.extra
     .filter((x) => x.kind === 'prop')
@@ -56,14 +56,12 @@ const visibleProps = computed(() =>
 function startEdit(event: MouseEvent): void {
   if (props.editing) return
   const target = event.target as HTMLElement | null
-  const lineIndex = Number(target?.closest('[data-line]')?.getAttribute('data-line') ?? '0')
-  // 只有第一行能精确映射到 textarea 的偏移;点后面的多行内容时落到第一行末尾
-  if (lineIndex > 0) {
-    emit('action', { type: 'start-edit', key: props.block.key })
-    return
-  }
-  const raw = target?.closest('[data-src]')?.getAttribute('data-src')
-  emit('action', { type: 'start-edit', key: props.block.key, offset: raw ? Number(raw) : undefined })
+  // 优先落成被点的那个 token 的原文偏移;点在行首空白 / 引用边框 / 被隐藏的标记行上时
+  // 退到本行的起始偏移(`data-base`)—— 第 2 行以后也能精确落点
+  const src =
+    target?.closest('[data-src]')?.getAttribute('data-src') ??
+    target?.closest('[data-line]')?.getAttribute('data-base')
+  emit('action', { type: 'start-edit', key: props.block.key, offset: src ? Number(src) : undefined })
 }
 
 function onInput(): void {
@@ -248,10 +246,16 @@ function onFocus(): void {
       ></textarea>
 
       <template v-else>
-        <div class="block-rendered" :class="{ codeish: fenced }" @click="startEdit">
-          <template v-for="(line, index) in displayLines" :key="index">
-            <div class="block-line" :data-line="index">
-              <BlockText :text="line" @open-page="emit('open-page', $event)" @open-url="emit('open-url', $event)" />
+        <div class="block-rendered" @click="startEdit">
+          <template v-for="(line, index) in renderLines" :key="index">
+            <div class="block-line" :data-line="index" :data-base="line.base">
+              <MarkdownLine
+                :line="line"
+                :line-index="index"
+                @open-page="emit('open-page', $event)"
+                @open-url="emit('open-url', $event)"
+                @toggle-task="(i: number) => emit('action', { type: 'toggle-task', key: block.key, lineIndex: i })"
+              />
             </div>
           </template>
           <div v-if="displayLines.every((l) => l === '')" class="block-empty">空白块(点这里输入)</div>
@@ -349,10 +353,6 @@ function onFocus(): void {
   word-break: break-word;
 }
 
-.block-rendered.codeish {
-  font-family: Consolas, 'Cascadia Mono', monospace;
-  font-size: 0.92em;
-}
 .block-empty {
   color: var(--fg-dim);
   font-style: italic;

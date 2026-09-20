@@ -12,13 +12,13 @@ import { tokenizeInline, type Token } from '@plugins/logseq/format'
 
 defineOptions({ name: 'BlockText' })
 
-const props = defineProps<{ text?: string; tokens?: Token[] }>()
+const props = defineProps<{ text?: string; tokens?: Token[]; base?: number }>()
 const emit = defineEmits<{
   (e: 'open-page', name: string): void
   (e: 'open-url', url: string): void
 }>()
 
-const list = computed<Token[]>(() => props.tokens ?? tokenizeInline(props.text ?? ''))
+const list = computed<Token[]>(() => props.tokens ?? tokenizeInline(props.text ?? '', props.base ?? 0))
 
 /** `[[a|b]]` 显示 b,点击时跳 a;`#[[多字 标签]]` 与 `#tag` 都显示去掉标记的名字 */
 function label(token: Token): string {
