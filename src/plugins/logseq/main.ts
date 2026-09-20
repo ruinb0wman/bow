@@ -14,6 +14,9 @@
  *    `tab:closed` 清理。内部页面的 URL 不能带路径(`parseInternalUrl` 只认 `bow://<id>`),
  *    所以「当前在哪一页」只能存在这里。
  * 5. **自己写的文件要吞掉自己的 watcher 回声**(`recentWrites`),否则每敲一个字都会触发一次重载。
+ *    判定不能靠「事件到达时刻查时间戳」—— 通知在 `rename` 那一刻就产生了,而我们记账还要等一轮
+ *    线程池往返,必然比通知晚。所以:**写之前**就把「路径 + 写入内容」记下来,等 flush 时再用
+ *    **磁盘内容是否仍等于我们写的那份**判回声(内容被第三方改过就照常上报,不靠时间窗蒙)。
  */
 
 import { app, BrowserWindow, dialog } from 'electron'
@@ -59,7 +62,7 @@ import {
 
 /** watcher 防抖:Logseq 保存时常常连着好几个事件 */
 const WATCH_DEBOUNCE_MS = 250
-/** 自己写完文件后,多久之内到达的同路径 watcher 事件算「回声」 */
+/** `recentWrites` 记录的保留时长(只用于清理;回声判定看内容,不比时间) */
 const SELF_WRITE_MS = 3000
 /** 模板目录(Logseq 约定:图根下的 templates/) */
 const TEMPLATES_DIR = 'templates'
@@ -69,8 +72,8 @@ interface GraphRuntime {
   config: GraphConfig
   index: GraphIndex | null
   watcher: FSWatcher | null
-  /** 自己写的文件:路径 → 写入时刻 */
-  recentWrites: Map<string, number>
+  /** 自己写的文件:路径 → 写入时刻 + 写进去的内容(判回声靠内容比对,见文件头第 5 条) */
+  recentWrites: Map<string, { at: number; raw: string }>
   /** 待处理的 watcher 变更(相对路径) */
   pending: Set<string>
   timer: NodeJS.Timeout | null
@@ -158,7 +161,7 @@ function createLogseqPlugin(): PluginMain {
       config: parseConfigEdn(configText),
       index: null,
       watcher: null,
-      recentWrites: new Map(),
+      recentWrites: new Map<string, { at: number; raw: string }>(),
       pending: new Set(),
       timer: null,
       scanPromise: null
@@ -177,16 +180,13 @@ function createLogseqPlugin(): PluginMain {
     runtime = null
   }
 
-  /** 目录监听:递归 + 防抖 + 吞掉自己写入的回声 */
+  /** 目录监听:递归 + 防抖。回声过滤不在回调里做(那时记账可能还没落地),统一放到 flushWatch —— 见文件头第 5 条 */
   function startWatching(): void {
     if (!runtime) return
     try {
       runtime.watcher = watch(runtime.root, { recursive: true }, (_event, filename) => {
         if (!runtime) return
         const rel = filename ? String(filename).split(sep).join('/') : ''
-        const now = Date.now()
-        const written = rel ? runtime.recentWrites.get(rel) : undefined
-        if (written && now - written < SELF_WRITE_MS) return
         runtime.pending.add(rel)
         if (runtime.timer) clearTimeout(runtime.timer)
         runtime.timer = setTimeout(() => {
@@ -199,24 +199,53 @@ function createLogseqPlugin(): PluginMain {
     }
   }
 
+  /**
+   * 这条事件是不是「我们自己那次写入」的回声。
+   *
+   * 判据是**磁盘内容仍等于我们写的那份**:相等 ⇒ 没人动过它,是我们自己写的(吞掉);不相等 ⇒
+   * 有人在我们之后又改了,照常上报 —— 所以不存在「写完 3 秒内外部改动被吞掉」的盲窗。
+   * 原子写的 `.tmp-*` 临时文件没有正文可比(它们也不是 `.md`,`refreshIndexedFile` 本来就会跳过)。
+   * 记录只在 SELF_WRITE_MS 内有效:更久之后的事件就算内容相同也照常上报(避免「永久吞声」)。
+   */
+  async function isSelfWriteEcho(rel: string): Promise<boolean> {
+    if (!runtime || !rel) return false
+    const now = Date.now()
+    for (const [written, record] of runtime.recentWrites) {
+      if (now - record.at > SELF_WRITE_MS) continue
+      if (rel.startsWith(`${written}.tmp-`)) return true
+      if (rel !== written) continue
+      const disk = await readIfExists(join(runtime.root, rel))
+      return disk !== null && disk === record.raw
+    }
+    return false
+  }
+
   async function flushWatch(): Promise<void> {
     if (!runtime) return
     const paths = [...runtime.pending]
     runtime.pending.clear()
     if (paths.length === 0) return
     const configChanged = paths.some((p) => p === 'logseq/config.edn' || p.endsWith('/config.edn'))
+    // 自家写入的回声不刷索引也不广播 —— 否则页面会把「自己刚存下去的东西」当成外部改动
+    // 静默重载一次,编辑态(连带焦点与撤销栈)就全没了
+    // recentWrites 只用来判回声,先把过期项清掉,免得越攒越多(而且过期记录不能再用)
+    const now = Date.now()
+    for (const [path, record] of runtime.recentWrites) if (now - record.at > SELF_WRITE_MS) runtime.recentWrites.delete(path)
+    const kept: string[] = []
+    for (const rel of paths) {
+      if (await isSelfWriteEcho(rel)) continue
+      kept.push(rel)
+    }
+    if (kept.length === 0) return
     if (configChanged) {
       const text = (await readIfExists(join(runtime.root, 'logseq', 'config.edn'))) ?? ''
       runtime.config = parseConfigEdn(text)
       runtime.index = null
       void ensureIndex()
     } else {
-      for (const rel of paths) await refreshIndexedFile(rel)
+      for (const rel of kept) await refreshIndexedFile(rel)
     }
-    // recentWrites 只用来判回声,顺手清掉过期项,免得越攒越多
-    const now = Date.now()
-    for (const [path, at] of runtime.recentWrites) if (now - at > SELF_WRITE_MS) runtime.recentWrites.delete(path)
-    context?.ipc.emit('graph-changed', { paths })
+    context?.ipc.emit('graph-changed', { paths: kept })
   }
 
   /**
@@ -322,8 +351,8 @@ function createLogseqPlugin(): PluginMain {
     }
   }
 
-  function noteRecentWrite(rel: string): void {
-    runtime?.recentWrites.set(rel, Date.now())
+  function noteRecentWrite(rel: string, raw: string): void {
+    runtime?.recentWrites.set(rel, { at: Date.now(), raw })
   }
 
   async function relOf(path: string): Promise<string> {
@@ -415,16 +444,19 @@ function createLogseqPlugin(): PluginMain {
       const diskRaw = (await readIfExists(path)) ?? ''
       return { ok: false, conflict: true, diskRaw, mtimeMs: diskMtime }
     }
+    const rel = await relOf(path)
+    // **先记账再写**:fs 通知在 rename 那一刻就产生了,写完再记必然记不住 —— 那正是
+    // 「每次自动保存都静默重载一次、编辑器退出、焦点丢」的根因
+    noteRecentWrite(rel, raw)
     try {
       await writeFileAtomic(path, raw)
     } catch (e) {
+      runtime.recentWrites.delete(rel)
       const message = e instanceof Error ? e.message : String(e)
       context?.logError('写文件失败', path, message)
       return { ok: false, error: message }
     }
     const mtimeMs = (await io.mtimeMs(path)) ?? Date.now()
-    const rel = await relOf(path)
-    noteRecentWrite(rel)
     if (runtime.index && rel && /\.md$/i.test(rel)) {
       const replace = runtime.index.files.filter((f) => f.rel !== rel)
       replace.push(

@@ -28,6 +28,8 @@ interface Harness {
   handlers: Map<string, (...args: any[]) => unknown>
   emitEvent(name: string, payload?: unknown): void
   settings: { value: Record<string, unknown> }
+  /** 插件广播出去的事件(`context.ipc.emit`):用来钉「自己写的文件不能触发重载」 */
+  pluginEvents: Array<{ event: string; args: unknown }>
 }
 
 function harness(): Harness {
@@ -37,6 +39,7 @@ function harness(): Harness {
     handlers,
     emitEvent: (name: string, payload?: unknown) => subscriptions.get(name)?.(payload),
     settings: { value: {} as Record<string, unknown> },
+    pluginEvents: [] as Array<{ event: string; args: unknown }>,
     // 插件只把 storage 当 JsonStore 用;这里给一份内存实现(set/setRaw 的语义与真的一致)
     storage: () => ({
       get: () => state.settings.value,
@@ -57,7 +60,9 @@ function harness(): Harness {
     logError: () => {},
     ipc: {
       handle: (method: string, fn: (...args: any[]) => unknown) => handlers.set(method, fn),
-      emit: () => {}
+      emit: (event: string, payload?: unknown) => {
+        state.pluginEvents.push({ event, args: payload })
+      }
     },
     events: {
       on: (name: string, cb: (payload: any) => void) => subscriptions.set(name, cb),
@@ -97,6 +102,25 @@ const call = <T>(method: string, ...args: unknown[]): Promise<T> => {
   const fn = h.handlers.get(method)
   if (!fn) throw new Error(`没有注册的方法:${method}`)
   return Promise.resolve(fn(...args) as T)
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** 轮询等待条件成立(真的 fs.watch + 250ms 防抖,只能等) */
+async function waitFor(pred: () => boolean, ms = 2000): Promise<boolean> {
+  const t0 = Date.now()
+  while (Date.now() < t0 + ms) {
+    if (pred()) return true
+    await sleep(50)
+  }
+  return pred()
+}
+
+/** `graph-changed` 广播里的路径(判回声只看它) */
+function graphChangedPaths(): string[] {
+  return h.pluginEvents
+    .filter((e) => e.event === 'graph-changed')
+    .flatMap((e) => ((e.args as { paths?: string[] } | undefined)?.paths ?? []).map((p) => p))
 }
 
 beforeEach(async () => {
@@ -298,6 +322,67 @@ describe('写', () => {
     })
     const links = await call<{ total: number }>('backlinks', '数据库')
     expect(links.total).toBe(1)
+  })
+})
+
+describe('fs.watch 回声(自己写的文件不能让页面重载)', () => {
+  // 这一组钉的是 2026-09-20 那个「每次自动保存后编辑器退出、焦点丢」的根因:
+  // 自家写入的 watcher 通知被当成「外部改动」广播出去 ⇒ 页面静默重载 ⇒ editingKey 被清。
+  // 真的 fs.watch + 250ms 防抖,只能等(产品侧的 WATCH_DEBOUNCE_MS 就写死在 main.ts 里)。
+  const ECHO_WAIT_MS = 900
+
+  it('写已存在的日志:不广播 graph-changed', async () => {
+    const before = await call<FileRead>('readJournal', '2026-09-19')
+    h.pluginEvents.length = 0
+    const res = await call<SaveResult>('savePage', {
+      path: before.path,
+      raw: '- 回声探针\n',
+      baseMtimeMs: before.mtimeMs
+    })
+    expect(res.ok).toBe(true)
+    await sleep(ECHO_WAIT_MS)
+    expect(graphChangedPaths()).toEqual([])
+  })
+
+  it('第一次保存(新建文件,会经过 .tmp 兄弟路径):也不广播', async () => {
+    const fresh = await call<FileRead>('readJournal', '2026-09-20')
+    h.pluginEvents.length = 0
+    const res = await call<SaveResult>('savePage', { path: fresh.path, raw: fresh.raw, baseMtimeMs: null })
+    expect(res.ok).toBe(true)
+    await sleep(ECHO_WAIT_MS)
+    expect(graphChangedPaths()).toEqual([])
+  })
+
+  it('对照组:外部改同一文件仍然广播(自动重载通路没被误杀)', async () => {
+    const before = await call<FileRead>('readJournal', '2026-09-19')
+    h.pluginEvents.length = 0
+    write(before.path, '- 外部脚本改的\n')
+    expect(await waitFor(() => graphChangedPaths().includes('journals/2026-09-19.md'))).toBe(true)
+  })
+
+  it('对照组:外部改 pages/ 下的文件也要广播', async () => {
+    const before = await call<FileRead>('readPage', 'cardinality')
+    h.pluginEvents.length = 0
+    write(before.path, 'title:: Cardinality\n- 外部改的\n')
+    expect(await waitFor(() => graphChangedPaths().includes('pages/cardinality.md'), 2500)).toBe(true)
+  })
+
+  it('对照组:自己写完 4s 后外部写回**相同内容**,仍要广播(过期记录不能永久吞声)', async () => {
+    const before = await call<FileRead>('readJournal', '2026-09-19')
+    await call<SaveResult>('savePage', { path: before.path, raw: '- 我写的\n', baseMtimeMs: before.mtimeMs })
+    h.pluginEvents.length = 0
+    await sleep(4000)
+    write(before.path, '- 我写的\n')
+    expect(await waitFor(() => graphChangedPaths().includes('journals/2026-09-19.md'), 2500)).toBe(true)
+  })
+
+  it('对照组:自己写完 1s 后别人再改,仍要广播(不靠时间窗吞)', async () => {
+    const before = await call<FileRead>('readJournal', '2026-09-19')
+    await call<SaveResult>('savePage', { path: before.path, raw: '- 我写的\n', baseMtimeMs: before.mtimeMs })
+    h.pluginEvents.length = 0
+    await sleep(1000)
+    write(before.path, '- 别人在我之后改的\n')
+    expect(await waitFor(() => graphChangedPaths().includes('journals/2026-09-19.md'))).toBe(true)
   })
 })
 

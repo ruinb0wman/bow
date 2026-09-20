@@ -22,6 +22,7 @@ import {
   DEFAULT_HIDDEN_PROPERTIES,
   deleteBlock,
   detectIndentUnit,
+  findBlock,
   formatDayTitle,
   hasBlocks,
   indentBlock,
@@ -37,6 +38,7 @@ import {
   todayDay,
   toggleTaskMarker,
   topBlocks,
+  viewKey,
   type BlockNode,
   type EditResult,
   type FileRead,
@@ -84,7 +86,14 @@ const caretIntent = ref<number | null>(null)
 const collapsed = ref<Set<string>>(new Set())
 const dirty = ref(false)
 const saving = ref(false)
-/** 正在换页/重载(期间不允许保存:那次 blur 带的是上一页的内容) */
+/**
+ * 正在换页/重载(期间不允许保存)。
+ *
+ * ⚠️ 实测(2026-09-20,Chromium 152/Electron):**卸载 focused 元素本身不会触发 blur** ——
+ * `blur` / `focusout` 都不发,`activeElement` 直接变 BODY。所以这里挡的不是「卸载」,而是
+ * 「**点击**引起的真 blur」(点「前一天」「用磁盘版本重载」这些按钮时,那次 save 带的是上一页的内容
+ * 与失效基线)。旧注释写的是「卸载触发 blur」,那是错的,别再据此推任何结论。
+ */
 const loadingView = ref(false)
 const conflict = ref<{ diskRaw: string } | null>(null)
 const externalChanged = ref(false)
@@ -134,7 +143,10 @@ function loadRaw(raw: string): void {
   dirty.value = false
 }
 
-function loadResult(res: FileRead): void {
+function loadResult(res: FileRead, opts: { keepEditing?: boolean } = {}): void {
+  // 同页重载:块还在就保住编辑态(`<main>` 若被重建,BlockRow 挂载时的 immediate watcher 会把焦点
+  // 放回 textarea;silent 路径连 `<main>` 都不重建,连焦点都不用找回来)
+  const keep = opts.keepEditing ? editingKey.value : null
   view.value = res.view
   meta.value = {
     path: res.path,
@@ -145,7 +157,8 @@ function loadResult(res: FileRead): void {
     fromTemplate: res.fromTemplate
   }
   loadRaw(res.raw)
-  editingKey.value = null
+  const current = file.value
+  editingKey.value = keep && current && findBlock(current, keep) ? keep : null
   caretIntent.value = null
   conflict.value = null
   externalChanged.value = false
@@ -173,19 +186,32 @@ async function loadBacklinks(): Promise<void> {
   }
 }
 
-async function openView(next: LogseqView): Promise<void> {
+/**
+ * 换页 / 重载。
+ *
+ * `silent` = 同一页的静默重载(外部改动、自家 watcher 回声):不打 loading 态、不重建 `<main>`;
+ * 内容与内存**逐字节相同**时干脆什么都不做 —— 重建会把 textarea 卸下重建,编辑态、焦点、撤销栈
+ * 全没了(而内容其实一个字都没变)。这是「每次自动保存后编辑器退出」的第二道闸。
+ */
+async function openView(next: LogseqView, opts: { silent?: boolean } = {}): Promise<void> {
+  const sameView = viewKey(next) === viewKey(view.value)
   // 切页/重载之前先把待保存的排干:否则旧页的内容可能盖掉新页(而且旧基线早已失效)
-  trace(`open:${next.kind}`)
+  trace(`open:${next.kind}${opts.silent ? ':silent' : ''}`)
   cancelPendingSave()
   loadingView.value = true
-  status.value = status.value === 'ready' ? 'loading' : status.value
+  if (!opts.silent) status.value = status.value === 'ready' ? 'loading' : status.value
   try {
     const res =
       next.kind === 'journal'
         ? await invoke<FileRead>('readJournal', next.day)
         : await invoke<FileRead>('readPage', next.name)
+    if (opts.silent && sameView && file.value && res.raw === currentRaw()) {
+      trace('reload:noop')
+      if (meta.value) meta.value = { ...meta.value, exists: res.exists, mtimeMs: res.mtimeMs }
+      return
+    }
     status.value = 'ready'
-    loadResult(res)
+    loadResult(res, { keepEditing: sameView })
   } catch (e) {
     const text = e instanceof Error ? e.message : String(e)
     if (text.includes('插件已停用')) fail('「笔记」插件已被停用(设置页 → 插件管理可以重新启用)', 'disabled')
@@ -251,7 +277,7 @@ async function doSave(): Promise<void> {
   trace(`save:dirty=${dirty.value},saving=${saving.value},conflict=${!!conflict.value},meta=${meta.value ? 'yes' : 'no'}`)
   if (!meta.value || !file.value || saving.value || !dirty.value) return
   if (conflict.value) return
-  // 正在换页:此时 textarea 被卸下会触发 blur,那个 save 带的是**上一页**的内容与失效基线
+  // 正在换页:点按钮时的真 blur 会把上一页的内容与已失效的基线递过来(卸载本身不会触发 blur,见 loadingView)
   if (loadingView.value) {
     trace('save:blocked-by-loading')
     return
@@ -308,7 +334,7 @@ async function reloadFromDisk(): Promise<void> {
   cancelPendingSave()
   dirty.value = false
   externalChanged.value = false
-  await openView(view.value)
+  await openView(view.value, { silent: true })
 }
 
 // ---------- 编辑 ----------
@@ -599,6 +625,8 @@ function subscribe(): void {
       if (!meta.value) return
       const args = payload.args as { paths?: string[] } | undefined
       const paths = args?.paths ?? []
+      // 进页面的每一个 graph-changed 都留痕:排「为什么重载了 / 为什么没重载」时这是唯一入口
+      trace(`graph-changed:${paths.join('|') || '(空)'}`)
       // 空字符串 = 目录级事件(拿不到文件名):保守当作「可能相关」
       const related = paths.some((path) => !path || path === meta.value?.rel)
       if (!related) return
@@ -653,6 +681,8 @@ function exposeDebugHandle(): void {
     goDay,
     goToday,
     save: doSave,
+    /** 走 `graph-changed` 处理器的那条路(静默重载):E2E 用它验「内容没变 = 一个 DOM 都不动」 */
+    reload: reloadFromDisk,
     get trace() {
       return [...traceLog]
     },
