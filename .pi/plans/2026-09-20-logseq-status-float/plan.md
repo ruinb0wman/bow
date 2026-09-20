@@ -229,10 +229,19 @@ E2E 要断言「保存中…」这一态必须有它(现在只能靠 `dirty` 反
 
 - `bun run typecheck` / `bun run build` 均过(改的是 `.vue`,build 是必跑项)。
 - `bun run test`:**43 文件 / 838 例**(与基线一致,本改动不含纯函数逻辑,未新增单测)。
-  - 首次全量跑时 `tests/logseqPlugin.test.ts` 有一条「冲突带磁盘内容」失败,该文件单跑 22/22 通过、
-    全量重跑也全过 ⇒ **WSL 上的 mtime 精度 flake**(与本次改动无关),重跑即绿。
+  - 全量跑时 `tests/logseqPlugin.test.ts` 的「mtime 变了就报冲突」会偶发失败(WSL 的 `/tmp` 是 tmpfs,
+    粗粒度时间戳:读 → 立刻写可能落在同一个 tick,而产品侧判据容忍 ±1ms 的舍入)⇒ 实测约 1/8 复现,
+    与本次改动无关(插件主进程代码逐字节未动)。**已当场修掉**,见下面「计划外的一处修复」。
 - `/mnt/d/tmp/logseq-e2e-wsl.mjs`:**54/54 ×2**(基线 46,新增 §M 8 条)。核心判据实测:
   `blocksTopBefore=77`,`floatTops=[77,77,77,77,77]` ⇒ 浮层出现/消失全程正文起点一动不动;
   `getComputedStyle(.status-float).position === 'fixed'`;浮层文本序列 `'' | 未保存 | 未保存外部已改动 |
   保存中…外部已改动 | ''`(没有「已保存」)。
 - Windows 真机 / mac 真机未跑(E2E 脚本只在 WSL 侧)。
+
+**计划外的一处修复(2026-09-20,验证阶段顺手做)**:
+
+- `tests/logseqPlugin.test.ts` 的冲突用例把前置条件从「靠时间流逝让 mtime 变」改成**显式
+  `utimesSync(before.path, before.mtimeMs + 2000, …)`** —— 确定性,不再依赖文件系统时间戳粒度。
+  证据:修前 8 次单跑挂 1 次;修后该文件连跑 **15 次全绿**、全量连跑 **3 次全绿**。
+- 产品侧判据不动(`main.ts:414` 的 `Math.abs(diskMtime - base) > 1`):±1ms 容忍本身是为了吸收
+  文件系统舍入,该改的是测试的构造,不是把判据改严。
