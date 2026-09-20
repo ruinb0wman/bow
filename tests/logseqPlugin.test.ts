@@ -7,7 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { PluginContext } from '../src/main/plugins/types'
@@ -249,8 +249,12 @@ describe('写', () => {
 
   it('mtime 变了就报冲突并回磁盘内容,**绝不覆盖**', async () => {
     const before = await call<FileRead>('readJournal', '2026-09-19')
-    // 模拟 Logseq 在中间改了同一个文件
+    // 模拟 Logseq 在中间改了同一个文件。mtime 必须**显式拨老**到 base 之后:
+    // tmpfs 这类粗粒度时间戳下,「读 → 立刻写」两次可能落在同一个 tick,而产品侧的冲突判据
+    // 容忍 ±1ms 的文件系统舍入 ⇒ 靠时间自然流逝会偶发不成立(WSL 的 /tmp 上约 1/8 概率)。
     write(before.path, '- Logseq 写的内容 [[x]]\n')
+    const changedAt = new Date((before.mtimeMs ?? Date.now()) + 2000)
+    utimesSync(before.path, changedAt, changedAt)
     const res = await call<SaveResult>('savePage', {
       path: before.path,
       raw: '- 我在 bow 里写的内容\n',
