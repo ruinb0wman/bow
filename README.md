@@ -447,6 +447,13 @@ npm run test:mcp:http
   **`Ctrl+C` 有选中就复制到剪贴板,没有选中则照常发给 shell 当中断信号**;
   `Ctrl+V` 粘贴(多行文本按 xterm 的括号粘贴规则送进去),`Ctrl+Shift+C` / `Ctrl+Shift+V` 是备用组合;
   `Ctrl+D` 照常是 shell 的 EOF;`Ctrl+Shift+L` 跳回地址栏;`Ctrl+Shift+E` 当前窗格已是终端 → 什么也不做。
+- **`Ctrl+Alt+<可打印键>` 一律送进 pty**(如 pi / pi-agents 的 `Ctrl+Alt+P` 切模式)。xterm.js 在 Windows 上
+  把所有 `Ctrl+Alt+字母` 当成 AltGr(第三级 shift)、在送数据**之前**就丢掉,终端页启动时会包住它那条判据
+  (`plugins/terminal/ui/xtermCtrlAltChord.ts`):只在「Chromium 明确说这次组合没有 AltGr 字符」
+  (`getModifierState('AltGraph')` 为假)时放行,字节仍由 xterm 自己编码。
+  两条已知边界:① AltGr 布局(德语/法语/波兰语…)里 Chromium 会给 `Ctrl+Alt` 组合置上 AltGraph,
+  真组合仍分不出来(维持现状);② macOS 的 `Ctrl+Option+字母` 是另一处原因(`evaluateKeyboardEvent`
+  在 mac 上就不产出 key),本次未修。
 - 同时最多 12 个会话(超了会提示);终端页是内部页面标签,MCP 的页面类工具不会拿它做操作目标。
 - node-pty 的预编译二进制只覆盖 Windows / macOS —— 这套终端主要在 Windows 侧的 bow.exe 上用。
 

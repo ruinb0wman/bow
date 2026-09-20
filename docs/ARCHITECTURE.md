@@ -1102,6 +1102,17 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
     `TabManager.navigate()` 对跨「普通 ↔ 内部」边界一律拒绝,别为了这个去放宽它。
 24. `releasesToTerminal()` 是**按 action 放行**的:`Ctrl+Shift+L`(`focus-address-anywhere`)必须与 `Ctrl+L`
     (`focus-address`)是两个不同的 action,否则会被一起让给 shell —— 而它存在的意义正是「终端里也能跳去地址栏」。
+25. **`Ctrl+Alt+<可打印键>` 曾被 xterm.js 在 Windows 上整条丢掉**(2026-09-20 修):它的
+    `_isThirdLevelShift()` 只看 `isWindows && altKey && ctrlKey`,而 `_keyDown()` 是在
+    `triggerDataEvent()` **之前**查这条判据 ⇒ 它自己刚算好的 `ESC + 控制字符`(`Ctrl+Alt+P` → `\x1b\x10`)
+    一起被吞,pi / pi-agents 的「切模式」快捷键在 bow 的终端里完全没反应(Windows Terminal 里正常:
+    它拿得到 `KEY_EVENT_RECORD.uChar` 的 codepoint,能区分 AltGr 与真组合)。
+    修法 = 终端页启动时包一层 `_core._isThirdLevelShift`(`plugins/terminal/ui/xtermCtrlAltChord.ts`),
+    只在 `getModifierState('AltGraph')` 为假(布局里这次组合打不出字)时把判定削成 `false`,
+    让按键继续走 xterm 自己的编码器 —— **不要自己拼字节**:那要复刻 legacy / kitty / win32-input-mode
+    三套编码与 `Ctrl+Alt+Shift`、数字符号(`Ctrl+Alt+2` 会退化成 `Alt+2`、`Ctrl+Alt+[` 会变成裸 CSI)。
+    取不到内部判据就返回 `false`(退化成丢键,绝不发错字节),`__bowTerminal.ctrlAltRepaired` 暴露这个结果。
+    边界:AltGr 布局里 Chromium 给真组合也置上 AltGraph ⇒ 仍分不出来;mac 的 `Ctrl+Option+字母` 是另一处原因(未修)。
 
 **MCP 层**
 
