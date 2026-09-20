@@ -383,6 +383,49 @@ export function matchClipboardKey(input: TerminalKeyLike, isMac: boolean): Termi
   return null
 }
 
+// ---------- 键盘:Ctrl+Alt 组合(Windows 上的 AltGr 误判) ----------
+
+/**
+ * 判定「真的是 Ctrl+Alt 组合」需要的字段(与 DOM `KeyboardEvent` 结构化兼容,便于单测;
+ * 唯一在 DOM 上取不到的是 `altGraph`,由调用方从 `getModifierState('AltGraph')` 取好传进来)。
+ */
+export interface CtrlAltChordLike {
+  type: string
+  ctrlKey: boolean
+  altKey: boolean
+  metaKey: boolean
+  /** `ev.getModifierState('AltGraph')` —— 真实 AltGr 在打字符时为 true */
+  altGraph: boolean
+  isComposing?: boolean
+}
+
+/**
+ * 这次按键是不是「看得出真的是 Ctrl+Alt 组合」(而不是 AltGr 在打字符)?
+ *
+ * 背景:Windows 上 AltGr 就是 `Ctrl+Alt` 的别名,唯一能从 DOM 侧分开的信号是 Chromium 在
+ * **该组合能变成字符时**才置上的 `AltGraph` 修饰键(`ui/events/keycodes/platform_key_map_win.cc` 的
+ * `ReplaceControlAndAltWithAltGraph`)。xterm.js 的 `CoreBrowserTerminal._isThirdLevelShift()` 却只看
+ * `isWindows && altKey && ctrlKey`,把**所有** Ctrl+Alt 组合都当成第三级 shift 丢掉 ——
+ * 连它自己刚算好的字节(`ESC + 控制字符`)一起吞,`Ctrl+Alt+P`(pi 切模式)这类键就永远进不了 pty。
+ * 包装函数(`ui/xtermCtrlAltChord.ts`)只在返回 true 时把那条判据削弱成 false。
+ *
+ * 判据:
+ * - 必须真的按着 Ctrl+Alt;
+ * - `AltGraph` 必须**没**激活 —— 布局里这次组合能打出字时 Chromium 会置上它,所以没置上就证明打不出字;
+ * - 带 Meta(⌘/Win)的不算(那不是 AltGr 的编码方式);
+ * - 输入法组合中(`isComposing`)不算;
+ * - 只看 keydown(keyup / keypress 不该再产出数据)。
+ *
+ * 已知边界:AltGr 布局(德语/法语/波兰语…)里 Chromium 会给 Ctrl+Alt 组合置上 `AltGraph`,
+ * 真组合因此仍分不出来(维持现状:xterm 照旧吞掉)。这是 Windows 上 `Ctrl+Alt ≈ AltGr` 的固有歧义,
+ * Windows Terminal 用 `KEY_EVENT_RECORD.uChar` 的 codepoint 猜,同样是启发式。
+ */
+export function isGenuineCtrlAltChord(input: CtrlAltChordLike): boolean {
+  if (input.type !== 'keydown') return false
+  if (input.isComposing) return false
+  return input.ctrlKey && input.altKey && !input.metaKey && !input.altGraph
+}
+
 // ---------- 插件 IPC / 广播契约(主进程与终端页共用同一份形状) ----------
 
 /** 设置页「添加配置」列表项:预设 shell + 本机是否真的找得到 */

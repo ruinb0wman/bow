@@ -16,6 +16,7 @@ import {
   emptyReplay,
   findInPath,
   formatArgsLine,
+  isGenuineCtrlAltChord,
   newProfileId,
   normalizeSettings,
   parseArgsLine,
@@ -25,6 +26,7 @@ import {
   replayText,
   matchClipboardKey
 } from '../src/plugins/terminal/shared'
+import { installWindowsCtrlAltChordRepair } from '../src/plugins/terminal/ui/xtermCtrlAltChord'
 
 const WIN = defaultSettings('win32', undefined)
 const POSIX = defaultSettings('linux', '/bin/zsh')
@@ -296,5 +298,87 @@ describe('matchClipboardKey(终端里的复制/粘贴)', () => {
 
   it('大写 key 与 code 一致处理(Shift 场景)', () => {
     expect(matchClipboardKey(key({ key: 'C', code: 'KeyC', ctrlKey: true }), false)).toBe('copy-if-selection')
+  })
+})
+
+/** 判据的输入形状与 DOM `KeyboardEvent` 结构化兼容,单测里造一个最小对象即可 */
+function chord(patch: Partial<Parameters<typeof isGenuineCtrlAltChord>[0]>): Parameters<typeof isGenuineCtrlAltChord>[0] {
+  return { type: 'keydown', ctrlKey: false, altKey: false, metaKey: false, altGraph: false, ...patch }
+}
+
+describe('isGenuineCtrlAltChord(Windows 上分得开真 Ctrl+Alt 组合与 AltGr)', () => {
+  it('Ctrl+Alt 且 AltGraph 未激活 = 真组合(Ctrl+Alt+P 这类键必须送进 pty)', () => {
+    expect(isGenuineCtrlAltChord(chord({ ctrlKey: true, altKey: true }))).toBe(true)
+  })
+
+  it('AltGraph 激活 = AltGr 在打字符,不算(继续交给 xterm 的第三级 shift 判定)', () => {
+    expect(isGenuineCtrlAltChord(chord({ ctrlKey: true, altKey: true, altGraph: true }))).toBe(false)
+  })
+
+  it('带 Meta(⌘/Win)/ 只有 Ctrl / 只有 Alt / 都没有 → 不算', () => {
+    expect(isGenuineCtrlAltChord(chord({ ctrlKey: true, altKey: true, metaKey: true }))).toBe(false)
+    expect(isGenuineCtrlAltChord(chord({ ctrlKey: true }))).toBe(false)
+    expect(isGenuineCtrlAltChord(chord({ altKey: true }))).toBe(false)
+    expect(isGenuineCtrlAltChord(chord({}))).toBe(false)
+  })
+
+  it('只认 keydown,输入法组合中不算', () => {
+    expect(isGenuineCtrlAltChord(chord({ ctrlKey: true, altKey: true, type: 'keyup' }))).toBe(false)
+    expect(isGenuineCtrlAltChord(chord({ ctrlKey: true, altKey: true, type: 'keypress' }))).toBe(false)
+    expect(isGenuineCtrlAltChord(chord({ ctrlKey: true, altKey: true, isComposing: true }))).toBe(false)
+  })
+})
+
+describe('installWindowsCtrlAltChordRepair(包住 xterm 的 AltGr 误判判据)', () => {
+  /** 假的 xterm core:只带我们要包的那一个私有方法 */
+  function fakeTerm(browser?: { isWindows?: boolean }) {
+    const calls: Array<unknown> = []
+    const term = {
+      _core: {
+        browser,
+        _isThirdLevelShift(this: unknown, b: unknown, ev: unknown): boolean {
+          calls.push(ev)
+          return true // 真实 xterm 在 Windows 上对 Ctrl+Alt+可打印键就是这个结果
+        }
+      }
+    }
+    return { term, calls }
+  }
+
+  const ev = (patch: Partial<Record<'type' | 'ctrlKey' | 'altKey' | 'metaKey', unknown>> & { altGraph?: boolean }) =>
+    ({
+      type: 'keydown',
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      getModifierState: (name: string) => (name === 'AltGraph' ? !!patch.altGraph : false),
+      ...patch
+    }) as unknown as KeyboardEvent
+
+  it('装上了:真组合返回 false(不再吞键),且没有走原判据', () => {
+    const { term, calls } = fakeTerm({ isWindows: true })
+    expect(installWindowsCtrlAltChordRepair(term as never)).toBe(true)
+    expect(term._core._isThirdLevelShift({ isWindows: true }, ev({ ctrlKey: true, altKey: true, altGraph: false }))).toBe(false)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('AltGr 打字(AltGraph 激活)仍走原判据,返回值原样透传', () => {
+    const { term, calls } = fakeTerm({ isWindows: true })
+    installWindowsCtrlAltChordRepair(term as never)
+    expect(term._core._isThirdLevelShift({ isWindows: true }, ev({ ctrlKey: true, altKey: true, altGraph: true }))).toBe(true)
+    expect(calls).toHaveLength(1)
+  })
+
+  it('非 Windows 平台原样透传(不削弱 mac / Linux 的判定)', () => {
+    const { term, calls } = fakeTerm({ isWindows: false })
+    installWindowsCtrlAltChordRepair(term as never)
+    expect(term._core._isThirdLevelShift({ isWindows: false }, ev({ ctrlKey: true, altKey: true }))).toBe(true)
+    expect(calls).toHaveLength(1)
+  })
+
+  it('拿不到内部判据 → 返回 false 且不抛(行为退化成现状,不会发错字节)', () => {
+    expect(installWindowsCtrlAltChordRepair({} as never)).toBe(false)
+    expect(installWindowsCtrlAltChordRepair({ _core: {} } as never)).toBe(false)
+    expect(installWindowsCtrlAltChordRepair({ _core: { _isThirdLevelShift: 42 } } as never)).toBe(false)
   })
 })

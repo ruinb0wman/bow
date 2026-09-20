@@ -22,6 +22,7 @@ import {
   matchClipboardKey
 } from '@plugins/terminal/shared'
 import type { TerminalAttachResult, TerminalRenderSettings } from '@plugins/terminal/shared'
+import { installWindowsCtrlAltChordRepair } from './xtermCtrlAltChord'
 
 const api = window.browserAPI
 
@@ -35,6 +36,8 @@ const message = ref('')
 let term: Terminal | null = null
 let fitAddon: FitAddon | null = null
 let tabId: number | null = null
+/** 装上没装上 xterm 里那条 AltGr 误判的补丁(见 ui/xtermCtrlAltChord.ts);拿不到接缝时为 false */
+let ctrlAltRepaired = false
 let unsubs: Array<() => void> = []
 let observer: ResizeObserver | null = null
 let sizeTimer: number | null = null
@@ -148,6 +151,8 @@ async function createTerminal(): Promise<void> {
   term.loadAddon(fitAddon)
   term.open(host.value)
   term.attachCustomKeyEventHandler(onKey)
+  // Windows 上 xterm 会把 Ctrl+Alt+<可打印键> 当 AltGr 吞掉(Ctrl+Alt+P 因此到不了 pty),包住它那条判据
+  ctrlAltRepaired = installWindowsCtrlAltChordRepair(term)
   fitAddon.fit()
   term.onData((data) => {
     if (tabId != null) void invoke('write', tabId, data)
@@ -209,6 +214,10 @@ function exposeDebugHandle(): void {
     },
     get status() {
       return status.value
+    },
+    /** E2E 判据:AltGr 误判的补丁真的装上了(不是静默退化成丢键) */
+    get ctrlAltRepaired() {
+      return ctrlAltRepaired
     },
     send: (data: string) => (tabId != null ? invoke('write', tabId, data) : Promise.resolve(false)),
     bufferText: (): string => {
