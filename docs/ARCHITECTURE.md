@@ -492,7 +492,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `default-browser` | — | ui | `status` `register` `unregister` `openSettings` | — | — | — | — | — | — | 无(状态现读系统:Linux 读 `mimeapps.list`;Windows 先按 UserChoice 主键→备用键→`Software\Classes` 默认值读“记录”,再用 PowerShell 调 shell 的 `AssocQueryString` 拿“**实际生效者**”,两者不一致时以实际为准并标注记录已失效) |
 | `device-inspect` | — | ui, mcp | `list` `open` `getSettings` `setSettings` `checkAdb` `connect` `pair` `cleanupForwards` `rawAdb` | `device_list_targets` `device_inspect` `device_eval` `device_screenshot` `device_connect` | — | — | — | — | — | `device-inspect.json`(adb 命令 / 前端策略 / 端口转发记录) |
 | `terminal` | — | ui | `getSettings` `setSettings` `listCandidates` `attach` `write` `resize` `detach` | — | — | — | — | — | on `tab:closed`(按 tabId 回收 shell);emit `data` `exit` `settings-changed` `session-closed` | `terminal.json`(字体/字号/滚动缓冲 + shell 配置列表) |
-| `logseq` | — | ui | `getState` `pickGraph` `setGraph` `rebuildIndex` `readJournal` `readPage` `listJournals` `listPages` `backlinks` `listTemplates` `savePage` `attach` `setView` `openInNewPane` | — | — | — | — | — | on `tab:closed`(按 tabId 丢视图状态);emit `graph-changed` | `logseq.json`(图目录 + 最近图) |
+| `logseq` | — | ui | `getState` `pickGraph` `setGraph` `rebuildIndex` `getSettings` `setSettings` `toggleFavorite` `readJournal` `readPage` `listJournals` `listPages` `backlinks` `listTemplates` `savePage` `attach` `setView` `openInNewPane` | — | — | — | — | — | on `tab:closed`(按 tabId 丢视图状态);emit `graph-changed` `settings-changed` `favorites-changed` | `logseq.json`(图目录 + 最近图 + 正文字号 + 每个图的收藏) |
 
 **渲染层侧**(`registry.ts` / 各插件 `ui.ts`)
 
@@ -524,7 +524,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `serializeLogseqFile(parseLogseqFile(raw)) === raw` 对**任意**输入恒等 | 解析器理解错了也**不会改写用户文件的一个字节** —— 它只做分组,文件在内存里就是逐行原文 | `format.ts` 的行模型 + `tests/logseqFormat.test.ts` |
 | 编辑命令只换被碰过的 `SourceLine` 对象(`cloneFile` 是共享式拷贝) | 「没改的行逐字节不变」不靠自觉,靠对象同一性 | `shared.ts` 的 `setHeadText` / `shiftIndentLines` + 纯函数用例 |
 | 只写图目录内 `journals/`+`pages/` 下的 `.md`(「`logseq/config.edn` 永不写回」) | 与 Logseq 共用同一个图,越界写入是**用户的笔记**而不是浏览器数据 | `main.ts` 的 `assertWritable()` + `tests/logseqPlugin.test.ts` |
-| 行级标记也只是渲染:`matchLineMark` 的标记原文 + 行内 token 拼接 === 整行原文 | 标题/复选框/引用/列表/围栏行不改写文件;`analyzeBlockLines` 顺便给每行算出 textarea 全局偏移(点哪落哪) | `format.ts` 的 `matchLineMark` / `analyzeBlockLines` + `tests/logseqFormat.test.ts` |
+| 行级标记也只是渲染:`matchLineMark` 的标记原文 + 行内 token 拼接 === 整行原文 | 标题/复选框/引用/列表/围栏行不改写文件;`analyzeBlockLines` 顺便给每行算出 textarea 全局偏移(点击落行尾) | `format.ts` 的 `matchLineMark` / `analyzeBlockLines` + `tests/logseqFormat.test.ts` |
 
 ### 5.9 内核事件总线(全部事件名)
 
