@@ -149,6 +149,8 @@ function loadResult(res: FileRead): void {
   caretIntent.value = null
   conflict.value = null
   externalChanged.value = false
+  // 换页/重载 = 一次新的上下文:旧的失败提示不该继续挂着(与成功保存时同样的清空语义)
+  message.value = ''
   undoStack.value = []
   redoStack.value = []
   undoArmed = false
@@ -633,6 +635,9 @@ function exposeDebugHandle(): void {
     get dirty() {
       return dirty.value
     },
+    get saving() {
+      return saving.value
+    },
     get conflict() {
       return plain(conflict.value)
     },
@@ -753,9 +758,6 @@ watch(
       <div class="meta">
         <span v-if="meta && !meta.exists" class="chip">尚未创建文件(第一次编辑时创建)</span>
         <span v-if="meta?.fromTemplate" class="chip">来自模板 {{ meta.fromTemplate }}</span>
-        <span v-if="saving" class="chip">保存中…</span>
-        <span v-else-if="dirty" class="chip warn">未保存</span>
-        <span v-if="externalChanged" class="chip warn">外部已改动</span>
         <span v-if="graphState?.index?.tooLarge" class="chip warn">
           图文件数超过 {{ graphState.index.files }} 上限,反链可能不全
         </span>
@@ -763,7 +765,6 @@ watch(
           `:journal/file-name-format` 用了不认识的 token({{ graphState.dateFormat.unsupported }}),新建日志按
           {{ graphState.dateFormat.format }}
         </span>
-        <span v-if="message" class="chip error">{{ message }}</span>
       </div>
 
       <div v-if="conflict" class="conflict">
@@ -794,6 +795,14 @@ watch(
 
         <BacklinksPanel :links="links" :loading="linksLoading" @open-page="openPage" />
       </main>
+
+      <!-- 编辑期瞬态状态:固定右下角浮层,不参与文档流 —— 出现/消失不会推动正文(见 .status-float) -->
+      <div v-if="saving || dirty || externalChanged || message" class="status-float">
+        <span v-if="saving" class="chip">保存中…</span>
+        <span v-else-if="dirty" class="chip warn">未保存</span>
+        <span v-if="externalChanged" class="chip warn">外部已改动</span>
+        <span v-if="message" class="chip error">{{ message }}</span>
+      </div>
     </template>
   </div>
 </template>
@@ -1010,6 +1019,8 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  /* 钉住单行高度:chip 全部消失时也不塌下去(否则首次保存成功后正文会往上跳一下) */
+  min-height: 24px;
   padding: 6px 20px 0;
 }
 
@@ -1030,6 +1041,30 @@ body {
 .chip.error {
   color: var(--danger);
   border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+}
+
+/* 编辑期瞬态状态:固定右下角,不参与文档流 —— 出现/消失不会推动正文(消除抖动) */
+.status-float {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 40; /* 高于 header(5)、块内建议下拉(20)与搜索下拉(30) */
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+  max-width: min(60vw, 420px);
+  pointer-events: none; /* 只有 chip 本体吃事件,容器不挡正文 */
+}
+
+.status-float .chip {
+  max-width: 100%;
+  padding: 3px 8px;
+  white-space: normal; /* 保存失败的异常文本可能很长:换行而不是宽出屏幕 */
+  background: var(--bg3); /* 默认 --bg2 与页面底色太近,浮在正文上要更亮一档 */
+  border-radius: 4px;
+  box-shadow: 0 2px 10px rgb(0 0 0 / 35%);
+  pointer-events: auto;
 }
 
 .conflict {
