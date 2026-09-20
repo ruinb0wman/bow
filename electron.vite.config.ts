@@ -30,7 +30,8 @@ export default defineConfig({
           index: resolve('src/renderer/index.html'),
           overlay: resolve('src/renderer/overlay.html'),
           settings: resolve('src/renderer/settings.html'),
-          terminal: resolve('src/renderer/terminal.html')
+          terminal: resolve('src/renderer/terminal.html'),
+          logseq: resolve('src/renderer/logseq.html')
         }
       }
     }

@@ -9,7 +9,7 @@
 
 export const INTERNAL_SCHEME = 'bow'
 
-export type InternalPageId = 'settings' | 'terminal'
+export type InternalPageId = 'settings' | 'terminal' | 'logseq'
 
 /** 设置页对外 URL(地址栏/标签/入口统一使用) */
 export const SETTINGS_URL = 'bow://settings'
@@ -17,13 +17,19 @@ export const SETTINGS_URL = 'bow://settings'
 /** 终端页对外 URL(插件「终端」贡献的页面,插件 id 与页面 id 同名) */
 export const TERMINAL_URL = 'bow://terminal'
 
+/** 笔记页对外 URL(插件「笔记」贡献的页面,同样插件 id 与页面 id 同名) */
+export const LOGSEQ_URL = 'bow://logseq'
+
 /**
  * 内部页面登记:url/title/entry 由 @shared/internalPages 统一提供。
  * 两根**正交**的轴决定打开语义:
  * - `singleton`(`TabManager.openInternal()` 用):true(设置页)= 已存在则只聚焦、不堆第二个;
  *   false(终端页)= 不查找已有标签,每次都开一个新的 shell 会话;
  * - `openIn`(地址栏通路 `TabManager.openUrl()` 用):'tab' = 新建标签(设置页);
- *   'pane' = **顶替当前聚焦窗格**(终端页:先分屏、再输 `bow://terminal`,终端就落在那个窗格里)。
+ *   'pane' = **顶替当前聚焦窗格**(终端页 / 笔记页:先分屏、再输 `bow://terminal`,就落在那个窗格里)。
+ *
+ * ⚠️ 笔记页(`bow://logseq`)与终端页同轴但理由不同:它自己带一个「页内导航」(日志 ↔ 页面),
+ * 所以需要「一个窗格 = 一个编辑器实例」才能两边对照着写(状态按 tabId 绑,见 `logseq/main.ts`)。
  *
  * ⚠️ `TabManager.create(url)`(工具栏「新终端」按钮 / `Ctrl+Shift+T` 恢复)是更底层的入口,
  * 不受这两根轴影响 —— 它永远是新标签。
@@ -38,7 +44,8 @@ export interface InternalPageSpec {
 
 export const INTERNAL_PAGES = {
   settings: { url: SETTINGS_URL, title: '设置', entry: 'settings', singleton: true, openIn: 'tab' },
-  terminal: { url: TERMINAL_URL, title: '终端', entry: 'terminal', singleton: false, openIn: 'pane' }
+  terminal: { url: TERMINAL_URL, title: '终端', entry: 'terminal', singleton: false, openIn: 'pane' },
+  logseq: { url: LOGSEQ_URL, title: '笔记', entry: 'logseq', singleton: false, openIn: 'pane' }
 } as const satisfies Record<InternalPageId, InternalPageSpec>
 
 /** 是否为本应用内部页面 URL */

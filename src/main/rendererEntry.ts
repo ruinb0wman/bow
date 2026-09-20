@@ -1,12 +1,12 @@
 /**
  * 渲染层入口解析:dev 走 Vite dev server(ELECTRON_RENDERER_URL),prod 走打包产物。
- * chrome / Overlay / 内部页面(设置)三个渲染入口共用,避免各处重复判断漂移。
+ * chrome / Overlay / 内部页面(设置 / 终端 / 笔记)各入口共用,避免各处重复判断漂移。
  */
 
 import { join } from 'node:path'
 import type { WebContents } from 'electron'
 
-export type RendererEntryName = 'index' | 'overlay' | 'settings' | 'terminal'
+export type RendererEntryName = 'index' | 'overlay' | 'settings' | 'terminal' | 'logseq'
 
 export interface RendererEntry {
   kind: 'url' | 'file'

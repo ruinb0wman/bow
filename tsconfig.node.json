@@ -23,6 +23,8 @@
     "src/shared/**/*",
     "src/plugins/*/main.ts",
     "src/plugins/*/shared.ts",
+    "src/plugins/*/format.ts",
+    "src/plugins/*/graph.ts",
     "src/plugins/*/adb.ts",
     "src/plugins/*/targets.ts",
     "src/plugins/*/relay.ts",

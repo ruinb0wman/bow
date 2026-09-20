@@ -25,6 +25,7 @@
     "src/shared/**/*",
     "src/plugins/*/ui.ts",
     "src/plugins/*/shared.ts",
+    "src/plugins/*/format.ts",
     "src/plugins/*/ui/**/*.vue"
   ]
 }

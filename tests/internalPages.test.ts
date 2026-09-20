@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   INTERNAL_PAGES,
+  LOGSEQ_URL,
   SETTINGS_URL,
   TERMINAL_URL,
   internalPageTitle,
@@ -60,6 +61,19 @@ describe('内部页面登记', () => {
     expect(INTERNAL_PAGES.terminal.entry).toBe('terminal')
   })
 
+  it('笔记页也登记为内部页面(入口名与 id 同名)', () => {
+    expect(parseInternalUrl(LOGSEQ_URL)).toBe('logseq')
+    expect(internalPageUrl('logseq')).toBe(LOGSEQ_URL)
+    expect(internalPageTitle('logseq')).toBe('笔记')
+    expect(INTERNAL_PAGES.logseq.entry).toBe('logseq')
+  })
+
+  it('笔记页与终端同轴:可多开 + 顶替聚焦窗格(每个窗格一个编辑器实例)', () => {
+    expect(INTERNAL_PAGES.logseq.singleton).toBe(false)
+    expect(INTERNAL_PAGES.logseq.openIn).toBe('pane')
+    expect(opensInPane('logseq')).toBe(true)
+  })
+
   it('singleton 决定 openInternal 的语义:设置页单例、终端可多开', () => {
     expect(INTERNAL_PAGES.settings.singleton).toBe(true)
     expect(INTERNAL_PAGES.terminal.singleton).toBe(false)
@@ -77,5 +91,7 @@ describe('内部页面登记', () => {
       expect(page.entry.length).toBeGreaterThan(0)
       expect(page.title.length).toBeGreaterThan(0)
     }
+    // 入口名必须与 `RendererEntryName` / vite 的 rollupOptions.input 一一对应(entry 就是文件名)
+    expect(Object.values(INTERNAL_PAGES).map((p) => p.entry)).toEqual(['settings', 'terminal', 'logseq'])
   })
 })

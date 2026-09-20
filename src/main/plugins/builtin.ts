@@ -10,6 +10,7 @@ import mcpHttp from '@plugins/mcp-http/main'
 import defaultBrowser from '@plugins/default-browser/main'
 import deviceInspect from '@plugins/device-inspect/main'
 import terminal from '@plugins/terminal/main'
+import logseq from '@plugins/logseq/main'
 
 export const BUILTIN_PLUGINS: PluginMain[] = [
   history,
@@ -22,5 +23,7 @@ export const BUILTIN_PLUGINS: PluginMain[] = [
   // 放末尾:不参与网络钩子链与地址栏建议源的次序(它只贡献 UI 与 MCP 工具)
   deviceInspect,
   // 同上(只贡献 UI,且它带来的 bow://terminal 页面走内部页面那条独立通路)
-  terminal
+  terminal,
+  // 同上(只贡献 UI,带着 bow://logseq 内部页面;同样不参与网络钩子与建议源顺序)
+  logseq
 ]

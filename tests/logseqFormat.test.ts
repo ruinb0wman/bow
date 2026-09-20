@@ -1,0 +1,213 @@
+/**
+ * Logseq 文件格式的解析 / 序列化 / 行内 tokenizer 用例。
+ *
+ * 最要紧的一组是**字节保真**:`serialize(parse(raw)) === raw` 对任意 raw 成立 ——
+ * 它是「与 Logseq 共用同一个图」的安全底线(解析器理解错了也不会改写用户的文件)。
+ * 第二组是**渲染零丢字**:所有 token 的 `raw` 拼接 === 原文。
+ */
+
+import { describe, expect, it } from 'vitest'
+import {
+  allBlocks,
+  blockLinesForDisplay,
+  blockText,
+  DEFAULT_HIDDEN_PROPERTIES,
+  detectIndentUnit,
+  findBlock,
+  indentText,
+  matchBlockLine,
+  parseLogseqFile,
+  propertyOf,
+  refsOfTokens,
+  serializeLogseqFile,
+  splitLines,
+  tokenizeInline,
+  tokensToRaw,
+  visibleProperties,
+  type Token
+} from '../src/plugins/logseq/format'
+
+/** 覆盖「容易写坏」的形态:空文件、无尾换行、CRLF、tab 缩进、多行内容、页面属性、未识别语法 */
+const IDENTITY_CASES = [
+  '',
+  '\n',
+  'a',
+  '- a',
+  '- a\n',
+  '- a\n- b\n',
+  '- a\r\n  - b\r\n',
+  '- a\n\t- b\n',
+  'title:: Test\ntags:: [[x]]\n\n- a\n  id:: 11111111-1111-4111-8111-111111111111\n  - b\n    ```js\n    const x = 1\n    ```\n- c\n',
+  '- 两个空格后的文本\n  - 子块\n',
+  '#+BEGIN_QUOTE\n引用\n#+END_QUOTE\n- a\n',
+  '---\ntitle: front matter\n---\n- a\n',
+  '- a\n\n- b\n',
+  '   \n- 前导空行\n',
+  '- 中文与 emoji 🎉\n',
+  '- a\n  continuation line\n  key:: value\n'
+]
+
+describe('字节保真', () => {
+  it('serialize(parse(raw)) === raw', () => {
+    for (const raw of IDENTITY_CASES) {
+      expect(serializeLogseqFile(parseLogseqFile(raw)), JSON.stringify(raw)).toBe(raw)
+    }
+  })
+
+  it('splitLines 保留混合行尾与无尾换行', () => {
+    expect(splitLines('a\r\nb\nc')).toEqual([
+      { text: 'a', eol: '\r\n' },
+      { text: 'b', eol: '\n' },
+      { text: 'c', eol: '' }
+    ])
+    expect(splitLines('')).toEqual([])
+  })
+})
+
+describe('块树', () => {
+  const raw = [
+    'title:: Test',
+    '',
+    '- alpha',
+    '  id:: 11111111-1111-4111-8111-111111111111',
+    '  - alpha child',
+    '    - deep',
+    '- beta',
+    '  collapsed:: true',
+    '  continuation',
+    '- gamma',
+    ''
+  ].join('\n')
+
+  it('嵌套、属性行与多行内容各归各位', () => {
+    const file = parseLogseqFile(raw)
+    const top = allBlocks(file)
+    expect(top.map(blockText)).toEqual(['alpha', 'alpha child', 'deep', 'beta', 'gamma'])
+    expect(top[0].key).toBe('0')
+    expect(top[1].key).toBe('0.0')
+    expect(top[2].key).toBe('0.0.0')
+    expect(top[3].key).toBe('1')
+    expect(top[0].extra.map((x) => x.kind)).toEqual(['prop'])
+    expect(top[3].extra.map((x) => x.kind)).toEqual(['prop', 'content'])
+  })
+
+  it('findBlock 按 key 定位(含顶层与嵌套)', () => {
+    const file = parseLogseqFile(raw)
+    expect(findBlock(file, '1')?.block.key).toBe('1')
+    expect(findBlock(file, '0.0.0')?.parent?.key).toBe('0.0')
+    expect(findBlock(file, '9')).toBe(null)
+  })
+
+  it('页面属性行与空行进 raw 段,顺序不变', () => {
+    const file = parseLogseqFile(raw)
+    expect(file.entries.map((e) => e.kind)).toEqual(['raw', 'block', 'block', 'block'])
+  })
+
+  it('空白-only 的行算块内内容,真空行结束子树', () => {
+    const withBlank = parseLogseqFile('- a\n  \n  x\n')
+    expect(allBlocks(withBlank).length).toBe(1)
+    const withEmpty = parseLogseqFile('- a\n\n- b\n')
+    expect(allBlocks(withEmpty).map(blockText)).toEqual(['a', 'b'])
+    expect(withEmpty.entries.map((e) => e.kind)).toEqual(['block', 'raw', 'block'])
+  })
+
+  it('缩进单元照文件本身检测(tab 优先,否则取最小正缩进)', () => {
+    expect(detectIndentUnit(parseLogseqFile('- a\n\t- b\n'))).toBe('\t')
+    expect(detectIndentUnit(parseLogseqFile('- a\n    - b\n'))).toBe('    ')
+    expect(detectIndentUnit(parseLogseqFile('- a\n- b\n'))).toBe('  ')
+  })
+
+  it('显示用的多行内容去掉父缩进 + 一个缩进单元', () => {
+    const file = parseLogseqFile('- a\n  ```js\n  const x = 1\n  ```\n')
+    const block = allBlocks(file)[0]
+    expect(blockLinesForDisplay(block, '  ')).toEqual(['a', '```js', 'const x = 1', '```'])
+  })
+
+  it('系统属性默认隐藏,自定义属性照常展示', () => {
+    const file = parseLogseqFile('- a\n  id:: u\n  collapsed:: true\n  rating:: 8\n')
+    const block = allBlocks(file)[0]
+    expect(visibleProperties(block).map((p) => p.key)).toEqual(['rating'])
+    expect(visibleProperties(block, []).map((p) => p.key)).toEqual(['id', 'collapsed', 'rating'])
+    expect(DEFAULT_HIDDEN_PROPERTIES).toContain('id')
+  })
+
+  it('块行与属性行的识别', () => {
+    expect(matchBlockLine('- x')).toEqual({ indent: '', text: 'x' })
+    expect(matchBlockLine('  - ')).toEqual({ indent: '  ', text: '' })
+    expect(matchBlockLine('-')).toEqual({ indent: '', text: '' })
+    expect(matchBlockLine('x')).toBe(null)
+    expect(indentText('\t  - x')).toBe('\t  ')
+    expect(propertyOf('  id:: abc')).toEqual({ key: 'id', value: 'abc' })
+    expect(propertyOf('  not a prop')).toBe(null)
+  })
+})
+
+describe('行内 tokenizer', () => {
+  const cases: Array<{ text: string; kinds: string[] }> = [
+    { text: '普通文本', kinds: ['text'] },
+    { text: '**粗**', kinds: ['strong'] },
+    { text: '__粗__', kinds: ['strong'] },
+    { text: '*斜*', kinds: ['em'] },
+    { text: '_斜_', kinds: ['em'] },
+    { text: '~~删~~', kinds: ['strike'] },
+    { text: '==高==', kinds: ['highlight'] },
+    { text: '`code`', kinds: ['code'] },
+    { text: '[[页面]]', kinds: ['page'] },
+    { text: '[[页面|别名]]', kinds: ['page'] },
+    { text: '#标签', kinds: ['tag'] },
+    { text: '#[[多字 标签]]', kinds: ['tag'] },
+    { text: '[label](https://x.test)', kinds: ['url'] },
+    { text: '看 https://x.test 这个', kinds: ['text', 'url', 'text'] },
+    { text: '((11111111-1111-4111-8111-111111111111))', kinds: ['text'] },
+    { text: '{{query 页面}}', kinds: ['text'] },
+    { text: '**粗** 里有 [[页]]', kinds: ['strong', 'text', 'page'] }
+  ]
+
+  it('识别与顺序', () => {
+    for (const item of cases) {
+      expect(tokenizeInline(item.text).map((t) => t.kind), item.text).toEqual(item.kinds)
+    }
+  })
+
+  it('渲染零丢字:raw 拼接 === 原文,且源码区间对得上', () => {
+    const samples = [
+      ...cases.map((c) => c.text),
+      '`a` **b** *c* ~~d~~ ==e== [[f|g]] #h [i](j) https://k.test 剩余文本',
+      '**x* 不完整',
+      'a * b * c',
+      '[[a|b]] 与 [[c]] 相邻[[d]]',
+      ''
+    ]
+    for (const text of samples) {
+      const tokens: Token[] = tokenizeInline(text)
+      expect(tokensToRaw(tokens), text).toBe(text)
+      for (const token of tokens) {
+        expect(text.slice(token.srcStart, token.srcEnd), `${text} / ${token.raw}`).toBe(token.raw)
+      }
+    }
+  })
+
+  it('嵌套 token 也保留区间(强调里的双链)', () => {
+    const [strong] = tokenizeInline('**[[页]]**')
+    expect(strong.kind).toBe('strong')
+    if (strong.kind !== 'strong') throw new Error('unreachable')
+    expect(strong.children.map((c) => c.kind)).toEqual(['page'])
+    expect(strong.children[0].raw).toBe('[[页]]')
+    expect(strong.children[0].srcStart).toBe(2)
+  })
+
+  it('单字符标记不会被自己前面同字符抢走(`**x*` 原样显示)', () => {
+    expect(tokenizeInline('**x*').map((t) => t.kind)).toEqual(['text'])
+  })
+
+  it('页面别名:target 是页面,label 是显示文本', () => {
+    const [token] = tokenizeInline('[[cardinality|笔记]]')
+    expect(token).toMatchObject({ kind: 'page', target: 'cardinality', label: '笔记' })
+  })
+
+  it('refsOfTokens 同时收页面与标签(含嵌套里的)', () => {
+    const refs = refsOfTokens(tokenizeInline('见 **[[A]]** 与 #b 和 #[[C D]] 与 [[A]]'))
+    expect(refs.pages).toEqual(['A'])
+    expect(refs.tags).toEqual(['b', 'C D'])
+  })
+})
