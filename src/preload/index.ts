@@ -68,8 +68,18 @@ export interface BrowserAPI {
   onOverlayEvent: (cb: (ev: OverlayEvent) => void) => () => void
   // 主进程 Ctrl+T 新建标签后要求 chrome 聚焦地址栏
   onFocusAddressRequest: (cb: () => void) => () => void
+  /**
+   * 请求**真正的**地址栏聚焦(键盘焦点交给 chrome webContents,不只是 DOM focus)。
+   * 渲染层自己 `el.focus()` 只改 DOM 状态:键盘事件仍进页面,表现为「看着聚焦了但打不进字」。
+   */
+  requestAddressFocus: () => Promise<boolean>
   // 主进程窗口失焦:chrome 侧主动释放地址栏焦点
   onWindowBlur: (cb: () => void) => () => void
+  /**
+   * 主进程:键盘焦点已交给某个页面视图 —— chrome 必须收起自己的瞬态面板
+   * (地址栏建议下拉 / 分屏面板)。跨 WebContentsView 的焦点切换没有可靠的 DOM 信号。
+   */
+  onPageFocus: (cb: () => void) => () => void
   // 标签组变化(建组/拆组/分屏/关窗格/聚焦窗格变化/窗口缩放)
   onGroupsChanged: (cb: (groups: TabGroupInfo[]) => void) => () => void
   // 以下仅 overlay 页面使用
@@ -149,7 +159,9 @@ const api: BrowserAPI = {
   onTabsChanged: (cb) => subscribe('tab:list-changed', cb),
   onTabActivated: (cb) => subscribe('tab:activated', cb),
   onFocusAddressRequest: (cb) => subscribe('chrome:focus-address', cb),
+  requestAddressFocus: () => ipcRenderer.invoke('chrome:request-focus-address'),
   onWindowBlur: (cb) => subscribe('chrome:window-blur', cb),
+  onPageFocus: (cb) => subscribe('chrome:page-focus', cb),
   onGroupsChanged: (cb) => subscribe('groups:changed', cb),
   onSettingsChanged: (cb) => subscribe('settings:changed', cb)
 }

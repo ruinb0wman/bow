@@ -134,7 +134,12 @@ app.whenReady().then(async () => {
   const focusActivePage = (): void => {
     if (overlay.isFullOpen) return // 全窗弹层打开时不抢焦点
     const active = tabs.getActiveView()
-    if (active && !active.view.webContents.isDestroyed()) active.view.webContents.focus()
+    if (active && !active.view.webContents.isDestroyed()) {
+      // 这条日志直接对应 chrome 侧的 `chrome:page-focus`(页面视图拿到键盘焦点),
+      // E2E 靠它区分「窗口获焦导致的重聚焦」与「切标签导致的重聚焦」。
+      log('窗口获焦:键盘焦点还给活动页面标签', active.info.id)
+      active.view.webContents.focus()
+    }
   }
   mainWindow.on('focus', focusActivePage)
   // 窗口失焦:让 chrome 侧地址栏主动释放焦点,消除 Electron 焦点恢复落到地址栏的路径

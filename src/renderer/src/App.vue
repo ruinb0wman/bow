@@ -15,6 +15,14 @@ import type { PluginInfo } from '@shared/plugins'
 import type { PluginSlot } from './plugins/types'
 import { SETTINGS_URL } from '@shared/internalPages'
 import { faviconLetter } from './lib/avatar'
+import {
+  blurredSession,
+  dismissedSession,
+  focusedSession,
+  lostFocusSession,
+  newSession,
+  withResults
+} from './lib/suggestSession'
 import { PLUGIN_UI, SLOT_PLUGIN_ORDER } from './plugins/registry'
 import { collectSlot } from './plugins/slots'
 import {
@@ -55,7 +63,13 @@ const toolbarSlots = computed(() => slotComponents('toolbar'))
 const suggestions = ref<Suggestion[]>([])
 const suggestRows = ref<SuggestRow[]>([])
 const activeIdx = ref(0)
-const showSuggest = ref(false)
+/**
+ * 建议会话:面板可见性 = 「键盘焦点 + 请求代」。
+ * 焦点信号不靠 DOM blur / `document.activeElement`(跨 WebContentsView 的焦点切换不可靠),
+ * 而是 focus/blur 事件 + 主进程的 `chrome:page-focus`(见 `lib/suggestSession.ts` 顶部注释)。
+ */
+const suggestSession = ref(newSession())
+const showSuggest = computed(() => suggestSession.value.visible)
 let suggestTimer: ReturnType<typeof setTimeout> | null = null
 
 const activeTab = computed(() => tabs.value.find((t) => t.active) ?? null)
@@ -163,6 +177,12 @@ onMounted(async () => {
       explicitFocus = false
       selectOnFocus = false
     }),
+    // 主进程:键盘焦点已交给某个页面视图(切标签 / 点网页 / 关标签后切走 / 窗口重新聚焦)。
+    // 这是「面板该不该还开着」的权威信号 —— 此时 Esc 已经进不了 chrome 渲染层,
+    // 光靠 DOM blur 观测不到。
+    api.onPageFocus(() => {
+      loseSuggestFocus()
+    }),
     // overlay → chrome 泛型事件:chrome 只处理 suggest 下拉与分屏面板(两者都是 chrome 自己打开的)
     api.onOverlayEvent((ev) => {
       if (ev.id === 'suggest') {
@@ -215,7 +235,9 @@ onBeforeUnmount(() => {
 async function newTab(): Promise<void> {
   await api.createTab('about:blank')
   await nextTick()
-  focusAddress()
+  // 必须走主进程:createTab() 已经把键盘焦点交给了新页面视图,
+  // 这里再 el.focus() 只会「看着聚焦了」——打字依旧进页面(见 requestAddressFocus)
+  requestAddressFocus()
 }
 
 async function closeTab(id: number, e?: MouseEvent): Promise<void> {
@@ -350,24 +372,63 @@ function pushSuggest(): void {
 }
 
 async function refreshSuggestions(input: string): Promise<void> {
+  // 焦点已不在地址栏:一条请求都不发(防抖早于 blur 时会有这种排列)
+  if (!suggestSession.value.focused) return
+  const snapshot = suggestSession.value.seq
   const res = await api.plugins.suggest(input)
+  // 代不一致(= 期间失焦 / 被关掉 / 又开了一代)→ 结果整条丢弃,靠 `===` 判定
+  const next = withResults(suggestSession.value, snapshot, res.suggestions.length)
+  if (next === suggestSession.value) return
   suggestions.value = res.suggestions
   suggestRows.value = res.rows
   activeIdx.value = 0
-  showSuggest.value = suggestions.value.length > 0
+  suggestSession.value = next
   pushSuggest()
 }
 
-function hideSuggest(): void {
-  showSuggest.value = false
+/** 取消还在等 100ms 防抖的那次建议请求(面板都收了就不该再发) */
+function clearSuggestTimer(): void {
+  if (!suggestTimer) return
+  clearTimeout(suggestTimer)
+  suggestTimer = null
+}
+
+/** 清空建议数据(不动会话状态,也不碰浮层) */
+function clearSuggestRows(): void {
   suggestions.value = []
   suggestRows.value = []
   activeIdx.value = 0
+}
+
+function hideSuggest(): void {
+  suggestSession.value = dismissedSession(suggestSession.value)
+  clearSuggestTimer()
+  clearSuggestRows()
   void api.showOverlay(null)
+}
+
+/**
+ * 键盘焦点已经交给页面视图(主进程 `chrome:page-focus`):
+ * 收面板 + 作废在途请求 + 把地址栏的编辑态与 DOM 状态跟事实对齐。
+ * 这里不看 DOM blur / `activeElement` —— 它们在这类焦点切换下不可靠。
+ *
+ * 浮层只在「本来就是我们的面板」时才去关:`showOverlay(null)` 是**无条件**关当前浮层的,
+ * 无差别调用会把插件自己的浮层一并关掉。
+ */
+function loseSuggestFocus(): void {
+  const hadPanel = showSuggest.value
+  addressInput.value?.blur() // 本来就失焦则是空操作(让 DOM 状态与事实一致)
+  suggestSession.value = lostFocusSession(suggestSession.value)
+  clearSuggestTimer()
+  clearSuggestRows()
+  if (hadPanel) void api.showOverlay(null)
+  addressEditing.value = false
+  syncAddress() // 否则切标签后地址栏会停在旧 URL(addressEditing 卡在 true)
 }
 
 function onAddressFocus(e: FocusEvent): void {
   addressEditing.value = true
+  suggestSession.value = focusedSession(suggestSession.value)
   // 仅显式聚焦(点击 / Ctrl+L / 新建标签)才全选;窗口被动恢复聚焦不全选
   const shouldSelect = explicitFocus || selectOnFocus
   explicitFocus = false
@@ -381,7 +442,7 @@ function onAddressMousedown(): void {
 }
 
 function onAddressInput(): void {
-  if (suggestTimer) clearTimeout(suggestTimer)
+  clearSuggestTimer()
   suggestTimer = setTimeout(() => void refreshSuggestions(address.value), 100)
 }
 
@@ -389,6 +450,10 @@ function onAddressBlur(): void {
   addressEditing.value = false
   explicitFocus = false
   selectOnFocus = false
+  // 失焦本身不动可见性(焦点可能只是落在建议面板上),也不发新请求;
+  // 真正「焦点回不来」由下面这个兜底与主进程的 page-focus 信号负责。
+  suggestSession.value = blurredSession(suggestSession.value)
+  clearSuggestTimer()
   setTimeout(() => {
     if (document.activeElement !== addressInput.value) hideSuggest()
   }, 120)
@@ -454,12 +519,26 @@ watch(activeIdx, () => {
 })
 
 // ---------- 快捷键 ----------
+/**
+ * DOM 级聚焦 + 全选(不动键盘焦点)。**只在主进程已经拿到键盘焦点之后调**:
+ * 渲染层自己 `el.focus()` 只改 DOM 状态,键盘事件仍会进页面 ——
+ * 需要真正聚焦时走 `requestAddressFocus()`(经主进程)。
+ */
 function focusAddress(): void {
   const el = addressInput.value
   if (!el) return
   explicitFocus = true
   el.focus()
   el.select()
+}
+
+/**
+ * 请求「真正的」地址栏聚焦:主进程把键盘焦点交给 chrome webContents,
+ * 再回发 `chrome:focus-address` → 渲染层 `focusAddress()`。
+ * (主进程那边拿到焦点后同样会发这条消息,所以这里只管发请求。)
+ */
+function requestAddressFocus(): void {
+  void api.requestAddressFocus()
 }
 
 function onKeydown(e: KeyboardEvent): void {

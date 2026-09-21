@@ -37,6 +37,12 @@ export interface TabEvents {
   'groups-changed': (groups: TabGroupInfo[]) => void
   /** 主框架导航完成(普通网页与内部页面的逻辑 URL),供插件记录历史等 */
   'tab-navigated': (payload: { tabId: number; url: string; title: string }) => void
+  /**
+   * 某个标签页视图拿到了**键盘焦点**(chrome 的地址栏/浮层在这一刻起已不是键盘焦点所有者)。
+   * chrome 用它收起自己的瞬态面板(地址栏建议下拉 / 分屏面板)——
+   * 这些面板原先靠 DOM blur 观测焦点,而跨 WebContentsView 的焦点切换不保证派发 DOM blur。
+   */
+  'view-focused': (tabId: number) => void
 }
 
 /** 标签页 webContents 登记口(内容注入用):Electron 44 的 WebContentsView 无法靠 getType 区分 */
@@ -384,6 +390,13 @@ export class TabManager extends EventEmitter {
       this.activate(id)
     }
     wc.on('focus', activatePaneIfGroupMember)
+    // 键盘焦点落到页面视图 = chrome 侧(地址栏/浮层)失去了键盘焦点。
+    // 必须由主进程广播:跨 WebContentsView 的焦点切换没有可靠的 DOM 侧信号
+    // (不保证派发 blur,`document.activeElement` 也可能原地不动)。
+    wc.on('focus', () => {
+      log('键盘焦点交给页面视图', id)
+      this.emit('view-focused', id)
+    })
     wc.on('input-event', activatePaneIfGroupMember)
     wc.on('destroyed', () => {
       this.views.delete(id)

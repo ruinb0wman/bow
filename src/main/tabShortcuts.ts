@@ -32,8 +32,12 @@ function isTerminalTab(tab: TabInfo | null): boolean {
 /**
  * 聚焦地址栏:先把键盘焦点交给 chrome WebContents(否则渲染层的 el.focus() 只是改 DOM 状态、
  * 键盘事件仍进页面),再请求渲染层聚焦并全选地址栏。Ctrl+L 与 Ctrl+T 新建标签共用。
+ *
+ * 导出是因为渲染层也需要它(工具栏 `+` / 双击标签栏 / 建议面板 cancel):那几条路曾经只手 DOM 焦点,
+ * 结果「地址栏看着聚焦了、面板也弹出来了,但打字进不了地址栏、Esc 也失效果」——
+ * 渲染层自己做不了这件事,只能经 `chrome:request-focus-address` 请主进程来。
  */
-function focusAddressBar(tabs: TabManager): void {
+export function focusAddressBar(tabs: TabManager): void {
   const wc = tabs.window.webContents
   if (wc.isDestroyed()) return
   wc.focus()

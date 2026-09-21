@@ -10,6 +10,7 @@ import type { OverlayManager } from './overlay'
 import type { PluginKernel } from './plugins/kernel'
 import { getLayoutsStore, getSettingsStore } from './stores'
 import { CLOSE_CONFIRM_OVERLAY_ID, confirmWindowClose } from './closeConfirm'
+import { focusAddressBar } from './tabShortcuts'
 import { log } from './logger'
 
 export function registerIpc(
@@ -42,6 +43,22 @@ export function registerIpc(
   tabs.on('tabs-changed', sendTabsList)
   // 标签组结构只需通知 chrome(overlay 面板的数据由 chrome 组装并下发)
   tabs.on('groups-changed', (groups) => sendToChrome('groups:changed', groups))
+  // 页面视图抢走键盘焦点 → chrome 收起自己的瞬态面板(地址栏建议下拉 / 分屏面板)。
+  // 为什么不听 chrome 自己的 blur:跨 WebContentsView 的焦点切换不保证派发 DOM blur,
+  // 反过来也会出现迟到的事件(典型是 Ctrl+T:create() 先 focus 新页面视图,
+  // 紧接着 focusAddressBar() 把键盘焦点还给 chrome) —— 所以投递前用 isFocused() 核一下现况,
+  // 否则会把刚打开的地址栏面板立即收回去。
+  tabs.on('view-focused', (id) => {
+    if (mainWindow.isDestroyed()) return
+    // Electron 的 'focus' 事件可能**迟到**:此刻 chrome 已经又拿回了键盘焦点
+    // (典型是 Ctrl+T:create() 先 focus 新页面视图,紧接着 focusAddressBar() 把焦点还给 chrome)
+    // → 这种过期事件必须丢弃,否则会把刚打开的地址栏面板立即收回去。
+    if (mainWindow.webContents.isFocused()) {
+      log('页面视图获焦,但 chrome 仍持有键盘焦点(迟到的 focus 事件),忽略', id)
+      return
+    }
+    sendToChrome('chrome:page-focus')
+  })
 
   ipcMain.handle('tab:create', (_e, url?: string, activate = true): TabInfo => tabs.create(url, activate))
   ipcMain.handle('tab:close', (_e, id: number) => tabs.close(id))
@@ -52,6 +69,13 @@ export function registerIpc(
   })
   ipcMain.handle('tab:list', () => tabs.listTabs())
   ipcMain.handle('tab:active', () => tabs.getActiveTabInfo())
+  // 渲染层请求「真正的」地址栏聚焦:先把键盘焦点交给 chrome webContents(渲染层自己 el.focus()
+  // 只改 DOM 状态、键盘事件仍进页面),再由主进程回发 chrome:focus-address 让它聚焦并全选。
+  // 入口:工具栏 `+` / 双击标签栏新建标签、地址栏建议面板的 cancel。
+  ipcMain.handle('chrome:request-focus-address', () => {
+    focusAddressBar(tabs)
+    return true
+  })
   // 激活最近浏览的普通页面标签(设置页的「屏蔽元素」等需要回到真实页面执行)
   ipcMain.handle('tab:activate-last-browsing', () => tabs.activateLastBrowsing())
   // 内部页面认领自己所属的标签:终端页据此把 node-pty 会话绑到 tabId(而不是「最后激活的标签」)
