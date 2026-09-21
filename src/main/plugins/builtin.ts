@@ -11,6 +11,7 @@ import defaultBrowser from '@plugins/default-browser/main'
 import deviceInspect from '@plugins/device-inspect/main'
 import terminal from '@plugins/terminal/main'
 import logseq from '@plugins/logseq/main'
+import downloads from '@plugins/downloads/main'
 
 export const BUILTIN_PLUGINS: PluginMain[] = [
   history,
@@ -25,5 +26,7 @@ export const BUILTIN_PLUGINS: PluginMain[] = [
   // 同上(只贡献 UI,且它带来的 bow://terminal 页面走内部页面那条独立通路)
   terminal,
   // 同上(只贡献 UI,带着 bow://logseq 内部页面;同样不参与网络钩子与建议源顺序)
-  logseq
+  logseq,
+  // 同上(只贡献 UI 与 MCP 工具;它接管 defaultSession 的 will-download,与网络钩子链无关)
+  downloads
 ]

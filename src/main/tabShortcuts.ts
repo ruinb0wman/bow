@@ -1,7 +1,7 @@
 /**
  * Tab 快捷键全局拦截:对所有 webContents 的 before-input-event 统一处理,
  * 保证页面/地址栏/弹层任何焦点下 Ctrl+T / Ctrl+Shift+T / Ctrl+W / Ctrl+L / Ctrl+Shift+L / Ctrl+Shift+E /
- * Ctrl+R / Ctrl+←/→ / Ctrl+数字 / Ctrl+, 均可生效。
+ * Ctrl+R / Ctrl+J / Ctrl+←/→ / Ctrl+数字 / Ctrl+, 均可生效。
  *
  * 背景:标签页是独立 WebContentsView,按键事件只进入当前聚焦的 webContents,
  * 渲染层 keydown 在页面聚焦时收不到按键,因此必须在主进程拦截。
@@ -24,6 +24,13 @@ import type { OverlayManager } from './overlay'
 import type { PluginKernel } from './plugins/kernel'
 import { CLOSE_CONFIRM_OVERLAY_ID } from './closeConfirm'
 import { log } from './logger'
+
+/**
+ * 下载面板的浮层 id(`plugin:<pluginId>:<panelId>` 约定)。
+ * Ctrl+J 由**核心**打开它而不是插件热键:插件热键(`kernel.handleHotkey(input)`)拿不到按键来源的
+ * webContents,也就无法把终端页里的 Ctrl+J 放行给 shell(见 `releasesToTerminal`)。
+ */
+const DOWNLOADS_OVERLAY_ID = 'plugin:downloads:panel'
 
 /** 标签是不是终端页(`bow://terminal`):决定 Ctrl+W / Ctrl+L / Ctrl+R / Ctrl+←/→ 归 shell 还是归浏览器 */
 function isTerminalTab(tab: TabInfo | null): boolean {
@@ -131,6 +138,27 @@ export function setupTabShortcuts(
             const target = srcTabId ?? tabs.getActiveTabInfo()?.id ?? null
             if (target != null) tabs.reload(target)
             log('快捷键:刷新(Ctrl+R)', target ?? '(无来源)')
+            break
+          }
+          case 'downloads': {
+            // 下载面板由插件贡献,但开关放在核心:见上面 DOWNLOADS_OVERLAY_ID 的注释。
+            // 已经是它 → 再按一次关掉(与浏览器「Ctrl+J 切到下载页」的直觉一致)。
+            const overlay = getOverlay()
+            if (overlay.currentId === DOWNLOADS_OVERLAY_ID) {
+              overlay.show(null)
+              log('快捷键:关闭下载面板(Ctrl+J)')
+              break
+            }
+            // 别的全窗浮层(书签面板 / 关闭确认)开着时不抢焦点(与 Ctrl+T / Ctrl+L 同策略)
+            if (overlay.isFullOpen) break
+            // ⚠️ 插件停用时**绝不能**打开:OverlayApp 对未知 id 渲染 null,而 overlay 视图仍会
+            // setVisible(true) 铺满窗口 —— 遮罩挡住页面、Esc 也没人处理,只能靠再按一次快捷键收拾。
+            if (!getKernel().list().some((p) => p.id === 'downloads' && p.enabled)) {
+              log('快捷键:下载插件未启用,忽略 Ctrl+J')
+              break
+            }
+            overlay.show({ id: DOWNLOADS_OVERLAY_ID, payload: undefined, placement: 'full' })
+            log('快捷键:打开下载面板(Ctrl+J)')
             break
           }
           case 'restore':

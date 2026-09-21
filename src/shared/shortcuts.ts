@@ -62,6 +62,12 @@ export type TabHotkey =
    * 终端页里让给 shell(`Ctrl+R` = 反向历史搜索,见 `releasesToTerminal`)。
    */
   | { action: 'reload' }
+  /**
+   * `Ctrl/Cmd+J`:打开下载面板(已开则关闭)。**终端页让给 shell** ——
+   * `Ctrl+J` 在 readline / shell 里是 accept-line(等价回车),必须放行(见 `releasesToTerminal`)。
+   * 代价与 `Ctrl+←/→` 同类:网页里的编辑器(Jupyter、网页版 vim 等)拿不到这个组合。
+   */
+  | { action: 'downloads' }
 
 /** 方向键 code/key → 方向(`matchTabHotkey` 的历史导航与 `matchSplitHotkey` 共用) */
 const ARROW_DIRS: Record<string, PaneDir> = {
@@ -75,7 +81,7 @@ const ARROW_DIRS: Record<string, PaneDir> = {
  * 标签快捷键识别:Ctrl/Cmd+T(新建)、Ctrl/Cmd+Shift+T(恢复)、
  * Ctrl/Cmd+W(关闭)、Ctrl/Cmd+1..9(切换,9=最后一个标签)、Ctrl/Cmd+,(打开设置)、
  * Ctrl/Cmd+L(聚焦地址栏,页面内也生效)、Ctrl/Cmd+Shift+L(聚焦地址栏,**终端里也不例外**)、
- * Ctrl/Cmd+Shift+E(在聚焦窗格开终端)、Ctrl/Cmd+R(刷新聚焦窗格)、
+ * Ctrl/Cmd+Shift+E(在聚焦窗格开终端)、Ctrl/Cmd+R(刷新聚焦窗格)、`Ctrl/Cmd+J`(下载面板)、
  * Ctrl+←/→(历史后退/前进,**只认 Ctrl**)。
  * 与 isDevToolsHotkey 同风格:忽略自动重复与输入法组合;alt 修饰不参与。
  */
@@ -107,6 +113,7 @@ export function matchTabHotkey(input: KeyInputLike): TabHotkey | null {
   if (key === 'w' || input.code === 'KeyW') return { action: 'close' }
   if (key === 'l' || input.code === 'KeyL') return { action: 'focus-address' }
   if (key === 'r' || input.code === 'KeyR') return { action: 'reload' }
+  if (key === 'j' || input.code === 'KeyJ') return { action: 'downloads' }
   if (key === ',' || input.code === 'Comma') return { action: 'settings' }
   // 数字优先物理按键行的 code(Digit1..9):AZERTY 等非 QWERTY 布局下 key 可能是符号
   const codeMatch = /^Digit([1-9])$/.exec(input.code ?? '')
@@ -120,6 +127,7 @@ export function matchTabHotkey(input: KeyInputLike): TabHotkey | null {
  * 当前(按键来源的)标签是终端页(`bow://terminal`)时,必须还给 shell 的组合:
  * - `Ctrl+L` = 清屏 —— shell 的高频键,且没有替代品;
  * - `Ctrl+R` = 反向历史搜索(reverse-i-search)—— 同样是 shell 高频键,没有替代品;
+ * - `Ctrl+J` = accept-line(等价回车)—— 2026-09-22 加下载面板时放行;不放的话 shell 里回车会失灵;
  * - `Ctrl+←/→` = 按词移动(readline 的 backward/forward-word)—— 2026-09-21 用户拍板放行
  *   (终端页本来也没有可回退的浏览历史,让给 shell 零损失);
  * - (曾是 `Ctrl+W` = 删除前一个词)**2026-09-19 用户拍板改为归浏览器**:终端里也要能用 `Ctrl+W` 关掉
@@ -133,6 +141,7 @@ export function releasesToTerminal(hotkey: TabHotkey): boolean {
   return (
     hotkey.action === 'focus-address' ||
     hotkey.action === 'reload' ||
+    hotkey.action === 'downloads' ||
     hotkey.action === 'back' ||
     hotkey.action === 'forward'
   )

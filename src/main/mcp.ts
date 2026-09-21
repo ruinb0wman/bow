@@ -108,6 +108,13 @@ export const MCP_INSTRUCTIONS = `这是一个真实的多标签浏览器窗口(�
 - 看不到目标通常是两类原因:设备未授权(去手机屏幕上点「允许 USB 调试」),或应用是 release 包且没调用
   WebView.setWebContentsDebuggingEnabled(true)。device_list_targets 的 notices 里会给出具体指引。
 
+下载(browser_download / browser_list_downloads)
+- browser_download 不需要页面上的点击,也**不弹保存对话框**:默认落到 bow 的下载目录并自动重名(同名加 (1))。
+- saveDir / filename 只在用户明确要求时才传(它们决定文件写到哪里);wait: true 会等到下载结束或超时 ——
+  超时不代表失败(下载仍在继续),用 browser_list_downloads 看后续进度即可。
+- 恢复下载的行为由服务器决定(支不支持 Range);万一浏览器丢弃了已收字节(记录里 restarted 为 true),
+  说明这次是从头下的 —— 不要自己去推。
+
 边界
 - bow:// 内部页面标签不支持页面类工具,会被明确拒绝。
 - browser_list_tabs 里 inspector: true 的标签是「远程调试用的 DevTools 前端」,同样属于浏览器自身页面,不支持页面类工具。

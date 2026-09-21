@@ -15,6 +15,7 @@ import defaultBrowserUi from '@plugins/default-browser/ui'
 import deviceInspectUi from '@plugins/device-inspect/ui'
 import terminalUi from '@plugins/terminal/ui'
 import logseqUi from '@plugins/logseq/ui'
+import downloadsUi from '@plugins/downloads/ui'
 
 export const PLUGIN_UI: PluginUiContribution[] = [
   bookmarksUi,
@@ -26,7 +27,8 @@ export const PLUGIN_UI: PluginUiContribution[] = [
   defaultBrowserUi,
   deviceInspectUi,
   terminalUi,
-  logseqUi
+  logseqUi,
+  downloadsUi
 ]
 
 /**
@@ -35,7 +37,7 @@ export const PLUGIN_UI: PluginUiContribution[] = [
  */
 export const SLOT_PLUGIN_ORDER: Record<PluginSlot, readonly string[]> = {
   'addressbar-trailing': [],
-  toolbar: ['bookmarks', 'mcp-http', 'adblock', 'element-fullscreen', 'terminal', 'logseq']
+  toolbar: ['bookmarks', 'downloads', 'mcp-http', 'adblock', 'element-fullscreen', 'terminal', 'logseq']
 }
 
 export function pluginUi(id: string): PluginUiContribution | undefined {
