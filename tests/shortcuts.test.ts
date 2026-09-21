@@ -225,11 +225,34 @@ describe('matchTabHotkey Ctrl/Cmd+R 刷新', () => {
   })
 })
 
+describe('matchTabHotkey Ctrl/Cmd+J 下载面板', () => {
+  it('Ctrl+J / ⌘J 命中', () => {
+    expect(matchTabHotkey(input({ key: 'j', code: 'KeyJ', shift: false }))).toEqual({ action: 'downloads' })
+    expect(matchTabHotkey(input({ key: 'J', code: 'KeyJ', shift: false }))).toEqual({ action: 'downloads' })
+    expect(
+      matchTabHotkey(input({ key: 'j', code: 'KeyJ', shift: false, control: false, meta: true }))
+    ).toEqual({ action: 'downloads' })
+  })
+
+  it('Ctrl+Shift+J / 带 Alt / 无修饰键不接管', () => {
+    expect(matchTabHotkey(input({ key: 'j', code: 'KeyJ', shift: true }))).toBe(null)
+    expect(matchTabHotkey(input({ key: 'j', code: 'KeyJ', shift: false, alt: true }))).toBe(null)
+    expect(
+      matchTabHotkey(input({ key: 'j', code: 'KeyJ', shift: false, control: false, meta: false }))
+    ).toBe(null)
+  })
+
+  it('非 QWERTY 下 code 仍为 KeyJ(key 为其它字符)不依赖 key', () => {
+    expect(matchTabHotkey(input({ key: 'м', code: 'KeyJ', shift: false }))).toEqual({ action: 'downloads' })
+  })
+})
+
 describe('releasesToTerminal 终端页的快捷键放行', () => {
-  it('Ctrl+L(清屏)/ Ctrl+R(反向搜索)/ Ctrl+←/→(按词移动)还给 shell', () => {
+  it('Ctrl+L(清屏)/ Ctrl+R(反向搜索)/ Ctrl+J(accept-line)/ Ctrl+←/→(按词移动)还给 shell', () => {
     expect(releasesToTerminal(matchTabHotkey(input({ key: 'w', code: 'KeyW', shift: false }))!)).toBe(false)
     expect(releasesToTerminal(matchTabHotkey(input({ key: 'l', code: 'KeyL', shift: false }))!)).toBe(true)
     expect(releasesToTerminal(matchTabHotkey(input({ key: 'r', code: 'KeyR', shift: false }))!)).toBe(true)
+    expect(releasesToTerminal(matchTabHotkey(input({ key: 'j', code: 'KeyJ', shift: false }))!)).toBe(true)
     expect(releasesToTerminal(matchTabHotkey(input({ key: 'ArrowLeft', code: 'ArrowLeft', shift: false }))!)).toBe(true)
     expect(
       releasesToTerminal(matchTabHotkey(input({ key: 'ArrowRight', code: 'ArrowRight', shift: false }))!)
