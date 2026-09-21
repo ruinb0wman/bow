@@ -327,11 +327,39 @@ describe('表格', () => {
   it('matchTableDelimiter:三种对齐 + 不是分隔行返回 null', () => {
     expect(matchTableDelimiter('| --- | :--- | ---: | :---: |')).toEqual([null, 'left', 'right', 'center'])
     expect(matchTableDelimiter('|---|')).toEqual([null])
-    expect(matchTableDelimiter('| -- |')).toEqual([null]) // 两个 `-` 也算(至少两个)
-    expect(matchTableDelimiter('| - |')).toBeNull() // 一个 `-` 不算
+    // 单个 `-` 也算(GFM 只要求 ≥1 个;Logseq 写出来就是 `|-|-|`)
+    expect(matchTableDelimiter('| - |')).toEqual([null])
+    expect(matchTableDelimiter('|-|')).toEqual([null])
+    expect(matchTableDelimiter('| :-- | --: |')).toEqual(['left', 'right'])
     expect(matchTableDelimiter('| abc |')).toBeNull()
     expect(matchTableDelimiter('普通文本')).toBeNull()
     expect(matchTableDelimiter('| a | b |')).toBeNull()
+  })
+
+  it('真实图里的形态:`|-|-|` 单横线分隔行、单元格不带空格也认', () => {
+    const out = analyzeBlockLines(['|时段|内容|', '|-|-|', '|9:00-10:00|起床 / 早饭|'])
+    expect(out.map((l) => l.mark.kind)).toEqual(['table', 'table', 'table'])
+    expect(out.map((l) => l.mark.role)).toEqual(['header', 'delim', 'row'])
+    expect(out[0].mark.cells?.map((c) => c.text)).toEqual(['时段', '内容'])
+    expect(out[2].mark.cells?.map((c) => c.text)).toEqual(['9:00-10:00', '起床 / 早饭'])
+  })
+
+  it('多列真实分隔行(|------|------|:--:|:--:|:--:|:--:|)', () => {
+    expect(matchTableDelimiter('|------|------|:--:|:--:|:--:|:--:|')).toEqual([
+      null,
+      null,
+      'center',
+      'center',
+      'center',
+      'center'
+    ])
+  })
+
+  it('表格里的 `\\|` 转义:单元格不被切断,链接仍能取到别名', () => {
+    const cells = tableCellsFor('| [[页#块\\|别名]] | 1 |', 0, [null, null])
+    expect(cells.map((c) => c.text)).toEqual(['[[页#块\\|别名]]', '1'])
+    expect(cells[0].tokens.map((t) => t.kind)).toEqual(['page'])
+    expect(cells[0].tokens[0]).toMatchObject({ label: '别名' })
   })
 
   it('tableCellsFor:去空白、偏移是全局的、单元格内 token 化', () => {

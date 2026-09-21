@@ -118,6 +118,35 @@ const externalChanged = ref(false)
 
 const links = ref<Backlinks | null>(null)
 const linksLoading = ref(false)
+/**
+ * 剪贴板操作的结果提示。**刻意独立于 `message`**:`doSave()` 成功时会 `message.value = ''`,
+ * 而复制失败往往就在一次输入之后 —— 写进 `message` 的错就那时被下一次保存静默冲掉了。
+ */
+const clipboardNotice = ref<{ kind: 'ok' | 'err'; text: string } | null>(null)
+let clipboardTimer: number | null = null
+/**
+ * **E2E 专用**:强制让 `copySelected` 失败。
+ *
+ * 为什么需要它:「复制没成功就绝不删块」是一条数据安全不变式,而真机上出现剪贴板写入失败是不确定的
+ * (Windows 上 `clipboard.writeText` 失败时还会静默返回 true)。`window.browserAPI` 是 contextBridge 暴露的
+ * **不可写**对象,页面里打不了补丁 —— 所以留一个显式开关让 E2E 能把这条路径变成可重复的红/绿判据。
+ * 内部页面对外部站点不可达(`bow://logseq` 才有这个把手)。
+ */
+let forceCopyFailure = false
+
+function notifyClipboard(kind: 'ok' | 'err', text: string, keepMs: number): void {
+  if (clipboardTimer != null) {
+    clearTimeout(clipboardTimer)
+    clipboardTimer = null
+  }
+  clipboardNotice.value = { kind, text }
+  if (keepMs > 0) {
+    clipboardTimer = window.setTimeout(() => {
+      clipboardNotice.value = null
+      clipboardTimer = null
+    }, keepMs)
+  }
+}
 const searchDraft = ref('')
 const searchHits = ref<PageHit[]>([])
 const searchOpen = ref(false)
@@ -583,6 +612,24 @@ function blockPreview(row: VisibleRow): string {
   return blockLinesForDisplay(row.block, unit.value)[0] ?? ''
 }
 
+/**
+ * 顶层裸行(不以 `- ` 开头的行)里非空的行数。
+ *
+ * `bow://logseq` 只渲染块(与 Logseq 的块模型一致),但用户图里有一批页是把标题 / 段落 / 表格直接写在
+ * 页面顶层的(`pages/交易-进度.md` 就是)—— 那些行现在一个字节都不显示。给一条明确提示,
+ * 免得被当成「表格渲染坏了」。
+ */
+const rawLineCount = computed(() => {
+  const current = file.value
+  if (!current) return 0
+  let count = 0
+  for (const entry of current.entries) {
+    if (entry.kind !== 'raw') continue
+    for (const line of entry.lines) if (line.text.trim() !== '') count++
+  }
+  return count
+})
+
 // ---------- 多块选区(从圆点拖选 + 批量命令) ----------
 
 /** 选区里的块 key(按可见顺序);拖到窗口外 / 块被折叠隐藏时自动只剩看得见的那部分 */
@@ -637,20 +684,34 @@ function onClickCapture(event: MouseEvent): void {
   event.stopPropagation()
 }
 
-async function copySelected(): Promise<string> {
+async function copySelected(): Promise<{ text: string; ok: boolean }> {
   const current = file.value
   const keys = selectedKeys.value
-  if (!current || keys.length === 0) return ''
+  if (!current || keys.length === 0) return { text: '', ok: false }
   const text = blocksToMarkdown(current, keys)
-  if (!text) return ''
+  if (!text) return { text: '', ok: false }
   try {
-    const ok = await api.writeClipboardText(text)
-    if (!ok) message.value = '复制失败'
+    if (forceCopyFailure) throw new Error('E2E:forced clipboard failure')
+    const wrote = await api.writeClipboardText(text)
+    // 写完核对一遍:主进程 `clipboard.writeText` 失败时是静默的(照样返回 true),
+    // 不核对就会出现「剪贴板里什么也没有,但块已经被删了」。
+    // 比对前必须归一化行尾 —— Windows 剪贴板存的是 CRLF,直接比会假报失败。
+    const normalize = (s: string): string => s.replace(/\r\n/g, '\n').replace(/\0+$/, '')
+    const back = await api.readClipboardText()
+    if (!wrote || normalize(back) !== normalize(text)) {
+      notifyClipboard('err', '复制失败:剪贴板没有写入', 6000)
+      trace(`copy:fail:wrote=${String(wrote)},len=${back.length}`)
+      return { text, ok: false }
+    }
+    notifyClipboard('ok', `已复制 ${keys.length} 块`, 1500)
+    trace(`copy:ok:${keys.length}`)
+    return { text, ok: true }
   } catch (e) {
-    message.value = e instanceof Error ? e.message : String(e)
+    const why = e instanceof Error ? e.message : String(e)
+    notifyClipboard('err', `复制失败:${why}`, 6000)
+    trace(`copy:err:${why}`)
+    return { text, ok: false }
   }
-  trace(`copy:${keys.length}`)
-  return text
 }
 
 /** 有块选区时的键位。返回 true = 已经处理(调用方直接 return) */
@@ -667,14 +728,17 @@ function handleSelectionKey(event: KeyboardEvent): boolean {
     if (current) commit(deleteBlocks(current, selectedKeys.value))
     return true
   }
-  if (mod && !event.altKey && (event.key.toLowerCase() === 'c' || event.key.toLowerCase() === 'x')) {
-    const cut = event.key.toLowerCase() === 'x'
+  // 键位优先看**物理 code**:Windows 输入法把按键路由成 `VK_PROCESSKEY` 时 Chromium 给的 `key`
+  // 会变成 `'Process'`,只看 `key` 会漏掉这两个键。
+  const isCopyKey = event.key.toLowerCase() === 'c' || event.code === 'KeyC'
+  const isCutKey = event.key.toLowerCase() === 'x' || event.code === 'KeyX'
+  if (mod && !event.altKey && (isCopyKey || isCutKey)) {
     event.preventDefault()
     void (async () => {
-      const text = await copySelected()
+      const res = await copySelected()
       const current = file.value
-      // 复制失败(剪贴板拒绝)时不删 —— 删了就等于静默丢内容
-      if (cut && text && current) commit(deleteBlocks(current, selectedKeys.value))
+      // **只在复制确认为成功时才删** —— 否则就是「内容既没进剪贴板又没了」
+      if (isCutKey && res.ok && current) commit(deleteBlocks(current, selectedKeys.value))
     })()
     return true
   }
@@ -903,6 +967,16 @@ function exposeDebugHandle(): void {
     get selectedKeys() {
       return [...selectedKeys.value]
     },
+    get clipboardNotice() {
+      return plain(clipboardNotice.value)
+    },
+    get rawLineCount() {
+      return rawLineCount.value
+    },
+    /** E2E:强制让复制失败(验证「复制没成功就不删块」;详见 `forceCopyFailure` 的注释) */
+    forceCopyFailure(value: boolean) {
+      forceCopyFailure = value
+    },
     toggleFavorite: toggleFavoriteView,
     openFavorite,
     openPage,
@@ -940,6 +1014,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('mousedown', onDocumentMousedown, true)
   if (saveTimer != null) clearTimeout(saveTimer)
   if (searchTimer != null) clearTimeout(searchTimer)
+  if (clipboardTimer != null) clearTimeout(clipboardTimer)
   delete (window as unknown as Record<string, unknown>).__bowLogseq
 })
 
@@ -1058,6 +1133,13 @@ watch(
       <div class="meta">
         <span v-if="meta && !meta.exists" class="chip">尚未创建文件(第一次编辑时创建)</span>
         <span v-if="meta?.fromTemplate" class="chip">来自模板 {{ meta.fromTemplate }}</span>
+        <span
+          v-if="rawLineCount > 0"
+          class="chip"
+          title="bow 只渲染 `- ` 块:这一页有若干行标题 / 段落 / 表格写在块外,它们不会被显示(也不会被改写)"
+        >
+          本页有 {{ rawLineCount }} 行不在块里(不渲染)
+        </span>
         <span v-if="graphState?.index?.tooLarge" class="chip warn">
           图文件数超过 {{ graphState.index.files }} 上限,反链可能不全
         </span>
@@ -1097,9 +1179,15 @@ watch(
         <BacklinksPanel :links="links" :loading="linksLoading" @open-page="openPage" />
       </main>
 
-      <!-- 编辑期瞬态状态 / 多块选区:固定右下角浮层,不参与文档流 —— 出现/消失不会推动正文 -->
-      <div v-if="saving || dirty || externalChanged || message || selectedKeys.length > 0" class="status-float">
+      <!-- 编辑期瞬态状态 / 多块选区 / 剪贴板提示:固定右下角浮层,不参与文档流 —— 出现/消失不会推动正文 -->
+      <div
+        v-if="saving || dirty || externalChanged || message || clipboardNotice || selectedKeys.length > 0"
+        class="status-float"
+      >
         <span v-if="selectedKeys.length > 0" class="chip">已选 {{ selectedKeys.length }} 块</span>
+        <span v-if="clipboardNotice" class="chip" :class="{ error: clipboardNotice.kind === 'err' }">
+          {{ clipboardNotice.text }}
+        </span>
         <span v-if="saving" class="chip">保存中…</span>
         <span v-else-if="dirty" class="chip warn">未保存</span>
         <span v-if="externalChanged" class="chip warn">外部已改动</span>

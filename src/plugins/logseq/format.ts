@@ -613,8 +613,11 @@ function isFenceClose(text: string, fence: { char: string; len: number }): boole
   return m[1][0] === fence.char && m[1].length >= fence.len
 }
 
-/** 分隔行的一个单元格:`:` 可选、`-` 至少两个、前后可有空白 */
-const TABLE_DELIM_CELL_RE = /^[ \t]*:?-{2,}:?[ \t]*$/
+/** 分隔行的一个单元格:`:` 可选、`-` **至少一个**、前后可有空白。
+ *
+ * ⚠️ 「至少两个 `-`」是排版习惯,**不是** GFM/Logseq 的要求 —— Logseq 自己写出来的就是 `|-|-|`
+ * (用户图里 `pages/交易-进度.md` / `daily规划.md` 等全是这个形态),写成 `-{2,}` 会让这些表全部退回纯文本。 */
+const TABLE_DELIM_CELL_RE = /^[ \t]*:?-+:?[ \t]*$/
 
 /**
  * 按**未转义的** `|` 切分表格行。
@@ -647,10 +650,10 @@ export function splitTableRow(text: string): Array<{ raw: string; start: number;
 }
 
 /**
- * 分隔行 ⇒ 每列的对齐方式;不是表格行、或任一单元格不是 `:?---:?` ⇒ `null`。
+ * 分隔行 ⇒ 每列的对齐方式;不是表格行、或任一单元格不是 `:?-+:?` ⇒ `null`。
  *
  * 「表头行 + 紧跟的分隔行」是**严格判据**(与 Logseq / CommonMark 一致):没有分隔行的 `|` 行照旧当普通文本,
- * 不会把正文里凑巧带竖线的几行误渲染成表格。
+ * 不会把正文里凑巧带竖线的几行误渲染成表格。分隔单元格里的 `-` **一个就够**(`|-|-|`)。
  */
 export function matchTableDelimiter(text: string): TableAlign[] | null {
   const cells = splitTableRow(text)

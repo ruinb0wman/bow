@@ -81,6 +81,8 @@ function startEdit(event: MouseEvent): void {
 function onInput(): void {
   const lines = draft.value.split('\n')
   emit('action', { type: 'input', key: props.block.key, lines })
+  // 每敲一下都要重算高度:多行内容 / 长行折行时 `rows="1"` + `overflow:hidden` 会把后面的行裁掉
+  autoGrow()
   void refreshSuggestions()
 }
 
@@ -119,8 +121,14 @@ function applySuggestion(hit: PageHit): void {
 }
 
 function onKeydown(event: KeyboardEvent): void {
-  // 输入法组合中的按键一律交给 IME:中文「上屏」用的回车不能被当成建新块(否则会在候选未落字前劈块)
-  if (event.isComposing || event.keyCode === 229) return
+  // 键位优先看**物理 code**:Windows 输入法把按键路由成 `VK_PROCESSKEY` 时,Chromium 给的 `key`
+  // 会变成 `'Process'`(自测的 `Ctrl+C` 就是这样消失的),只看 `key` 会认不出按键。
+  const isEnter = event.key === 'Enter' || event.code === 'Enter' || event.code === 'NumpadEnter'
+  /** `Ctrl/Cmd+Enter` 是用户明确要的块内换行键:输入法几乎不占用它,所以它**优先于 IME 守卫** */
+  const modEnter = isEnter && (event.ctrlKey || event.metaKey)
+  // 输入法组合中的按键一律交给 IME(中文「上屏」用的回车不能被当成建新块;`keyCode 229` = 已经被
+  // 输入法接管的按键)。但 `Ctrl/Cmd+Enter` 例外 —— 它经常被误标成 229,而那正是我们要的换行键。
+  if ((event.isComposing || event.keyCode === 229) && !modEnter) return
 
   const el = area.value
   const start = el?.selectionStart ?? 0
@@ -130,7 +138,7 @@ function onKeydown(event: KeyboardEvent): void {
   const hasSelection = start !== end
 
   // `Ctrl/Cmd+Enter` 不在这里被吞:补全下拉只吃「裸 Enter / Tab」
-  if (suggestions.value.length > 0 && (event.key === 'Enter' || event.key === 'Tab') && !event.ctrlKey && !event.metaKey) {
+  if (suggestions.value.length > 0 && (isEnter || event.key === 'Tab') && !event.ctrlKey && !event.metaKey) {
     event.preventDefault()
     applySuggestion(suggestions.value[suggestionIndex.value] ?? suggestions.value[0])
     return
@@ -156,7 +164,7 @@ function onKeydown(event: KeyboardEvent): void {
     return
   }
 
-  if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
+  if (isEnter && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
     event.preventDefault()
     // 光标在整块末尾(最后一行行尾)→ 新兄弟块;否则在光标处劈开
     const atEnd = caret >= draft.value.length
@@ -167,14 +175,20 @@ function onKeydown(event: KeyboardEvent): void {
   // 块内换行:`Shift+Enter` 与 `Ctrl/Cmd+Enter` 等价。
   // 主推 Ctrl+Enter —— 中文输入法常把单按 Shift 当「中/英切换」吃掉,`Shift+Enter` 到达页面时
   // `shiftKey` 已经是 false、变成普通 Enter 去建新块了(这时页面侧拿不到任何补救信息)。
-  if (event.key === 'Enter' && (event.shiftKey || event.ctrlKey || event.metaKey)) {
+  if (isEnter && (event.shiftKey || event.ctrlKey || event.metaKey)) {
     event.preventDefault()
     const before = draft.value.slice(0, caret)
     const after = draft.value.slice(caret)
     const next = `${before}\n${after}`
     draft.value = next
     emit('action', { type: 'input', key: props.block.key, lines: next.split('\n') })
-    void nextTick(() => el?.setSelectionRange(caret + 1, caret + 1))
+    void nextTick(() => {
+      // 顺序要紧:先让 DOM 吃下新的换行再量高度(否则 scrollHeight 还是旧的,新行会被裁掉/被下一块盖住)
+      autoGrow()
+      if (!el) return
+      el.setSelectionRange(caret + 1, caret + 1)
+      el.scrollIntoView({ block: 'nearest' })
+    })
     return
   }
 
