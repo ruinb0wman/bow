@@ -5,7 +5,7 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 
 # bow 浏览器(MCP 服务器 `browser`)
 
-本地 Electron 多标签浏览器,36 个工具(19 核心 + 17 插件,随插件启停浮动);**你的每次操作用户都实时可见**,所以破坏性操作前先说明意图。
+本地 Electron 多标签浏览器,42 个工具(19 核心 + 23 插件,随插件启停浮动);**你的每次操作用户都实时可见**,所以破坏性操作前先说明意图。
 
 ## 第一步:确认工具怎么调
 
@@ -27,7 +27,10 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 | 要看整页(含滚动到视口外的部分) | `browser_screenshot {fullPage:true}` | 一次截全,不用边滚边截 |
 | 等异步渲染 | `browser_wait` | 等元素出现,而不是靠猜时长 |
 | 标签管理 | `browser_list_tabs` / `browser_new_tab` / `browser_switch_tab` | |
-| 调试**手机**上的 WebView / Chrome | `device_list_targets` → `device_inspect` / `device_eval` / `device_screenshot` | 这些作用于 adb 连着的真机页面,不是 bow 自己的标签页;用 `targetKey` 寻址 |
+| 调试**手机**上的 WebView / Chrome | `device_list_targets` → `device_snapshot` → `device_tap` / `device_type` | 这些作用于 adb 连着的真机页面,不是 bow 自己的标签页;用 `targetKey` 寻址 |
+| 看手机页面的控制台 / 未捕获异常 | `device_console` | 只覆盖**调用期间**的日志(默认 800ms);要加载期日志传 `reload: true`(会重载页面) |
+| 在手机页面取值 / 批量读 | `device_eval` | 与 `browser_eval` 同套路,但作用于手机页面(最省 token) |
+| 让**人**看手机页面的真 DevTools | `device_inspect` | 在标签页里开出 DevTools 前端(等同 chrome://inspect 的 inspect) |
 
 ## 标准工作流
 
@@ -48,6 +51,10 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 - `fullPage`(仅 `browser_screenshot`):`true` 截整页。输出分辨率是设备像素(文档 CSS 尺寸 × `devicePixelRatio`),
   所以高倍屏下的 PNG 会比 CSS 尺寸大;页面当前滚到哪里都不影响结果。页面太高会被上限拦下(见下)。
 - `browser_wait` 的 `state`:`attached` / `visible`(默认)/ `hidden` / `detached`
+- `device_*` 一族的公共参数:`targetKey`(省略只在「恰好一个目标」时生效;多目标必须显式给,看返回体里的 `targetKey`)。
+  `device_tap` 的 `selector` 与 `x`/`y` 二选一(坐标是视口 CSS 像素,不乘 dpr);`mode` 只是起点,返回的 `mode` 才是实际生效的。
+  `device_type` 传空 `text` + `clear` 默认 = 清空输入框;`device_press_key` 只接受功能键,文字用 `device_type`。
+  `device_console` 看的是**调用窗口**内的新日志,不是历史 —— 别把「没有日志」当页面干净。
 
 ## 必查
 

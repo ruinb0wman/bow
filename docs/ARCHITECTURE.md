@@ -43,6 +43,8 @@ src/
     overlay.ts                   OverlayManager:常驻透明顶层视图,按 placement 布局
     closeConfirm.ts              关闭窗口确认:多标签时拦下 close 事件,改用应用内确认框
     actions.ts                   注入式页面操作原语(snapshot/click/type/scroll/pressKey/screenshot)+ waitForLoad
+    pageScripts.ts               注入脚本字符串的唯一来源(SNAPSHOT/CLICK/TYPE/SCROLL_FN;actions.ts 与设备检查插件共用,
+                                 无 electron 依赖所以纯 node 单测也能 import)
     ipc.ts                       chrome UI ↔ 主进程的 IPC 面(标签/导航/设置/浮层/布局/插件)
     stores.ts                    JsonStore(原子写)+ 核心 settings.json + 分屏布局 split-layouts.json
     mcp.ts                       核心 MCP 工具(19 个)+ MCP_INSTRUCTIONS + 服务器构建
@@ -64,7 +66,8 @@ src/
     ui/*.vue                    该插件的 UI 组件(终端插件的 `ui/TerminalView.vue` 例外:它是 bow://terminal
                                 页面的主体,由 renderer/src/terminal 直接挂载,不经渲染层注册表)
     shared.ts | picker.ts | scripts.ts   同构纯逻辑或注入脚本字符串(便于单测)
-    adb.ts | targets.ts | cdp.ts          设备检查插件的 I/O 层(spawn / 转发池 / CDP 客户端;新文件名须登记到 tsconfig.node.json 的 include)
+    adb.ts | targets.ts | cdp.ts          设备检查插件的 I/O 层(spawn / 转发池 / CDP 客户端:含事件订阅与 Input.* 操作;新文件名须登记到 tsconfig.node.json 的 include)
+    scripts.ts                            设备检查插件的注入脚本(点定位 / 聚焦全选;纯字符串)
     relay.ts                              设备检查插件的「剥 Origin」TCP 中继(前端能连上设备的唯一原因;新文件名须登记到 tsconfig.node.json 的 include)
     format.ts | graph.ts                  笔记插件的 Logseq 文件格式解析 / 索引与反链(纯逻辑,主进程与渲染层共用;
                                           这两个文件名也要登记到 tsconfig 的 include)
@@ -98,7 +101,7 @@ src/
     ua.ts           bowUserAgent() 纯函数
     devtools.ts     DevTools 前端 URL 构造(tabManager 与设备检查插件共用的唯一来源)
     adblock.ts      广告规则模型/解析/索引/匹配/迁移(v3),~1400 行
-tests/            vitest 43 个测试文件(838 个用例)+ 3 个测试替身(fakeTabs/fakeWc/fakeKernel)
+tests/            vitest 45 个测试文件(965 个用例)+ 3 个测试替身(fakeTabs/fakeWc/fakeKernel)
 scripts/          构建与运维脚本(见 §11)
 docs/             本文件 + opencode-session-header.md
 .pi/skills/bow-browser/SKILL.md      给 AI 的能力索引(由 mcp:install 同步到 ~/.pi/agent/skills/)
@@ -490,7 +493,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `element-fullscreen` | — | ui, shortcut, mcp | `getState` `pickAndFullscreen` `exitFullscreen` | `browser_fullscreen_element` `browser_exit_fullscreen` | — | — | — | `Ctrl/Cmd+Shift+F` | on `tab:navigated` `tab:closed` `tab:activated`;emit `fullscreen-changed` `pick-done` | 无(纯内存) |
 | `mcp-http` | ✓ | ui, service | `getState` `setSettings` `restart` `toggle` | — | — | — | — | — | on `mcp-http:ready`(经 `service.onMcpHttpReady`)+ `mcpActivity.onChange`;emit `changed` | `mcp-http.json` |
 | `default-browser` | — | ui | `status` `register` `unregister` `openSettings` | — | — | — | — | — | — | 无(状态现读系统:Linux 读 `mimeapps.list`;Windows 先按 UserChoice 主键→备用键→`Software\Classes` 默认值读“记录”,再用 PowerShell 调 shell 的 `AssocQueryString` 拿“**实际生效者**”,两者不一致时以实际为准并标注记录已失效) |
-| `device-inspect` | — | ui, mcp | `list` `open` `getSettings` `setSettings` `checkAdb` `connect` `pair` `cleanupForwards` `rawAdb` | `device_list_targets` `device_inspect` `device_eval` `device_screenshot` `device_connect` | — | — | — | — | — | `device-inspect.json`(adb 命令 / 前端策略 / 端口转发记录) |
+| `device-inspect` | — | ui, mcp | `list` `open` `getSettings` `setSettings` `checkAdb` `connect` `pair` `cleanupForwards` `rawAdb` | `device_list_targets` `device_inspect` `device_snapshot` `device_tap` `device_type` `device_press_key` `device_scroll` `device_console` `device_eval` `device_screenshot` `device_connect` | — | — | — | — | — | `device-inspect.json`(adb 命令 / 前端策略 / 端口转发记录) |
 | `terminal` | — | ui | `getSettings` `setSettings` `listCandidates` `attach` `write` `resize` `detach` | — | — | — | — | — | on `tab:closed`(按 tabId 回收 shell);emit `data` `exit` `settings-changed` `session-closed` | `terminal.json`(字体/字号/滚动缓冲 + shell 配置列表) |
 | `logseq` | — | ui | `getState` `pickGraph` `setGraph` `rebuildIndex` `getSettings` `setSettings` `toggleFavorite` `readJournal` `readPage` `listJournals` `listPages` `backlinks` `listTemplates` `savePage` `attach` `setView` `openInNewPane` | — | — | — | — | — | on `tab:closed`(按 tabId 丢视图状态);emit `graph-changed` `settings-changed` `favorites-changed` | `logseq.json`(图目录 + 最近图 + 正文字号 + 每个图的收藏) |
 
@@ -583,17 +586,19 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `browser_screenshot` | tabId, fullPage | fullPage falsy | **image content**(`image/png`);失败才是 text |
 | `browser_get_info` | tabId | — | `{ok,info:TabInfo}` |
 
-插件工具 17 个:`browser_add_bookmark` `browser_list_bookmarks`(书签)、
+插件工具 23 个:`browser_add_bookmark` `browser_list_bookmarks`(书签)、
 `adblock_stats` `adblock_list_rules` `adblock_add_rule` `adblock_remove_rule` `adblock_set_enabled`
 `adblock_import_rules` `adblock_subscribe` `adblock_refresh_subscriptions`(广告)、
 `browser_fullscreen_element` `browser_exit_fullscreen`(元素全屏)、
-`device_list_targets` `device_inspect` `device_eval` `device_screenshot` `device_connect`(设备检查)
-—— 共 17 个,合计 **36** 个工具。
+`device_list_targets` `device_inspect` `device_snapshot` `device_tap` `device_type` `device_press_key`
+`device_scroll` `device_console` `device_eval` `device_screenshot` `device_connect`(设备检查)
+—— 共 23 个,合计 **42** 个工具。
 
 静态计数来源:`CORE_MCP_TOOL_NAMES`(19)+ `ctx.mcp.tool(...)` 的调用点
 (`bookmarks/main.ts:137,165`、`adblock/main.ts:711,730,752,799,821,835,853,874`、
-`element-fullscreen/main.ts:196,227`、`device-inspect/main.ts:381,421,438,461,481`)。
-⚠️ 实际工具面**随插件启停变化**:停用 adblock 就少 8 个,停用 device-inspect 就少 5 个。
+`element-fullscreen/main.ts:196,227`、
+`device-inspect/main.ts:451,493,510,531,554,574,612,642,666,698,731`)。
+⚠️ 实际工具面**随插件启停变化**:停用 adblock 就少 8 个,停用 device-inspect 就少 11 个。
 
 ⚠️ 插件工具的 schema **不做 strict 校验**(走 `kernel.mcp` 声明快照),未知参数会被静默丢弃。
 
@@ -743,10 +748,13 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 - **快捷键分工**:Ctrl+T/W/L/R/←/→/Shift+T/,/数字/Shift+E 由**主进程** `tabShortcuts.ts` 拦截(页面聚焦时渲染层收不到按键);
   —— 放行给终端的看 `Ctrl+L`(清屏)/ `Ctrl+R`(反向历史搜索)/ `Ctrl+←/→`(readline 按词移动);放行与否看的是**按键来源的 webContents**(不是活动标签),
   否则焦点在地址栏而活动标签是终端时 `Ctrl+W` / `Ctrl+L` 会变成什么都没做的死键;
-  `Ctrl+Shift+方向` / `Alt+Shift+方向` 同样在主进程,但只在聚焦的 webContents 属于**普通网页标签**或**终端页**时
-  才 `preventDefault`(判据 `shouldTakeSplitHotkey()`)—— 终端页自 2026-09-19 起也接管:否则 xterm 会把组合编成
+  `Ctrl+Shift+方向` / `Alt+Shift+方向` 同样在主进程,但只在聚焦的 webContents 属于**普通网页标签**、**终端页**或
+  **DevTools 前端标签(inspector)**时才 `preventDefault`(判据 `shouldTakeSplitHotkey()`)—— 终端页自 2026-09-19 起也接管:否则 xterm 会把组合编成
   CSI 序列送进 pty,分屏 / 调大小在终端里完全没反应;代价是 shell 与终端里的程序也收不到这两个组合。
-  地址栏 / 设置页 / DevTools 前端里的这些组合保持原样(按词选择、前端自己的快捷键)。
+  DevTools 前端标签自 2026-09-21 起也接管(手机调试窗格里要能就地分屏旁边开终端):判据先看 `TabInfo.inspector`,
+  因为它同时满足 `internal === true && internalId === null` —— 不看 `inspector` 就会被「内部页面不接管」那条吃掉。
+  地址栏 / 设置页里的这些组合保持原样(按词选择、前端自己的快捷键);DevTools 内部的 `Ctrl+Shift+方向` 按词选择
+  也让位(已在 README 写明代价)。
   `Ctrl+R` 原先只接在 chrome 侧(渲染层 `App.vue`)、页面聚焦时是死键 —— 自 2026-09-21 起步进主进程,与其它 tab 热键同一条路。
   `Ctrl+←/→`(历史后退/前进)的接管范围比分屏键宽 —— 除终端页外**不分页面类型**一律接管(含地址栏、设置页、笔记页、DevTools 前端),
   只认 `control`(不认 `meta`)且经 `historyHotkeyEnabled(process.platform)` 在 macOS 上整体关掉
@@ -957,8 +965,8 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
   ⚠️ 给主进程加新的 `tabs.*` / `wc.*` 调用时**必须同步补假实现**,否则测试会红得莫名其妙。
 - `tests/mcpServer.test.ts`(861 行)用 `InMemoryTransport` + 真实 `McpServer`/`Client` 握手,
   覆盖 instructions 下发、工具面与 schema、`waitUntil` 语义、失败一律 `isError`、内部页面边界、插件工具错误传播。
-- **当前基线(2026-09-21 复测:笔记插件「按 `-` 行粘贴拆块」+ 设置分区内边距后)**:`bun run test` → **45 个文件 / 930 个用例全绿**,约 9s。
-  43 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
+- **当前基线(2026-09-21 复测:手机 DevTools 窗格分屏 + device_* 操作/观测工具后)**:`bun run test` → **45 个文件 / 965 个用例全绿**,约 9s。
+  45 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
   `fakeWc.ts`、`fakeKernel.ts`。
 - ⚠️ **`.vue` 组件不在 `tsc` 的类型检查范围内**(`npm run typecheck` 只跑 `.ts`):组件里「导入了不存在的
   符号」这类错误只有 `npm run build`(rollup)才会报。改渲染层之后**必须跑一次 build** ——
@@ -992,16 +1000,16 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `logseqGraph.test.ts` | 256 | 16 | 索引(mtime 增量 / `:hidden` 三种写法)、反链排序与「不算自己的反链」、搜索、日期列表 |
 | `logseqPlugin.test.ts` | 493 | 31 | **真实临时目录**:原子写不留 `.tmp`、越界路径被拒、只写 `journals/`+`pages/`、mtime 冲突不覆盖、模板只在第一次编辑落盘、视图状态按 tabId |
 
-**合计 930**。
+**合计 965**。
 
 设备检查插件的三个测试文件(它们不在上表里:代码量不大,但每一条都在钉外部格式):
 
-| 测试文件 | 行数 | 用例 | 铉住的是什么 |
+| 测试文件 | 行数 | 用例 | 钉住的是什么 |
 | --- | --- | --- | --- |
-| `deviceInspect.test.ts` | 565 | 49 | adb 输出格式、`/proc/net/unix` 列、`/json` 字段、前端 URL 形态、失败文案 |
+| `deviceInspect.test.ts` | 728 | 62 | adb 输出格式、`/proc/net/unix` 列、`/json` 字段、前端 URL 形态、失败文案、键位表、CDP 事件 → 日志条目归一化 |
 | `deviceInspectTargets.test.ts` | 608 | 28 | 转发池(换端口重试 / 回收 / 中继挂掉要回收转发)、套接字探活自愈、整链路发现(假 adb + 假 HTTP) |
 | `deviceInspectRelay.test.ts` | 237 | 12 | **真 TCP 链路**:带 Origin 的握手到设备侧时 Origin 已消失、首部之后双向透传、超限断开 |
-| `deviceInspectCdp.test.ts` | 226 | 10 | 与**真实**本地 WebSocket 服务端对打:握手不带 Origin、id 匹配、超时、对端断开 |
+| `deviceInspectCdp.test.ts` | 550 | 31 | 与**真实**本地 WebSocket 服务端对打:握手不带 Origin、id 匹配、超时、对端断开、事件订阅先于 enable、touch/鼠标点击与降级、insertText、按键、console 采集 |
 
 ---
 

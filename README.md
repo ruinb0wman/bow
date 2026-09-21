@@ -326,6 +326,12 @@ npm run test:mcp:http
 | `browser_exit_fullscreen {tabId?}` | 退出元素全屏并还原页面(由「元素全屏」插件提供) |
 | `device_list_targets {serial?}` | 列出通过 adb 连接的可调试手机目标(Android 应用里的 WebView / Chrome),含所属 App 包名与 `targetKey`(由「设备检查」插件提供) |
 | `device_inspect {targetKey, activate?}` | 在 bow 的标签页里打开该目标的 DevTools 前端(等同 `chrome://inspect` 的 inspect)(由「设备检查」插件提供) |
+| `device_snapshot {targetKey?, maxElements?}` | 手机页面的可操作元素快照(与 `browser_snapshot` 同一份脚本、同一种返回形状),返回的 `selector` 可直接给 `device_tap` / `device_type`(由「设备检查」插件提供) |
+| `device_tap {targetKey?, selector?, x?, y?, mode?}` | 在**手机页面**上点一下 —— 默认发真实触摸事件(`Input.dispatchTouchEvent`,与 chrome://inspect 的 screencast 同款),不可用时自动降级为鼠标(以返回的 `mode` 为准)(由「设备检查」插件提供) |
+| `device_type {targetKey?, selector?, text, clear?}` | 往手机页面的输入框输文字(聚焦 + 全选 + `Input.insertText`,受控输入框的 `onChange` / `beforeinput` 都收到真事件)(由「设备检查」插件提供) |
+| `device_press_key {targetKey?, key}` | 在手机页面上按功能键(Enter / Tab / Escape / Backspace / Delete / 方向键 / Home / End / PageUp / PageDown);文字用 `device_type`(由「设备检查」插件提供) |
+| `device_scroll {targetKey?, selector?, direction, amount?}` | 滚动手机页面或页面内的滚动容器(与 `browser_scroll` 同一套语义)(由「设备检查」插件提供) |
+| `device_console {targetKey?, durationMs?, reload?, maxEntries?}` | 采集手机页面**接下来这段时间**的控制台输出、未捕获异常与浏览器日志(CDP 没有历史回放;要看加载期日志传 `reload: true`)(由「设备检查」插件提供) |
 | `device_eval {code, targetKey?}` | 在**手机页面**里执行 JavaScript(由「设备检查」插件提供) |
 | `device_screenshot {targetKey?, fullPage?}` | 截取**手机页面**并作为 PNG 返回(由「设备检查」插件提供) |
 | `device_connect {address}` | 连接已开启无线调试的设备(`adb connect <address>`)(由「设备检查」插件提供) |
@@ -369,8 +375,9 @@ npm run test:mcp:http
 - `Ctrl+Shift+←/→/↑/↓`:在**聚焦的窗格**上分屏(新窗格开一个空白标签并聚焦它,方向 = 新窗格的位置);
   `Alt+Shift+←/→/↑/↓`:把聚焦窗格**最内层那条分隔条朝该方向推一步**(推离窗格 = 它变大,推向窗格 = 它变小;
   长按可连续调整)
-  —— 这两个组合在**普通网页标签**与**终端页**(`bow://terminal`)上接管 —— 终端窗格里也能就地分屏 / 调大小;
-  地址栏、设置页、DevTools 前端里的它们保持原样(按词选择 / 前端自己的快捷键)。代价见下方「标签组与分屏」
+  —— 这两个组合在**普通网页标签**、**终端页**(`bow://terminal`)与**手机调试的 DevTools 前端标签**上接管 ——
+  终端窗格里也能就地分屏 / 调大小,手机 DevTools 窗格里也能(它没有 preload,页面自己调不了 `splitPane`);
+  地址栏、设置页里的它们保持原样(按词选择 / 前端自己的快捷键)。代价见下方「标签组与分屏」
 - 终端页(`bow://terminal`)里:`Ctrl+L`(清屏)、`Ctrl+R`(反向历史搜索)、`Ctrl+←/→`(按词移动)**归 shell**;**`Ctrl+W` 不再归 shell** —— 它照常关掉聚焦的那个终端窗格;
   `Ctrl+C` **有选中内容就复制**(不打扰 shell)、没有选中才照常发给 shell 当中断信号;`Ctrl+V` 粘贴
   (`Ctrl+Shift+C` / `Ctrl+Shift+V` 是同一套动作的备用组合;都走主进程剪贴板,不依赖渲染层的敏感上下文/权限)
@@ -422,10 +429,11 @@ npm run test:mcp:http
 - 一个组最多 **8 个窗格**(每个窗格都是一个真 `WebContentsView`);到上限后分屏快捷键不再响应。
 - 某个层级放不下两个 120px 的窗格时,这一层**只显示聚焦那一支**(树不拆,窗口拉大后自动恢复)。
 - 组里可以是任意标签(普通网页、本地文件、`bow://settings`、设备检查的 DevTools 前端都行)。
-- ⚠️ 代价:`Ctrl+Shift+方向` / `Alt+Shift+方向` 是在**所有普通网页标签与终端页**上全局接管的,所以网页里的
-  `<input>` / `<textarea>` 也拿不到这两个组合(主进程无法同步得知「当前焦点是不是可编辑元素」);
-  终端里 shell 以及 vim / tmux 这类程序也收不到它们(xterm 原本会把它们编成 CSI 序列送进 pty)。
-  地址栏、设置页、DevTools 前端不受影响。
+- ⚠️ 代价:`Ctrl+Shift+方向` / `Alt+Shift+方向` 是在**普通网页标签、终端页与手机调试的 DevTools 前端标签**上全局接管的,
+  所以网页里的 `<input>` / `<textarea>` 也拿不到这两个组合(主进程无法同步得知「当前焦点是不是可编辑元素」);
+  终端里 shell 以及 vim / tmux 这类程序也收不到它们(xterm 原本会把它们编成 CSI 序列送进 pty);
+  手机 DevTools 内部输入框(Styles / Console 提示)里的 `Ctrl+Shift+方向` 按词选择也让位给分屏
+  (DevTools 里的 `Alt+Shift+方向` 本来没有绑定)。地址栏、设置页不受影响。
 - MCP 工具签名不变:`browser_close_tab {tabId}` 关的是**一个标签**(节点塌缩,不会整组消失);
   `browser_list_tabs` 的每一项带 `groupId`,可以据此看出哪几个标签同组。
 
@@ -659,6 +667,16 @@ MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生
 
 复制的是 `chrome://inspect` 那条链路:adb 设备 → `cat /proc/net/unix` 找出 `webview_devtools_remote_<pid>` / `chrome_devtools_remote` → `adb forward` → 设备 `/json` 目标列表 → DevTools 前端。所属 App 的包名来自 `/json/version` 的 `Android-Package` 字段(Chromium 只在 Android 上返回它)。
 
+**给 AI 用的工具面不止「看」**:除了 `device_list_targets` / `device_inspect` / `device_eval` / `device_screenshot`,
+还有 `device_snapshot`(元素快照)→ `device_tap` / `device_type` / `device_press_key` / `device_scroll`(真输入事件)
+与 `device_console`(控制台 / 未捕获异常 / 浏览器日志)。最后四个的位置是刻意的:脚本只负责量坐标与摆焦点,
+**点击/输入一律走 CDP `Input.*`** —— 合成事件(`isTrusted: false`)与 `Input.insertText` 的差别在受控输入框上会直接暴露。
+DevTools 前端标签是「浏览器自身页面」,核心的 `browser_*` 工具不会去操作它(用 `device_*` 操作被调试的那个页面)。
+
+**一边调手机一边跑终端 / 记笔记**:焦点落在手机 DevTools 窗格里按 `Ctrl+Shift+→`(或其它方向)→ 新窗格里
+`Ctrl+Shift+E` 开终端(或在地址栏输 `bow://logseq`)—— 于是左边看 DevTools、右边跑 AI / 写记录,
+而 AI 侧用 `device_*` 操作同一个手机页面。
+
 **前提条件**(缺一个就只会看到空列表,面板会给出对应提示):
 
 1. **adb 可用**。「设置」里可填复合命令:Windows 侧没有 adb 时填 `wsl adb`(本机就是这种:bow.exe 在 Windows、adb 在 WSL);留空则依次探测 `adb` → `wsl adb`。
@@ -682,7 +700,7 @@ MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生
 
 因此 bow 在本地为每个套接字起一个**剥 Origin 的 TCP 中继**(`relay.ts`,~90 行、无依赖):前端连本机中继 → 中继删掉 `Origin` 头 → 转发到 `adb forward` 端口。WS 握手就是一个 HTTP 请求,所以只改首部即可,**不需要实现 WebSocket 帧编解码**。
 
-⚠️ 主进程自己的 CDP 客户端(Node 的 `WebSocket` 握手不带 Origin,已实测)本来就不受这限制,`device_eval` / `device_screenshot` 只是复用了同一个 `ws` 地址。
+⚠️ 主进程自己的 CDP 客户端(Node 的 `WebSocket` 握手不带 Origin,已实测)本来就不受这限制,`device_eval` / `device_screenshot` 以及操作类工具(`device_tap` …)只是复用了同一个 `ws` 地址。
 
 **前端来源三种策略**(设置里可切;三者都经中继):
 
