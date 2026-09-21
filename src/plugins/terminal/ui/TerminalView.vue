@@ -295,6 +295,16 @@ onBeforeUnmount(() => {
   height: 100%;
 }
 
+/*
+ * xterm 6 的遗留空节点:滚动与主题底色已搬到 .xterm-scrollable-element,但 xterm.css 对它的老规则
+ * (overflow-y: scroll + background-color: #000)还在,且只有 .xterm-scrollable-element 盖得住它 ——
+ * 屏幕矮于 .xterm 的那一截会露出纯黑底 + 原生滚动条(真机 probe 实测,见 ARCHITECTURE §12-26)。
+ * ⚠️ 只 display:none,不要 remove():它还是 OverviewRulerRenderer 的插入锚点(删了会静默失效)。
+ */
+.terminal-host :deep(.xterm-viewport) {
+  display: none;
+}
+
 .terminal-notice {
   flex: none;
   display: flex;
