@@ -773,6 +773,9 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 - **笔记**分区:图目录(选择 / 切换 / 最近图)、索引统计(文件/块/被引用页面/日志条数)与「重建索引」,
   以及从 `logseq/config.edn` **只读**读到的那一节(日志目录 / 页面目录 / 日期格式 / 默认模板 / `:hidden`)。
   刻意没有「默认模板」下拉框 —— 模板名属于 Logseq 自己的配置,这里只显示读到了什么。
+  整节自带 `padding: 4px 14px 20px`(左右 14px 与全局 `.set-row` 的 `12px 14px` 对齐)与
+  `flex: 1; min-height: 0; overflow-y: auto` —— 父层 `.settings-body-plugin` 是 `overflow: hidden`,
+  不自己滚的话内容一长就会被裁掉(最近图 + 索引 + config 只读节在小窗口下会超)。
 - **终端**分区:字体族 / 字号 / 滚动缓冲三个外观项 + shell 配置列表(名称/可执行文件/参数/工作目录,
   单选一套作默认)。「从预设添加」的候选由 `listCandidates` 给出(平台预设 + 在 PATH/常见路径里能否找到),
   参数与工作目录都即时保存;字号/字体改动经 `settings-changed` 广播,**已打开的终端立即跟随**。
@@ -954,7 +957,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
   ⚠️ 给主进程加新的 `tabs.*` / `wc.*` 调用时**必须同步补假实现**,否则测试会红得莫名其妙。
 - `tests/mcpServer.test.ts`(861 行)用 `InMemoryTransport` + 真实 `McpServer`/`Client` 握手,
   覆盖 instructions 下发、工具面与 schema、`waitUntil` 语义、失败一律 `isError`、内部页面边界、插件工具错误传播。
-- **当前基线(2026-09-21 复测,新增笔记插件的表格渲染 / 多块选区 / `Ctrl+Enter` / 第二轮修复后)**:`bun run test` → **45 个文件 / 909 个用例全绿**,约 9s。
+- **当前基线(2026-09-21 复测:笔记插件「按 `-` 行粘贴拆块」+ 设置分区内边距后)**:`bun run test` → **45 个文件 / 930 个用例全绿**,约 9s。
   43 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
   `fakeWc.ts`、`fakeKernel.ts`。
 - ⚠️ **`.vue` 组件不在 `tsc` 的类型检查范围内**(`npm run typecheck` 只跑 `.ts`):组件里「导入了不存在的
@@ -980,16 +983,16 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 `groups`(26,树版组记账 + 原地换叶子)、`terminalShared`(39,纯逻辑:设置规范化 /
 平台预设 / spawn 参数 / 环境变量清洗 / 回放缓冲 / PATH 查找 / 参数文本 / 复制粘贴键位)。合计 **740**。
 
-笔记插件(`bow://logseq`)另加 4 个文件 / 125 例,外加 `internalPages` 的 2 例:
+笔记插件(`bow://logseq`)另加 4 个文件 / 146 例,外加 `internalPages` 的 2 例:
 
 | 测试文件 | 行数 | 用例 | 钉住的是什么 |
 | --- | --- | --- | --- |
 | `logseqFormat.test.ts` | 427 | 35 | **字节保真**(`serialize(parse(raw)) === raw`,含 CRLF / 无尾换行 / 空文件 / 4 空格缩进)、块树与属性行、**渲染零丢字**(行内 token、行级标记的 `mark.raw` 拼接 === 原文)、**表格判据与单元格偏移/对齐**(含 Logseq 真实形态 `\|-\|-\|`)与源码区间 |
-| `logseqShared.test.ts` | 609 | 55 | 日期 ↔ 文件名词干(moment 方言整条回落)、页面名 ↔ 文件名(`:triple-lowbar`)、`config.edn` 键值、模板变量、**每个编辑命令的整份文件输出**(含多行劈块、`toggleTaskMarker`、多块选区的删/缩/反缩/复制)、`display → set` 恒等 |
+| `logseqShared.test.ts` | 750 | 76 | 日期 ↔ 文件名词干(moment 方言整条回落)、页面名 ↔ 文件名(`:triple-lowbar`)、`config.edn` 键值、模板变量、**每个编辑命令的整份文件输出**(含多行劈块、`toggleTaskMarker`、多块选区的删/缩/反缩/复制、**按 `-` 行粘贴拆块**:嵌套还原 / 非 `-` 行归上一块 / 光标处劈开 / 空块顶替 / 缩进归一 / 复制→粘贴往返)、`display → set` 恒等 |
 | `logseqGraph.test.ts` | 256 | 16 | 索引(mtime 增量 / `:hidden` 三种写法)、反链排序与「不算自己的反链」、搜索、日期列表 |
 | `logseqPlugin.test.ts` | 493 | 31 | **真实临时目录**:原子写不留 `.tmp`、越界路径被拒、只写 `journals/`+`pages/`、mtime 冲突不覆盖、模板只在第一次编辑落盘、视图状态按 tabId |
 
-**合计 909**。
+**合计 930**。
 
 设备检查插件的三个测试文件(它们不在上表里:代码量不大,但每一条都在钉外部格式):
 
