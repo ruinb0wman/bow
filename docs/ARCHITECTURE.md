@@ -731,6 +731,15 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 - **焦点策略**:`explicitFocus` / `selectOnFocus` 区分「显式聚焦(点击 / Ctrl+L / 新建标签)」与
   「窗口被动恢复聚焦」,只有前者才 `select()`。主进程 `chrome:window-blur` 会主动 `blur()` 地址栏,
   用于消除 Electron 把焦点恢复给地址栏的路径。
+  地址栏的**键盘**焦点请求一律经主进程(`chrome:request-focus-address` → `focusAddressBar()`):
+  渲染层自己 `el.focus()` 只改 DOM 状态,键盘事件仍进页面(工具栏 `+` / 双击标签栏曾经因此「看着聚焦了却打不进字」)。
+- **建议面板的生命周期不靠 DOM 事件**:跨 `WebContentsView` 的焦点切换**不保证**给 chrome 里的元素派发 `blur`,
+  而且实测 `document.activeElement` 会原地留在地址栏输入框上 ——
+  所以面板可见性只认「主进程的权威信号 + 请求代」(`lib/suggestSession.ts`):
+  ① 页面视图拿到键盘焦点 → 主进程发 `chrome:page-focus`(订阅 `TabManager` 的 `view-focused`,
+  投递前用 `webContents.isFocused()` 丢掉迟到的 focus 事件,否则 `Ctrl+T` 刚聚焦的面板会被立刻收回去);
+  ② 任何失焦/关闭都 +1 代,在途的 `plugins:suggest` 响应按代丢弃(否则迟到的响应会把刚收掉的面板弹回来)。
+  分屏面板**没有**跟着改:它的窗格行点击本身就是「聚焦那个窗格」,一刀切会破坏「连点两行切窗格」的用法。
 - **快捷键分工**:Ctrl+T/W/L/Shift+T/,/数字/Shift+E 由**主进程** `tabShortcuts.ts` 拦截(页面聚焦时渲染层收不到按键);
   —— 放行给终端的只看 `Ctrl+L`(清屏);放行与否看的是**按键来源的 webContents**(不是活动标签),
   否则焦点在地址栏而活动标签是终端时 `Ctrl+W` / `Ctrl+L` 会变成什么都没做的死键;
@@ -810,6 +819,7 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `tab:active` | — | `TabInfo \| null` |
 | `tab:activate-last-browsing` | — | `TabInfo \| null` |
 | `tab:self` | — | `number \| null`(调用方 webContents 所属的标签 id;不是标签页则 `null`。终端页用它把会话绑到 tabId,笔记页用它把「当前看的是哪一页」绑到 tabId) |
+| `chrome:request-focus-address` | — | `true`(渲染层请求「真正的」地址栏聚焦:先由主进程把键盘焦点交给 chrome webContents,再回发 `chrome:focus-address` 让它聚焦并全选;工具栏 `+` / 双击标签栏 / 建议面板 cancel 走这条) |
 | `clipboard:read-text` | — | `string` |
 | `clipboard:write-text` | text | `true` |
 | `groups:get` | — | `TabGroupInfo[]`(`{id, tabIds, focus, panes, dividers}`;几何只给活动组算) |
@@ -850,7 +860,8 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `plugin:event` | `{id, event, args}` | `ctx.ipc.emit()` 经 broadcaster。终端插件的 `data`/`exit`/`settings-changed`/`session-closed` 与笔记插件的 `graph-changed` 走的就是这条(内部页面按 `args.tabId` / `args.paths` 自过滤) |
 | `overlay:show` | `OverlayShowMessage \| null` | `OverlayManager.send()` |
 | `overlay-event` | `OverlayEvent` | `ipc.ts`(suggest 专用转发) |
-| `chrome:focus-address` | — | `tabShortcuts.ts` 的 `focusAddressBar()` |
+| `chrome:focus-address` | — | `tabShortcuts.ts` 的 `focusAddressBar()`(Ctrl+L / Ctrl+T 与 `chrome:request-focus-address` 共用) |
+| `chrome:page-focus` | — | `ipc.ts`(订阅 `TabManager` 的 `view-focused`;投递前用 `isFocused()` 丢掉迟到的 focus 事件) |
 | `chrome:window-blur` | — | `index.ts` 的 `mainWindow.on('blur')` |
 
 broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcastToInternal`)。
@@ -1049,11 +1060,20 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 8. **两个异步源会互相追尾**(分屏面板):`groups:changed` 触发的 `pushSplitMenu()` 要 await 取数,
    期间用户又套用了布局/点了取消 → 面板被关掉,随后**过期的刷新结果会把面板重新弹出来**。
    修法是 `App.vue` 里的「代」计数(`splitMenuSeq`):关面板时 +1,异步结果回来先比一代。
-9. **小数缩放下的 ±1 px 是正常的**:显示器 125% 时 `getContentSize()` 是 DIP 整数,
+9. **跨 `WebContentsView` 的焦点切换没有可靠的 DOM 信号**(2026-09-21 修):把键盘焦点交给页面视图
+   (`TabManager.activate()` 里的 `view.webContents.focus()`)时,chrome 里的地址栏输入框
+   **可能收不到 `blur`,且 `document.activeElement` 会原地留在输入框上**(E2E 两种都实测到),
+   于是「失焦就收面板」的 `setTimeout(..., 120)` + `activeElement` 判据会静默失效 ——
+   用户看到的是「地址栏没聚焦但建议面板还在,而且 Esc 没反应」(Esc 那一刻已经进页面视图了)。
+   正解:**焦点事实只由主进程说**(它就是调 `focus()` 的那一方):页面视图获焦 → 发 `chrome:page-focus`
+   (投递前用 `webContents.isFocused()` 丢掉迟到的 focus 事件)→ 渲染层收面板 + 把地址栏 DOM 状态与编辑态对齐;
+   并且**任何**失焦/关闭都要 +1 请求代,否则在途的 `plugins:suggest` 响应会把刚收掉的面板又弹回来(第 8 条的同款)。
+   附带一条:渲染层 `el.focus()` **不是**真的聚焦 —— 需要键盘焦点时走 `chrome:request-focus-address`(经主进程)。
+10. **小数缩放下的 ±1 px 是正常的**:显示器 125% 时 `getContentSize()` 是 DIP 整数,
    Chromium 把 view 的 DIP 边界舍入到物理像素后,渲染层的 `innerWidth` 可能比 `rect.width` 大/小 1。
    几何正确性的判据应该是 **DIP 层面铺满无缝隙/不重叠**(`dividers` 与 `panes` 互相印证),
    而不是逼页面自己报回完全相同的数字。
-10. **分屏调大小的方向 = 分隔条移动的方向,不是窗格扩张的方向**(2026-09-19 修正)。第一版按「扩张」写
+11. **分屏调大小的方向 = 分隔条移动的方向,不是窗格扩张的方向**(2026-09-19 修正)。第一版按「扩张」写
     (`resizePane` 只接受「聚焦子树在可扩侧」的祖先:`inA && leading` / `inB && !leading`),结果**贴着窗口
     外边界的那三个方向完全没反应** —— 左窗格按 ←、右窗格按 →、上窗格按 ↑、下窗格按 ↓ 都没有候选节点,
     整棵树原样返回(用户报的「按了没反应」)。正解见 `@shared/split` 的 `resizePane`:由内向外找第一层
