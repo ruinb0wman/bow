@@ -1,7 +1,7 @@
 /**
  * Tab 快捷键全局拦截:对所有 webContents 的 before-input-event 统一处理,
  * 保证页面/地址栏/弹层任何焦点下 Ctrl+T / Ctrl+Shift+T / Ctrl+W / Ctrl+L / Ctrl+Shift+L / Ctrl+Shift+E /
- * Ctrl+数字 / Ctrl+, 均可生效。
+ * Ctrl+R / Ctrl+←/→ / Ctrl+数字 / Ctrl+, 均可生效。
  *
  * 背景:标签页是独立 WebContentsView,按键事件只进入当前聚焦的 webContents,
  * 渲染层 keydown 在页面聚焦时收不到按键,因此必须在主进程拦截。
@@ -10,6 +10,7 @@
 
 import { app } from 'electron'
 import {
+  historyHotkeyEnabled,
   matchSplitHotkey,
   matchTabHotkey,
   releasesToTerminal,
@@ -24,7 +25,7 @@ import type { PluginKernel } from './plugins/kernel'
 import { CLOSE_CONFIRM_OVERLAY_ID } from './closeConfirm'
 import { log } from './logger'
 
-/** 标签是不是终端页(`bow://terminal`):决定 Ctrl+W / Ctrl+L 归 shell 还是归浏览器 */
+/** 标签是不是终端页(`bow://terminal`):决定 Ctrl+W / Ctrl+L / Ctrl+R / Ctrl+←/→ 归 shell 还是归浏览器 */
 function isTerminalTab(tab: TabInfo | null): boolean {
   return !!tab && parseInternalUrl(tab.url) === 'terminal'
 }
@@ -76,6 +77,11 @@ export function setupTabShortcuts(
           log('快捷键放行给终端', hk.action)
           return
         }
+        // macOS 不启用 Ctrl+←/→ 历史导航(见 historyHotkeyEnabled):**不能接管** ——
+        // 接管了就会把 ⌘/Ctrl+←/→ 从系统与页面手里拿走。这条 return 必须在 preventDefault 之前。
+        if ((hk.action === 'back' || hk.action === 'forward') && !historyHotkeyEnabled(process.platform)) {
+          return
+        }
         // preventDefault 会同时阻止页面 keydown/keyup 与菜单快捷键
         event.preventDefault()
         const tabs = getTabs()
@@ -105,6 +111,28 @@ export function setupTabShortcuts(
             tabs.openInternal('settings')
             log('快捷键:打开设置(Ctrl+,)')
             break
+          case 'back':
+          case 'forward': {
+            // 目标是**按键来源的那个窗格**(与 close 同口径):分屏里回退/前进的是聚焦窗格的历史;
+            // 拿不到来源(焦点在 chrome / overlay / DevTools 窗口)才退回活动标签。
+            const target = srcTabId ?? tabs.getActiveTabInfo()?.id ?? null
+            if (target == null) break
+            const ok = hk.action === 'back' ? tabs.back(target) : tabs.forward(target)
+            log(
+              hk.action === 'back' ? '快捷键:后退(Ctrl+←)' : '快捷键:前进(Ctrl+→)',
+              target,
+              ok ? 'ok' : '无历史'
+            )
+            break
+          }
+          case 'reload': {
+            // 原先只在渲染层(chrome 聚焦时)承接 ⇒ 页面聚焦时 Ctrl+R 是死键;搬到这里后全焦点生效。
+            // 终端页已在上面被 releasesToTerminal 放行(shell 的反向历史搜索),走不到这里。
+            const target = srcTabId ?? tabs.getActiveTabInfo()?.id ?? null
+            if (target != null) tabs.reload(target)
+            log('快捷键:刷新(Ctrl+R)', target ?? '(无来源)')
+            break
+          }
           case 'restore':
             if (tabs.restoreLastClosed()) log('快捷键:恢复标签(Ctrl+Shift+T)')
             break

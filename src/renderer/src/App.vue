@@ -549,19 +549,13 @@ function requestAddressFocus(): void {
 }
 
 function onKeydown(e: KeyboardEvent): void {
-  const mod = e.ctrlKey || e.metaKey
-  const key = e.key.toLowerCase()
   // Esc 关掉分屏面板(面板在 below-chrome 条带里,Esc 由 chrome 自己接)
   if (e.key === 'Escape' && splitMenuOpen.value) {
     closeSplitMenu()
-    return
   }
-  // Ctrl+T / Ctrl+Shift+T / Ctrl+W / Ctrl+L / Ctrl+数字 已由主进程统一拦截(tabShortcuts.ts),
-  // 此处仅保留 chrome 聚焦时需要渲染层执行的快捷键
-  if (mod && !e.shiftKey && key === 'r') {
-    e.preventDefault()
-    void reload()
-  }
+  // Ctrl+T / Ctrl+Shift+T / Ctrl+W / Ctrl+L / Ctrl+R / Ctrl+←/→ / Ctrl+数字
+  // 已全部由主进程统一拦截(tabShortcuts.ts),渲染层不再重复处理——
+  // 被 preventDefault 的按键渲染层根本收不到,留在这里只会是死代码。
 }
 
 onMounted(() => {

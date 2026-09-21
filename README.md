@@ -356,17 +356,22 @@ npm run test:mcp:http
 ## 手动使用快捷键
 
 - `Ctrl+T` 新标签、`Ctrl+W` 关闭**聚焦的那个窗格/标签**(终端页里也一样 —— 终端就是普通标签,`Ctrl+W` 一律关它)、`Ctrl+Shift+T` 恢复
-- `Ctrl+L` 聚焦地址栏(页面/地址栏/弹层任意焦点下都生效;**终端页除外** —— 那里 `Ctrl+L` 是 shell 的清屏)、`Ctrl+R` 刷新、`Ctrl+,` 打开设置(设置是内部标签页 `bow://settings`,重复打开只聚焦已有标签)
+- `Ctrl+L` 聚焦地址栏(页面/地址栏/弹层任意焦点下都生效;**终端页除外** —— 那里 `Ctrl+L` 是 shell 的清屏)、`Ctrl+R` 刷新**聚焦窗格**(页面里也生效;**终端页除外** —— 那里 `Ctrl+R` 是 shell 的反向历史搜索)、`Ctrl+,` 打开设置(设置是内部标签页 `bow://settings`,重复打开只聚焦已有标签)
 - `Ctrl+Shift+L` 聚焦地址栏,**任何焦点下都生效(含终端页)** —— 在终端里想跳去地址栏就用它
 - `Ctrl+Shift+E`:**在聚焦窗格开终端**(顶替当前窗格,与在地址栏输 `bow://terminal` 同一条路;聚焦窗格已是终端则什么也不做)。
   它和 `Ctrl+Shift+L` 一样**在终端里也生效** —— 不会漏给 shell
 - `Ctrl+数字`:`Ctrl+1..8` 切到标签栏第 n 项(一个分屏组只算一项)、`Ctrl+9` 取最后一项
+- `Ctrl+←` / `Ctrl+→`:后退 / 前进(**聚焦的那个窗格**的历史,与 `Ctrl+W` 同口径;焦点不在任何窗格时作用于活动标签)
+  —— 除**终端页**与 **macOS** 外,任何焦点下都接管(含地址栏、设置页、笔记页、DevTools 前端),
+  所以网页输入框里的「按词移动光标」让位(与 `Ctrl+Shift+方向` 分屏同一类代价);
+  终端页里放行给 shell(readline 的按词移动);macOS 上不启用 —— 那里的 `Ctrl+←/→` 常被系统
+  (Mission Control / 切换桌面)先吃掉,而 `⌘+←/→` 是「行首/行尾」,两个都不能动
 - `Ctrl+Shift+←/→/↑/↓`:在**聚焦的窗格**上分屏(新窗格开一个空白标签并聚焦它,方向 = 新窗格的位置);
   `Alt+Shift+←/→/↑/↓`:把聚焦窗格**最内层那条分隔条朝该方向推一步**(推离窗格 = 它变大,推向窗格 = 它变小;
   长按可连续调整)
   —— 这两个组合在**普通网页标签**与**终端页**(`bow://terminal`)上接管 —— 终端窗格里也能就地分屏 / 调大小;
   地址栏、设置页、DevTools 前端里的它们保持原样(按词选择 / 前端自己的快捷键)。代价见下方「标签组与分屏」
-- 终端页(`bow://terminal`)里:`Ctrl+L`(清屏)**归 shell**;**`Ctrl+W` 不再归 shell** —— 它照常关掉聚焦的那个终端窗格;
+- 终端页(`bow://terminal`)里:`Ctrl+L`(清屏)、`Ctrl+R`(反向历史搜索)、`Ctrl+←/→`(按词移动)**归 shell**;**`Ctrl+W` 不再归 shell** —— 它照常关掉聚焦的那个终端窗格;
   `Ctrl+C` **有选中内容就复制**(不打扰 shell)、没有选中才照常发给 shell 当中断信号;`Ctrl+V` 粘贴
   (`Ctrl+Shift+C` / `Ctrl+Shift+V` 是同一套动作的备用组合;都走主进程剪贴板,不依赖渲染层的敏感上下文/权限)
 - `Ctrl+Shift+F` 元素全屏:框选当前页面元素铺满网页视口(再按一次或 `Esc` 退出)
@@ -440,13 +445,15 @@ npm run test:mcp:http
   也能自己加配置(名称 / 可执行文件 / 参数 / 工作目录)。WSL 的启动目录用参数 `--cd ~` 表达
   (Windows 侧的 `cwd` 会被映射成 `/mnt/c/...`,不是 WSL 的 home)。
 - 外观:字体族 / 字号 / 滚动缓冲,**改完即时作用到已打开的终端**。
-- 键位:**`Ctrl+W` 归浏览器** —— 关掉聚焦的那个终端窗格(与标签上的 × 同义);`Ctrl+L`(清屏)**归 shell**;
+- 键位:**`Ctrl+W` 归浏览器** —— 关掉聚焦的那个终端窗格(与标签上的 × 同义);
+  `Ctrl+L`(清屏)、`Ctrl+R`(反向历史搜索)、`Ctrl+←/→`(按词移动)**归 shell**;
   **`Ctrl+Shift+←/→/↑/↓` 与 `Alt+Shift+←/→/↑/↓` 也归浏览器** —— 焦点在终端窗格上照样分屏 / 调整大小,
   shell(以及终端里跑的程序)收不到这两个组合(xterm 平时会把它们编成 CSI 序列送进 pty)。
   ⇒ 想用 shell 的「删词」请按各 shell 自己的绑定(如 bash/WSL 的 `Alt+Backspace`);
   **`Ctrl+C` 有选中就复制到剪贴板,没有选中则照常发给 shell 当中断信号**;
   `Ctrl+V` 粘贴(多行文本按 xterm 的括号粘贴规则送进去),`Ctrl+Shift+C` / `Ctrl+Shift+V` 是备用组合;
-  `Ctrl+D` 照常是 shell 的 EOF;`Ctrl+Shift+L` 跳回地址栏;`Ctrl+Shift+E` 当前窗格已是终端 → 什么也不做。
+  `Ctrl+D` 照常是 shell 的 EOF;`Ctrl+←/→` 与 `Ctrl+R` 也照常是 shell 的(按词移动 / 反向搜索),
+  浏览器不再用它们回退 / 前进 / 刷新;`Ctrl+Shift+L` 跳回地址栏;`Ctrl+Shift+E` 当前窗格已是终端 → 什么也不做。
 - **`Ctrl+Alt+<可打印键>` 一律送进 pty**(如 pi / pi-agents 的 `Ctrl+Alt+P` 切模式)。xterm.js 在 Windows 上
   把所有 `Ctrl+Alt+字母` 当成 AltGr(第三级 shift)、在送数据**之前**就丢掉,终端页启动时会包住它那条判据
   (`plugins/terminal/ui/xtermCtrlAltChord.ts`):只在「Chromium 明确说这次组合没有 AltGr 字符」

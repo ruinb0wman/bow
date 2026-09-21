@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isDevToolsHotkey, matchHotkey, matchSplitHotkey, matchTabHotkey, releasesToTerminal, shouldTakeSplitHotkey, switchIndexForDigit } from '../src/shared/shortcuts'
+import { historyHotkeyEnabled, isDevToolsHotkey, matchHotkey, matchSplitHotkey, matchTabHotkey, releasesToTerminal, shouldTakeSplitHotkey, switchIndexForDigit } from '../src/shared/shortcuts'
 import type { KeyInputLike } from '../src/shared/shortcuts'
 
 function input(patch: Partial<KeyInputLike> = {}): KeyInputLike {
@@ -166,10 +166,74 @@ describe('matchTabHotkey Tab 快捷键识别', () => {
   })
 })
 
+describe('matchTabHotkey 历史后退/前进(Ctrl+←/→)', () => {
+  const arrow = (dir: 'left' | 'right' | 'up' | 'down'): Partial<KeyInputLike> => ({
+    key: `Arrow${dir[0].toUpperCase()}${dir.slice(1)}`,
+    code: `Arrow${dir[0].toUpperCase()}${dir.slice(1)}`,
+    shift: false
+  })
+
+  it('Ctrl+← → back,Ctrl+→ → forward', () => {
+    expect(matchTabHotkey(input(arrow('left')))).toEqual({ action: 'back' })
+    expect(matchTabHotkey(input(arrow('right')))).toEqual({ action: 'forward' })
+  })
+
+  it('code 与 key 任一能认出方向即可(兼容非 QWERTY 布局)', () => {
+    expect(matchTabHotkey(input({ ...arrow('left'), code: '' }))).toEqual({ action: 'back' })
+    expect(matchTabHotkey(input({ ...arrow('right'), key: '' }))).toEqual({ action: 'forward' })
+  })
+
+  it('⌘+←/→ 不命中(只认 Ctrl —— mac 的「行首/行尾」要留着)', () => {
+    expect(matchTabHotkey(input({ ...arrow('left'), control: false, meta: true }))).toBe(null)
+    expect(matchTabHotkey(input({ ...arrow('right'), control: false, meta: true }))).toBe(null)
+    // 带 Alt 的组合一律不参与(AltGr 会编码成 Ctrl+Alt)
+    expect(matchTabHotkey(input({ ...arrow('left'), alt: true }))).toBe(null)
+  })
+
+  it('Ctrl+Shift+方向 仍归分屏,不被历史导航截走', () => {
+    expect(matchTabHotkey(input({ ...arrow('left'), shift: true }))).toBe(null)
+    expect(matchSplitHotkey(input({ ...arrow('left'), shift: true }))).toEqual({ kind: 'split', dir: 'left' })
+  })
+
+  it('Ctrl+↑/↓ 不接管', () => {
+    expect(matchTabHotkey(input(arrow('up')))).toBe(null)
+    expect(matchTabHotkey(input(arrow('down')))).toBe(null)
+  })
+
+  it('小键盘方向键 / 自动重复 / keyUp / 输入法组合不命中', () => {
+    expect(matchTabHotkey(input({ ...arrow('left'), code: 'Numpad4' }))).toBe(null)
+    expect(matchTabHotkey(input({ ...arrow('left'), isAutoRepeat: true }))).toBe(null)
+    expect(matchTabHotkey(input({ ...arrow('left'), type: 'keyUp' }))).toBe(null)
+    expect(matchTabHotkey(input({ ...arrow('left'), isComposing: true }))).toBe(null)
+  })
+})
+
+describe('matchTabHotkey Ctrl/Cmd+R 刷新', () => {
+  it('Ctrl+R / ⌘R 命中', () => {
+    expect(matchTabHotkey(input({ key: 'r', code: 'KeyR', shift: false }))).toEqual({ action: 'reload' })
+    expect(
+      matchTabHotkey(input({ key: 'r', code: 'KeyR', shift: false, control: false, meta: true }))
+    ).toEqual({ action: 'reload' })
+    expect(matchTabHotkey(input({ key: 'R', code: 'KeyR', shift: false }))).toEqual({ action: 'reload' })
+  })
+
+  it('Ctrl+Shift+R(硬刷新)/ 无修饰键不接管', () => {
+    expect(matchTabHotkey(input({ key: 'r', code: 'KeyR', shift: true }))).toBe(null)
+    expect(
+      matchTabHotkey(input({ key: 'r', code: 'KeyR', shift: false, control: false, meta: false }))
+    ).toBe(null)
+  })
+})
+
 describe('releasesToTerminal 终端页的快捷键放行', () => {
-  it('只有 Ctrl+L(清屏)还给 shell', () => {
+  it('Ctrl+L(清屏)/ Ctrl+R(反向搜索)/ Ctrl+←/→(按词移动)还给 shell', () => {
     expect(releasesToTerminal(matchTabHotkey(input({ key: 'w', code: 'KeyW', shift: false }))!)).toBe(false)
     expect(releasesToTerminal(matchTabHotkey(input({ key: 'l', code: 'KeyL', shift: false }))!)).toBe(true)
+    expect(releasesToTerminal(matchTabHotkey(input({ key: 'r', code: 'KeyR', shift: false }))!)).toBe(true)
+    expect(releasesToTerminal(matchTabHotkey(input({ key: 'ArrowLeft', code: 'ArrowLeft', shift: false }))!)).toBe(true)
+    expect(
+      releasesToTerminal(matchTabHotkey(input({ key: 'ArrowRight', code: 'ArrowRight', shift: false }))!)
+    ).toBe(true)
   })
 
   it('新建 / 恢复 / 设置 / 数字切换仍归浏览器', () => {
@@ -185,6 +249,18 @@ describe('releasesToTerminal 终端页的快捷键放行', () => {
     expect(releasesToTerminal(hk!)).toBe(false)
     const e = matchTabHotkey(input({ key: 'e', code: 'KeyE' }))
     expect(releasesToTerminal(e!)).toBe(false)
+  })
+})
+
+describe('historyHotkeyEnabled 历史导航的平台开关', () => {
+  it('macOS(darwin)不启用', () => {
+    expect(historyHotkeyEnabled('darwin')).toBe(false)
+  })
+
+  it('Windows / Linux / 其它平台启用', () => {
+    expect(historyHotkeyEnabled('win32')).toBe(true)
+    expect(historyHotkeyEnabled('linux')).toBe(true)
+    expect(historyHotkeyEnabled('freebsd')).toBe(true)
   })
 })
 

@@ -48,12 +48,35 @@ export type TabHotkey =
    * ② 用户在终端里按它时要能被浏览器吃掉(已是终端 = 空操作,绝不能漏给 shell)。
    */
   | { action: 'terminal' }
+  /**
+   * `Ctrl+←`(后退)/ `Ctrl+→`(前进):作用于**按键来源的那个窗格**的历史(与 close 同口径)。
+   * 这两个 action 只认 **Ctrl**(不认 ⌘):macOS 上 ⌘+←/→ 是「行首/行尾」,而 Ctrl+←/→ 常被系统
+   * (Mission Control / 切换桌面)先吃掉 —— 主进程再用 `historyHotkeyEnabled()` 挡一层平台闸门。
+   * 终端页里会经 `releasesToTerminal` 让给 shell(readline 的按词移动)。
+   */
+  | { action: 'back' }
+  | { action: 'forward' }
+  /**
+   * `Ctrl/Cmd+R`:刷新**聚焦窗格**。原先只在渲染层(chrome 聚焦时)承接 ⇒ 页面聚焦时按它是死键,
+   * 现在与其它 tab 热键一起由主进程全局拦截(见 `src/main/tabShortcuts.ts` 的 reload 分支)。
+   * 终端页里让给 shell(`Ctrl+R` = 反向历史搜索,见 `releasesToTerminal`)。
+   */
+  | { action: 'reload' }
+
+/** 方向键 code/key → 方向(`matchTabHotkey` 的历史导航与 `matchSplitHotkey` 共用) */
+const ARROW_DIRS: Record<string, PaneDir> = {
+  ArrowLeft: 'left',
+  ArrowRight: 'right',
+  ArrowUp: 'up',
+  ArrowDown: 'down'
+}
 
 /**
  * 标签快捷键识别:Ctrl/Cmd+T(新建)、Ctrl/Cmd+Shift+T(恢复)、
  * Ctrl/Cmd+W(关闭)、Ctrl/Cmd+1..9(切换,9=最后一个标签)、Ctrl/Cmd+,(打开设置)、
  * Ctrl/Cmd+L(聚焦地址栏,页面内也生效)、Ctrl/Cmd+Shift+L(聚焦地址栏,**终端里也不例外**)、
- * Ctrl/Cmd+Shift+E(在聚焦窗格开终端)。
+ * Ctrl/Cmd+Shift+E(在聚焦窗格开终端)、Ctrl/Cmd+R(刷新聚焦窗格)、
+ * Ctrl+←/→(历史后退/前进,**只认 Ctrl**)。
  * 与 isDevToolsHotkey 同风格:忽略自动重复与输入法组合;alt 修饰不参与。
  */
 export function matchTabHotkey(input: KeyInputLike): TabHotkey | null {
@@ -70,9 +93,20 @@ export function matchTabHotkey(input: KeyInputLike): TabHotkey | null {
     if (key === 'e' || input.code === 'KeyE') return { action: 'terminal' }
     return null // Ctrl+Shift+数字 等不作为标签切换
   }
+  // Ctrl+←/→ = 历史后退/前进。只认 control(**不认 meta**),所以 mac 上 ⌘+←/→(行首/行尾)
+  // 与本函数无关;Alt 也已由上面的兜底挡掉。是否启用还看主进程的 historyHotkeyEnabled()。
+  // 小键盘排除与数字切换一致(Numpad4/6 的 key 也是 ArrowLeft/Right)。
+  const code = input.code ?? ''
+  const arrowDir = ARROW_DIRS[code] ?? (code.startsWith('Numpad') ? undefined : ARROW_DIRS[input.key])
+  if (input.control && !input.meta && arrowDir) {
+    if (arrowDir === 'left') return { action: 'back' }
+    if (arrowDir === 'right') return { action: 'forward' }
+    return null // Ctrl+↑/↓ 不接管
+  }
   if (key === 't' || input.code === 'KeyT') return { action: 'new' }
   if (key === 'w' || input.code === 'KeyW') return { action: 'close' }
   if (key === 'l' || input.code === 'KeyL') return { action: 'focus-address' }
+  if (key === 'r' || input.code === 'KeyR') return { action: 'reload' }
   if (key === ',' || input.code === 'Comma') return { action: 'settings' }
   // 数字优先物理按键行的 code(Digit1..9):AZERTY 等非 QWERTY 布局下 key 可能是符号
   const codeMatch = /^Digit([1-9])$/.exec(input.code ?? '')
@@ -85,6 +119,9 @@ export function matchTabHotkey(input: KeyInputLike): TabHotkey | null {
 /**
  * 当前(按键来源的)标签是终端页(`bow://terminal`)时,必须还给 shell 的组合:
  * - `Ctrl+L` = 清屏 —— shell 的高频键,且没有替代品;
+ * - `Ctrl+R` = 反向历史搜索(reverse-i-search)—— 同样是 shell 高频键,没有替代品;
+ * - `Ctrl+←/→` = 按词移动(readline 的 backward/forward-word)—— 2026-09-21 用户拍板放行
+ *   (终端页本来也没有可回退的浏览历史,让给 shell 零损失);
  * - (曾是 `Ctrl+W` = 删除前一个词)**2026-09-19 用户拍板改为归浏览器**:终端里也要能用 `Ctrl+W` 关掉
  *   聚焦窗格;代价是 shell 的「删词」让位(README 里写明了)。
  * 其余(新建/恢复/切换/设置/数字/开终端)在 shell 里没有对应语义,保持浏览器行为。
@@ -93,7 +130,24 @@ export function matchTabHotkey(input: KeyInputLike): TabHotkey | null {
  * 前者就是为「终端里也能跳去地址栏」加的,后者在终端里是空操作、更不能漏给 shell。
  */
 export function releasesToTerminal(hotkey: TabHotkey): boolean {
-  return hotkey.action === 'focus-address'
+  return (
+    hotkey.action === 'focus-address' ||
+    hotkey.action === 'reload' ||
+    hotkey.action === 'back' ||
+    hotkey.action === 'forward'
+  )
+}
+
+/**
+ * `Ctrl+←/→`(历史后退/前进)是否在本平台启用。
+ *
+ * macOS 上 `Ctrl+←/→` 常被系统(Mission Control / 切换桌面)先吃掉,而 `⌘+←/→` 是「行首/行尾」——
+ * 两个都不能动,所以 2026-09-21 用户拍板:**mac 不启用**。
+ * `matchTabHotkey` 里箭头只认 `control`(不认 `meta`),这里再挡一层,保证 mac 上是「按键不接管」
+ * (原样留给系统/页面),而不是「接管之后什么都不做」。
+ */
+export function historyHotkeyEnabled(platform: string): boolean {
+  return platform !== 'darwin'
 }
 
 /** 分屏快捷键:`split` = Ctrl/Cmd+Shift+方向(在聚焦窗格上分屏);`resize` = Alt+Shift+方向(把最内层那条同轴分隔条朝该方向推) */
@@ -121,13 +175,6 @@ export interface SplitHotkeyTarget {
 export function shouldTakeSplitHotkey(target: SplitHotkeyTarget | null): boolean {
   if (!target) return false
   return !target.internal || target.internalPageId === 'terminal'
-}
-
-const ARROW_DIRS: Record<string, PaneDir> = {
-  ArrowLeft: 'left',
-  ArrowRight: 'right',
-  ArrowUp: 'up',
-  ArrowDown: 'down'
 }
 
 /**

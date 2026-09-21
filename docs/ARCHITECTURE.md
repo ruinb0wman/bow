@@ -38,7 +38,7 @@ src/
                                  second-instance 复用同一套规则)
     navInput.ts                  地址栏输入的本地文件兜底(不 import electron,可单测)
     devtools.ts                  DevTools 永远 detach + 全局快捷键拦截
-    tabShortcuts.ts              标签/分屏快捷键(Ctrl+T/W/L/,/数字/Shift+T/Shift+E + Ctrl+Shift+方向/Alt+Shift+方向)全局拦截(终端页里只有 Ctrl+L 放行给 shell;分屏键在终端页也由主进程接管)
+    tabShortcuts.ts              标签/分屏/历史快捷键(Ctrl+T/W/L/R/,/数字/Shift+T/Shift+E + Ctrl+←/→ + Ctrl+Shift+方向/Alt+Shift+方向)全局拦截(终端页里 Ctrl+L/Ctrl+R/Ctrl+←/→ 放行给 shell;分屏键在终端页也由主进程接管)
     tabManager.ts                TabManager:每标签一个 WebContentsView + 内部页面标签 + 标签组/嵌套分屏 + 布局
     overlay.ts                   OverlayManager:常驻透明顶层视图,按 placement 布局
     closeConfirm.ts              关闭窗口确认:多标签时拦下 close 事件,改用应用内确认框
@@ -740,14 +740,18 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
   投递前用 `webContents.isFocused()` 丢掉迟到的 focus 事件,否则 `Ctrl+T` 刚聚焦的面板会被立刻收回去);
   ② 任何失焦/关闭都 +1 代,在途的 `plugins:suggest` 响应按代丢弃(否则迟到的响应会把刚收掉的面板弹回来)。
   分屏面板**没有**跟着改:它的窗格行点击本身就是「聚焦那个窗格」,一刀切会破坏「连点两行切窗格」的用法。
-- **快捷键分工**:Ctrl+T/W/L/Shift+T/,/数字/Shift+E 由**主进程** `tabShortcuts.ts` 拦截(页面聚焦时渲染层收不到按键);
-  —— 放行给终端的只看 `Ctrl+L`(清屏);放行与否看的是**按键来源的 webContents**(不是活动标签),
+- **快捷键分工**:Ctrl+T/W/L/R/←/→/Shift+T/,/数字/Shift+E 由**主进程** `tabShortcuts.ts` 拦截(页面聚焦时渲染层收不到按键);
+  —— 放行给终端的看 `Ctrl+L`(清屏)/ `Ctrl+R`(反向历史搜索)/ `Ctrl+←/→`(readline 按词移动);放行与否看的是**按键来源的 webContents**(不是活动标签),
   否则焦点在地址栏而活动标签是终端时 `Ctrl+W` / `Ctrl+L` 会变成什么都没做的死键;
   `Ctrl+Shift+方向` / `Alt+Shift+方向` 同样在主进程,但只在聚焦的 webContents 属于**普通网页标签**或**终端页**时
   才 `preventDefault`(判据 `shouldTakeSplitHotkey()`)—— 终端页自 2026-09-19 起也接管:否则 xterm 会把组合编成
   CSI 序列送进 pty,分屏 / 调大小在终端里完全没反应;代价是 shell 与终端里的程序也收不到这两个组合。
-  地址栏 / 设置页 / DevTools 前端里的这些组合保持原样(按词选择、前端自己的快捷键);
-  chrome 侧只保留 Ctrl+R。**笔记页(`bow://logseq`)刻意不在 `shouldTakeSplitHotkey` 的白名单里**:
+  地址栏 / 设置页 / DevTools 前端里的这些组合保持原样(按词选择、前端自己的快捷键)。
+  `Ctrl+R` 原先只接在 chrome 侧(渲染层 `App.vue`)、页面聚焦时是死键 —— 自 2026-09-21 起步进主进程,与其它 tab 热键同一条路。
+  `Ctrl+←/→`(历史后退/前进)的接管范围比分屏键宽 —— 除终端页外**不分页面类型**一律接管(含地址栏、设置页、笔记页、DevTools 前端),
+  只认 `control`(不认 `meta`)且经 `historyHotkeyEnabled(process.platform)` 在 macOS 上整体关掉
+  (mac 的 `⌘+←/→` 是行首/行尾,`Ctrl+←/→` 归系统);代价与分屏键同类 —— 网页输入框里的「按词移动光标」让位。
+  **笔记页(`bow://logseq`)刻意不在 `shouldTakeSplitHotkey` 的白名单里**:
   按键会正常送到页面,由页面自己调 `splitPane` / `resizePane` 这两个既有 IPC 完成分屏与调大小 ——
   于是核心零改动(终端页必须由主进程接管,是因为 xterm 会先把组合编成 CSI 序列送进 pty;笔记页没有这个问题)。
 - 标签关闭兜底:关掉最后一个标签时自动补一个 `about:blank`(与 `tabShortcuts.ts` 的 close 分支一致)。
@@ -1103,7 +1107,8 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
     改成断言 target 列表 + 插件侧 `write` 返回 false,不要去 eval 已销毁的页面)。
 20. 终端页可能在任何时候失去会话(标签被关、插件被停用、shell 自己退出),这些都要经
     `session-closed` / `exit` 广播告诉页面 —— 不能指望 IPC 调用抛错来发现。
-21. 终端页的 `Ctrl+L` 是**故意放行**给 shell 的(`@shared/shortcuts.releasesToTerminal`);
+21. 终端页的 `Ctrl+L`(清屏)、`Ctrl+R`(反向历史搜索)、`Ctrl+←/→`(readline 按词移动)是**故意放行**给 shell 的
+    (`@shared/shortcuts.releasesToTerminal`);
     `Ctrl+W` 曾是放行名单里的另一个(`shell 的删词`)—— **2026-09-19 用户拍板移出名单**:终端里也要能
     `Ctrl+W` 关掉聚焦窗格,shell 的删词让位(README 已改)。放行的判据也从「活动标签」改成
     「**按键来源的 webContents**」:焦点在地址栏而活动标签是终端时不能把键吞掉。
