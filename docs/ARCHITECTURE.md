@@ -954,7 +954,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
   ⚠️ 给主进程加新的 `tabs.*` / `wc.*` 调用时**必须同步补假实现**,否则测试会红得莫名其妙。
 - `tests/mcpServer.test.ts`(861 行)用 `InMemoryTransport` + 真实 `McpServer`/`Client` 握手,
   覆盖 instructions 下发、工具面与 schema、`waitUntil` 语义、失败一律 `isError`、内部页面边界、插件工具错误传播。
-- **当前基线(2026-09-21 复测,新增笔记插件的表格渲染 / 多块选区 / `Ctrl+Enter` 后)**:`bun run test` → **45 个文件 / 906 个用例全绿**,约 9s。
+- **当前基线(2026-09-21 复测,新增笔记插件的表格渲染 / 多块选区 / `Ctrl+Enter` / 第二轮修复后)**:`bun run test` → **45 个文件 / 909 个用例全绿**,约 9s。
   43 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
   `fakeWc.ts`、`fakeKernel.ts`。
 - ⚠️ **`.vue` 组件不在 `tsc` 的类型检查范围内**(`npm run typecheck` 只跑 `.ts`):组件里「导入了不存在的
@@ -984,12 +984,12 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 
 | 测试文件 | 行数 | 用例 | 钉住的是什么 |
 | --- | --- | --- | --- |
-| `logseqFormat.test.ts` | 399 | 32 | **字节保真**(`serialize(parse(raw)) === raw`,含 CRLF / 无尾换行 / 空文件 / 4 空格缩进)、块树与属性行、**渲染零丢字**(行内 token、行级标记的 `mark.raw` 拼接 === 原文)、**表格判据与单元格偏移/对齐**与源码区间 |
+| `logseqFormat.test.ts` | 427 | 35 | **字节保真**(`serialize(parse(raw)) === raw`,含 CRLF / 无尾换行 / 空文件 / 4 空格缩进)、块树与属性行、**渲染零丢字**(行内 token、行级标记的 `mark.raw` 拼接 === 原文)、**表格判据与单元格偏移/对齐**(含 Logseq 真实形态 `\|-\|-\|`)与源码区间 |
 | `logseqShared.test.ts` | 609 | 55 | 日期 ↔ 文件名词干(moment 方言整条回落)、页面名 ↔ 文件名(`:triple-lowbar`)、`config.edn` 键值、模板变量、**每个编辑命令的整份文件输出**(含多行劈块、`toggleTaskMarker`、多块选区的删/缩/反缩/复制)、`display → set` 恒等 |
 | `logseqGraph.test.ts` | 256 | 16 | 索引(mtime 增量 / `:hidden` 三种写法)、反链排序与「不算自己的反链」、搜索、日期列表 |
 | `logseqPlugin.test.ts` | 493 | 31 | **真实临时目录**:原子写不留 `.tmp`、越界路径被拒、只写 `journals/`+`pages/`、mtime 冲突不覆盖、模板只在第一次编辑落盘、视图状态按 tabId |
 
-**合计 906**。
+**合计 909**。
 
 设备检查插件的三个测试文件(它们不在上表里:代码量不大,但每一条都在钉外部格式):
 
