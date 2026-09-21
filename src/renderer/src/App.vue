@@ -417,13 +417,20 @@ function hideSuggest(): void {
  */
 function loseSuggestFocus(): void {
   const hadPanel = showSuggest.value
-  addressInput.value?.blur() // 本来就失焦则是空操作(让 DOM 状态与事实一致)
+  // 地址栏不在编辑态时(焦点本就在页面上、窗口获焦导致的重聚焦…)不要白做功:
+  // 这条处理每次页面视图获焦都会跑(切/关/新建标签、点窗格、窗口获焦),而 blur+syncAddress
+  // 会改 `address.value` 触发整棵 chrome 重渲染。判据用 DOM 的 activeElement ——
+  // 这里问的是「元素此刻是不是 DOM 焦点」,它答的是准的(不可靠的是把它当**键盘**焦点用)。
+  const wasEditing = addressEditing.value || document.activeElement === addressInput.value
   suggestSession.value = lostFocusSession(suggestSession.value)
   clearSuggestTimer()
   clearSuggestRows()
   if (hadPanel) void api.showOverlay(null)
-  addressEditing.value = false
-  syncAddress() // 否则切标签后地址栏会停在旧 URL(addressEditing 卡在 true)
+  if (wasEditing) {
+    addressInput.value?.blur() // 让 DOM 状态与事实对齐(本来就失焦则是空操作)
+    addressEditing.value = false
+    syncAddress() // 否则切标签后地址栏会停在旧 URL(addressEditing 卡在 true)
+  }
 }
 
 function onAddressFocus(e: FocusEvent): void {

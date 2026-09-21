@@ -391,3 +391,49 @@ E2E 脚本从 WSL 侧读输出时用 Windows 侧重定向(`> D:\tmp\xxx-out.txt`
 1. 地址栏聚焦 → `Ctrl+3` 切标签:面板应立刻消失,之后 Esc 不再是死键;切标签后地址栏应显示新标签的 URL。
 2. 工具栏 `+` / 双击标签栏新建标签后应能**直接打字**(主进程会真的把键盘焦点交给 chrome)。
 3. 面板开着时点网页区域、或切到别的标签再回来:不应残留。
+
+---
+
+## 9. 收尾复核(2026-09-21 第二轮,提交后重跑)
+
+第二轮把三条 E2E 全量重跑了一遍,并处理了两个「像回归的红点」。两条都不是本改动的回归,但**都留下了证据**。
+
+### 9.1 顺手降成本:`page-focus` 不做无用功
+
+`loseSuggestFocus()` 原本每次都 `addressInput.blur()` + `syncAddress()`。它在**每次页面视图获焦**时都会跑
+(切/关/新建标签、点窗格、窗口获焦),而 `syncAddress()` 改 `address.value` 会让整棵 chrome 重渲染。
+现在加了一道判据:`addressEditing || document.activeElement === addressInput` 才做这两步 ——
+地址栏本来就没在编辑态时(点窗格、窗口获焦重聚焦…)一个字节都不动。
+(这里用 `activeElement` 是准的:问的是「元素此刻是不是 DOM 焦点」;当初不可靠的是把它当**键盘**焦点用。)
+
+### 9.2 `nested-split-panel-e2e` 的 flaky:上一轮已定案(两个 build 上都能复现)
+
+修前 6 跑 4 挂、修后 10 跑 2 挂,失败形状相同 = 迟到 focus 事件把 `activeId` 拉回去。
+⚠️ 记录一条方法坑:本轮想再跑一次「pre-fix 对照」时 `git stash push -u -- src tests` **没有东西可暂存**
+(改动已提交),于是那批「pre-fix」跑其实是修后的 build —— 别被这个假对照误导。
+上一轮的对照是**真的**(改动当时未提交),结论仍成立。
+
+### 9.3 `nested-split-e2e` 第 2 步那条 `.tab-title` 判据:测试自身太紧,已量化
+
+12 跑里挂 1 次(59/60),失败值 `["新标签页"]`。写了探针 `D:\tmp\pane-title-latency.mjs` 量化:
+
+```
+窗格 id=3: goUrl 返回 5ms → 立刻读: 标签栏="新标签页" 快照={"title":"新标签页","url":"about:blank"}
+           标签栏标题就位 30ms
+窗格 id=4: goUrl 返回 10ms → 立刻读: 标签栏="新标签页" 快照={"title":"新标签页","url":"about:blank"}
+           标签栏标题就位 25ms
+窗格 id=5: goUrl 返回 8ms → 立刻读: 标签栏="新标签页" 快照={"title":"新标签页","url":"about:blank"}
+           标签栏标题就位 30ms
+```
+
+即:`goUrl` 返回后,chrome 侧的快照与标签栏标题要 **25~31ms** 才追上真实页面,而那条判据在几次 IPC(几 ms)之后就读 ——
+边界竞态。探针 3/3 稳定复现失败那一刻的读数(`新标签页` + `about:blank`),
+且此时四个窗格都已导航过 ⇒ 快照空的那个只可能是刚导航的 t4 ⇒ 失败=「读早了一拍」,不是焦点被抢。
+**结论:是测试判据该等(没有 waitFor),不是产品回归。**
+
+### 9.4 第二轮重跑结果
+
+- `npm run typecheck` 过;`npm test` **45 文件 / 872 例** 全绿。
+- `suggest-focus-e2e` **8/8**(优化后重跑)。
+- `terminal-pane-e2e` 43/43、`terminal-entry-e2e` 42/42、`terminal-clipboard-e2e` 21/21、
+  `nested-split-e2e` 60/60 ×2(另一轮 59/60,即 §9.3 那条竞态)。
