@@ -899,6 +899,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `MCP_SMOKE_URL` | `mcp-smoke.mjs` | 设置后走 HTTP 而非 stdio(默认 `http://127.0.0.1:8765/mcp`) |
 | `SMOKE_ALLOW_MUTATIONS` | `mcp-smoke.mjs` | HTTP 模式下必须为 `1` 才允许写操作 |
 | `SMOKE_LD_LIBRARY_PATH` `SMOKE_ELECTRON_ARGS` `SMOKE_SHOT_PATH` `SMOKE_FULL_PAGE_SHOT_PATH` | `mcp-smoke.mjs` | Linux 库路径 / 额外参数 / 截图输出路径 |
+| `BOW_E2E_DIR` | `scripts/e2e-device-inspect.mjs` 与其 fixtures | 假手机 E2E 的临时目录(默认 `$TMPDIR/bow-e2e`) |
 
 ⚠️ 绝不要在 shell 里写 `MCP_HTTP=1 electron .` 这种内联赋值(Windows 不认);
 统一走 `scripts/open-bow.mjs` 或 `npm run mcp:http`。
@@ -920,6 +921,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `npm test` | vitest(`tests/**/*.test.ts`,node 环境,alias `@shared`/`@plugins`) |
 | `npm run test:mcp` | 真机冒烟:自己拉起 MCP 模式浏览器跑关键流程 |
 | `npm run test:mcp:http` | 连已常驻的 HTTP 浏览器 |
+| `npm run test:e2e:device` | 设备检查插件的**假手机** E2E:真 Electron + 真 MCP + 真 TCP/WS,只有 adb 与设备端是假的(不需要真机,也不需要显示环境) |
 | `npm run mcp` / `mcp:http` | 经 `open-bow.mjs` 以 stdio / HTTP 模式启动 |
 | `npm run mcp:install [-- …]` | 把 MCP 配置 + skill 写进 pi(幂等、可回滚、非 JSON 直接中止) |
 
@@ -936,6 +938,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `verify-dist.mjs` + `lib/externalRequires.mjs` | 从 bundle 扫出运行时外部依赖(`require` / `from` / **动态 `import()`**),逐个核对是否进了 `app.asar`(缺一个就 `bow.exe` 一闪即退);终端插件的 node-pty 就是靠动态 import 惰性加载的,漏扫这一形式等于自检有盲区 |
 | `ensure-electron.mjs` | postinstall:确保 electron 二进制就位(走镜像) |
 | `mcp-smoke.mjs` | 真机冒烟(405 行) |
+| `e2e-device-inspect.mjs` + `fixtures/fake-phone-{,adb,device}.mjs` | 设备检查插件的假手机 E2E:`fake-phone-adb.mjs` 仿 adb 输出并在 `forward` 时拉起 `fake-phone-device.mjs`(HTTP `/json` + WS CDP,并把收到的每条命令写进 `cdp-log.jsonl`),驱动脚本用 MCP 客户端跑 11 个 `device_*` 工具,并用 bow 自己的 `--remote-debugging-port` 往手机 DevTools 前端 target 发 `Ctrl+Shift+→` 验分屏 |
 | `cors-test-server.mjs` / `cors-probe.html` | CORS 插件的人工验证环境 |
 | `fetch-northbound.mjs` | 外网连通性探测 |
 

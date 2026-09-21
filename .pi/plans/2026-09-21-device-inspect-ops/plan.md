@@ -379,6 +379,10 @@ export interface CdpClient {
 手机已授权 USB 调试;要调的 App 调了 `WebView.setWebContentsDebuggingEnabled(true)`;
 长时间调试前 `adb shell input keyevent KEYCODE_WAKEUP` + `svc power stayon true`(完事还原)。
 
+> 不必等真机的部分已由 `npm run test:e2e:device`(55/55)覆盖:工具链、命令与参数、
+> **以及 DevTools 窗格里的分屏**(用假设备 + CDP 按键走的同一条 `before-input-event` 路径)。
+> 下面这几条只能真机定:
+
 1. **分屏**:打开某个手机目标的 DevTools 前端 → 焦点在该窗格 → `Ctrl+Shift+→` 出现两窗格 →
    `Ctrl+L` + `bow://terminal`(或 `Ctrl+Shift+E`)→ 得到「手机 DevTools | 终端」;
    `Alt+Shift+←/→` 能推分隔条;DevTools 面板(Elements/Console/Network/Application)在自己的窄窗格里
@@ -434,9 +438,24 @@ export interface CdpClient {
 - `bun run build` 成功;产物里 11 个 `device_*` 工具名与 `__bowDevicePoint__` 都在 `out/main/index.js`(注:插件主进程代码未构建不生效)。
 - `bun run test` → **45 个文件 / 965 个用例全绿**(文档里的上一版基线是 45 / 930;+35 = `shortcuts` 58→59、
   `deviceInspect` 49→62、`deviceInspectCdp` 10→31,逐文件数用 `git show HEAD:<file> | grep -c '^\s*it('` 核对过)。
-- **`bun run test:mcp` 已跑通**(`SMOKE_ELECTRON_ARGS="--ozone-platform=headless"`,`/tmp/mcp-smoke.log`):
-  `✓ 工具数: 42` —— 19 核心 + 23 插件,11 个 `device_*` 全在册,与文档计数一致
-  (设备本身没接,所以只验了「在册」这一层)。
+- **`bun run test:mcp` 已跑通**(`SMOKE_ELECTRON_ARGS="--ozone-platform=headless"`):
+  `✓ 工具数: 42` —— 19 核心 + 23 插件,11 个 `device_*` 全在册(设备本身没接,所以只验了「在册」这一层)。
+- **新加的可重复 E2E:`npm run test:e2e:device` → 55/55 全绿(连跑 3 次)**。
+  它是「真 Electron + 真 MCP + 真 TCP/WS,**只有 adb 与设备端是假的**」:
+  - fixtures `scripts/fixtures/fake-phone-adb.mjs`(伪装 adb 输出,`forward` 时拉起设备进程)+ `fake-phone-device.mjs`
+    (HTTP `/json` + 真 WebSocket 的 CDP 服务端,把收到的每条命令写进 `cdp-log.jsonl`);
+  - 断言覆盖:11 个工具在册;发现链路(设备/套接字/包名/targetKey);`device_snapshot` 注入的确实是
+    `__mcpSnapshot__`(与 browser_snapshot 同一份脚本);`device_tap` 的 touchStart/touchEnd 与坐标、
+    `mode:'mouse'` 的 mousePressed/mouseReleased、**触摸一次成功就不开触摸模拟**;`device_type` 的
+    聚焦+全选 → `Input.insertText` → 读回;`device_press_key` 的 `keyDown`+`text:'\r'`;`device_console`
+    三类事件归一化;
+  - **手机 DevTools 前端窗格里分屏(本轮最关键的一条)**:`device_inspect` 开出真前端标签后,用 bow 自己的
+    `--remote-debugging-port` 往那个 target 发 `Ctrl+Shift+ArrowRight`(CDP 按键会进主进程
+    `before-input-event`),再读 chrome 页面的 `window.browserAPI.getGroups()` 断言它所在组从 1 个窗格变成 2 个、
+    新窗格是 `about:blank`、前端标签仍留在该组里。
+  - 踩到的坑(已写进脚本注释):MCP 的 `browser_list_tabs` **不返回 groupId**(第一版据此误判);
+    上一轮运行泄漏的 Electron 会占着 remote-debugging 端口 → 必须用**本次运行唯一的** userData + 调试端口;
+    删 userData 必须等进程真退出(Electron 优雅退出的尾巴还会写 `browser.log`,删早了会被重建出空壳目录)。
 
 ### 实施中与计划不同的两点
 

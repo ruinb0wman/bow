@@ -26,6 +26,7 @@ npm run mcp        # 构建后以 stdio MCP 模式启动(供 AI 工具以子进�
 npm run mcp:http   # 构建后以 HTTP MCP 模式常驻(强制模式;普通启动也默认开启,见下文)
 npm run test:mcp   # 真机冒烟测试(自己拉起浏览器)
 npm run test:mcp:http  # 真机冒烟测试(连已常驻的 HTTP 浏览器)
+npm run test:e2e:device  # 设备检查的假手机 E2E(真 Electron + 真 MCP,不需要真机/显示环境)
 node scripts/open-bow.mjs http --dry-run   # 只看 HTTP 模式将注入的环境变量与端点
 npm run mcp:install -- --help   # 把浏览器 MCP 写进 pi 的配置(幂等、可回滚)
 node scripts/open-bow.mjs -- a.html https://x.com   # 启动并打开(文件管理器/终端用的就是这个形态)
@@ -779,7 +780,30 @@ npm run test:mcp   # 拉起 MCP 模式浏览器并自动跑关键流程(instruct
 无显示环境可用 `SMOKE_ELECTRON_ARGS=--ozone-platform=headless npm run test:mcp`,但导航仍需网络、
 截图可能为黑帧或空图,完整验证仍需真实桌面。
 
-无需显示环境的部分由 `npm test` 覆盖:`tests/mcpServer.test.ts` 用 `InMemoryTransport` + 假 TabManager
+## 设备检查的假手机 E2E
+
+```bash
+npm run test:e2e:device   # 真 Electron + 真 MCP + 真 TCP/WS,只有 adb 与「手机」是假的
+```
+
+`scripts/fixtures/fake-phone-adb.mjs` 伪装 `adb`(version / devices -l / /proc/net/unix / forward),
+它执行 `forward` 时拉起 `fake-phone-device.mjs` —— 后者在同一个端口上同时提供 `/json`、`/json/version`
+与一个**真 WebSocket 的 CDP 服务端**。插件链路(发现 → 转发 → 剥 Origin 中继 → CDP)全部是真的,
+只有设备端的返回值是 canned 的,所以下面这些都能在没有手机、没有显示环境的机器上验证:
+
+- 11 个 `device_*` 工具在册与发现链路(设备 / 套接字 / App 包名 / `targetKey`);
+- `device_snapshot` / `device_tap` / `device_type` / `device_press_key` / `device_scroll` / `device_console`
+  真正发出的 CDP 命令序列与参数(断言 `cdp-log.jsonl`,含「触摸成功就不开触摸模拟」这类反面判据);
+- **手机 DevTools 前端窗格上分屏**:`device_inspect` 开出真前端标签后,用 bow 自己的
+  `--remote-debugging-port` 往那个 target 发 `Ctrl+Shift+→`,再读 chrome 页面的
+  `window.browserAPI.getGroups()` 断言它所在组从 1 个窗格变成 2 个(MCP 的 `browser_list_tabs` 不返回 `groupId`)。
+
+临时文件在 `$TMPDIR/bow-e2e`(`BOW_E2E_DIR` 可改);每次运行用独立 userData 与调试端口,不会碰你正在跑的 bow。
+真机上的差异(触摸注入是否需要 `Emulation.setTouchEmulationEnabled`、捏合缩放下的坐标口径)仍需真机验证。
+
+## 无需显示环境的部分
+
+`npm test`(vitest,无需显示环境)覆盖:`tests/mcpServer.test.ts` 用 `InMemoryTransport` + 假 TabManager
 与真实 `McpServer`/`Client` 握手,验证 instructions 下发、工具面与 schema、`waitUntil` 等待语义、
 失败一律 `isError`、内部页面标签边界与插件工具错误传播;`tests/mcpWait.test.ts` 单独覆盖等待原语。
 
