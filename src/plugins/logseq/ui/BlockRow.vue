@@ -10,6 +10,7 @@
  * - 编辑态是一个 textarea,内容是块的**全部正文行**(多行内容也在里面),Enter/Tab/Backspace 全部
  *   交给上层换算成块操作;`Ctrl/Cmd+Enter`(以及 `Shift+Enter`)才是块内换行;
  * - `[[` / `#[[` 输入中给出页面补全(数据源是上图索引,由上层注入 `suggest`);
+ * - **按块粘贴**:剪贴板里含 `- ` 行时拦下默认粘贴,交给上层拆成块(见 `onPaste`);
  * - `Esc` 退出编辑态;
  * - 左侧圆点/折叠区按下鼠标 = 「从圆点拖选多个块」的起点(拖选逻辑全在 `JournalView`,这里只报意图)。
  *
@@ -20,6 +21,7 @@ import {
   analyzeBlockLines,
   blockLinesForDisplay,
   groupBlockLines,
+  isBlockPaste,
   type BlockNode
 } from '@plugins/logseq/shared'
 import type { PageHit } from '@plugins/logseq/graph'
@@ -44,7 +46,20 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'action', payload: { type: string; key: string; lines?: string[]; offset?: number; lineIndex?: number }): void
+  (
+    e: 'action',
+    payload: {
+      type: string
+      key: string
+      lines?: string[]
+      offset?: number
+      lineIndex?: number
+      /** 按块粘贴:`text` = 剪贴板原文,`before`/`after` = 光标前后的块正文 */
+      text?: string
+      before?: string
+      after?: string
+    }
+  ): void
   (e: 'open-page', name: string): void
   (e: 'open-url', url: string): void
 }>()
@@ -84,6 +99,30 @@ function onInput(): void {
   // 每敲一下都要重算高度:多行内容 / 长行折行时 `rows="1"` + `overflow:hidden` 会把后面的行裁掉
   autoGrow()
   void refreshSuggestions()
+}
+
+/**
+ * 粘贴:**只有块状文本**(至少一行是 `- ` 行)才拦下来交给上层拆块,其余交给浏览器默认粘贴
+ * (多行裸文本 = 块内内容行,行为不变)。
+ *
+ * `before`/`after` 取 **DOM 的 `el.value`** 而不是 `draft.value` —— 输入法组合期间 v-model 可能落后一拍。
+ * 被拦下时默认插入不会发生,所以 `input` 也不会再来一次(不会「粘一遍 + 插一遍」)。
+ */
+function onPaste(event: ClipboardEvent): void {
+  const el = area.value
+  if (!el) return
+  const text = event.clipboardData?.getData('text/plain') ?? ''
+  if (!isBlockPaste(text)) return
+  event.preventDefault()
+  const start = el.selectionStart ?? el.value.length
+  const end = el.selectionEnd ?? start
+  emit('action', {
+    type: 'paste',
+    key: props.block.key,
+    text,
+    before: el.value.slice(0, start),
+    after: el.value.slice(end)
+  })
 }
 
 /** 光标前是不是 `[[` / `#[[` 开头的查询(补全只在行内、最多 40 字内找) */
@@ -286,6 +325,7 @@ function onFocus(): void {
         rows="1"
         spellcheck="false"
         @input="onInput"
+        @paste="onPaste"
         @keydown="onKeydown"
         @blur="emit('action', { type: 'blur', key: block.key })"
       ></textarea>

@@ -20,6 +20,9 @@ import {
   detectIndentUnit,
   hasBlocks,
   indentText,
+  matchBlockLine,
+  parseLogseqFile,
+  propertyOf,
   reindex,
   serializeLogseqFile,
   type BlockNode,
@@ -1179,5 +1182,165 @@ export function blocksToMarkdown(file: ParsedFile, keys: readonly string[]): str
   })
   if (text === '' || text.endsWith('\n')) return text
   return `${text}${fileEol(file)}`
+}
+
+// ---------- 按块粘贴 ----------
+//
+// 目标:从 Logseq / 别处复制一段 `- ` 列表粘进块里时,不再「整段塞进一个块」,而是每行成块、
+// 缩进还原成嵌套(与复制时的 `blocksToMarkdown()` 互逆)。规则见 `pasteIntoBlock()`。
+
+/** 粘贴的载荷:光标**前/后**的块正文 + 剪贴板文本(textarea 的选区偏移由 UI 换算好) */
+export interface PastePayload {
+  before: string
+  after: string
+  text: string
+}
+
+/** 统一行尾:剪贴板多半是 CRLF(Windows),行级判据一律按 `\n` 切 */
+function normalizeEolText(text: string): string {
+  return text.replace(/\r\n?/g, '\n')
+}
+
+/**
+ * 粘贴文本里有没有块行(`- x` / `-`,允许前导空白)—— 有才走「按块粘贴」。
+ * UI 用它决定要不要 `preventDefault()`;`pasteIntoBlock()` 内部再判一次,判定只有这一处。
+ */
+export function isBlockPaste(text: string): boolean {
+  return normalizeEolText(text)
+    .split('\n')
+    .some((line) => matchBlockLine(line) !== null)
+}
+
+/**
+ * 粘贴文本 → 块森林:
+ * - `- x` 行各自成块,缩进由解析器还原成真正的父子层级;
+ * - **第一个块之前**的裸行单独成一块(否则会先留下一个空头块,顺序也别扭);
+ * - 块**之后**出现的裸行归属**当前森林里最后一个块**(递归取最后一个子块)的 `extra` ——
+ *   `writeBlock()` 先写 `extra` 再写 `children`,落在最深的最后一块才最接近原文顺序。
+ */
+function forestFromPaste(text: string): { roots: BlockNode[]; pastedUnit: string } {
+  // 去掉尾部空行再补一个行尾:剪贴板文本几乎总带尾换行,不去掉就会多解析出一行空内容
+  const body = text.replace(/\n+$/, '')
+  const pasted = parseLogseqFile(`${body}\n`)
+  const pastedUnit = detectIndentUnit(pasted)
+  const roots: BlockNode[] = []
+  let leading: string[] = []
+
+  const lastBlock = (): BlockNode | null => {
+    let node = roots[roots.length - 1] ?? null
+    while (node && node.children.length > 0) node = node.children[node.children.length - 1]
+    return node
+  }
+  const flushLeading = (): void => {
+    if (leading.length === 0) return
+    const block: BlockNode = { key: '', head: { text: `- ${leading[0]}`, eol: '' }, extra: [], children: [] }
+    for (const line of leading.slice(1)) {
+      block.extra.push({ line: { text: line, eol: '' }, kind: 'content' })
+    }
+    roots.push(block)
+    leading = []
+  }
+
+  for (const entry of pasted.entries) {
+    if (entry.kind === 'block') {
+      flushLeading()
+      roots.push(entry.block)
+      continue
+    }
+    if (roots.length === 0) {
+      leading.push(...entry.lines.map((l) => l.text))
+      continue
+    }
+    const target = lastBlock()
+    if (!target) continue
+    for (const line of entry.lines) {
+      target.extra.push({ line: { text: line.text, eol: '' }, kind: propertyOf(line.text) ? 'prop' : 'content' })
+    }
+  }
+  flushLeading()
+  return { roots, pastedUnit }
+}
+
+/**
+ * 把粘贴来的森林重排进**本文件**的缩进体系:顶层 = `indent`,每层 + `unit`;
+ * 内容行只切掉「原块缩进 + 粘贴文本自己的缩进单位」,更深的那一段(代码围栏里的相对缩进)原样保留。
+ */
+function retargetPastedIndent(block: BlockNode, unit: string, indent: string, pastedUnit: string, eol: string): void {
+  const oldIndent = indentText(block.head.text)
+  block.head = { text: `${indent}${block.head.text.slice(oldIndent.length)}`, eol }
+  for (const item of block.extra) {
+    const old = indentText(item.line.text)
+    const cut = Math.min(old.length, oldIndent.length + pastedUnit.length)
+    item.line = { text: `${indent}${unit}${item.line.text.slice(cut)}`, eol }
+  }
+  for (const child of block.children) retargetPastedIndent(child, unit, indent + unit, pastedUnit, eol)
+}
+
+/** 在 `loc` 块之后插入一整组块(顶层必须走 `insertTopBlock`:派生数组改不到 entries) */
+function insertManyAfter(file: ParsedFile, loc: Located, blocks: readonly BlockNode[]): void {
+  if (loc.parent) {
+    loc.parent.children.splice(loc.index + 1, 0, ...blocks)
+    return
+  }
+  blocks.forEach((block, i) => insertTopBlock(file, loc.index + 1 + i, block))
+}
+
+/** 按**对象引用**把新块插到某个块之后(刚插入的块还没有 key,不能用 `locate`) */
+function insertAfterByRef(file: ParsedFile, block: BlockNode, fresh: BlockNode): void {
+  const loc = locateRef(file, block)
+  if (!loc) return
+  if (loc.parent) loc.parent.children.splice(loc.index + 1, 0, fresh)
+  else insertTopBlock(file, loc.index + 1, fresh)
+}
+
+/**
+ * 按块粘贴:剪贴板里的 `- ` 行各自变成块(缩进 → 嵌套),插到光标处。
+ *
+ * - 光标**前**的文字(`before`)留在原块,光标**后**的文字(`after`)成为最后一个粘贴块之后的
+ *   **新块** —— 与「块中间回车劈开」同语义(文字顺序永远不乱);
+ * - 当前块是空块(没有正文、没有子块、没有属性行)时被粘贴内容**顶替**(位置不变,不留空块);
+ *   有 `id::` / `collapsed::` 这类属性行或子块时**绝不顶替**(那会静默丢东西);
+ * - 只有裸行的文本(`isBlockPaste() === false`)返回**同一个 file 对象**,调用方据此走浏览器默认粘贴。
+ *
+ * 不变式:纯函数(不改动传入的 `file`);未触及的行复用同一份 `SourceLine`。
+ */
+export function pasteIntoBlock(file: ParsedFile, key: string, payload: PastePayload): EditResult {
+  const noop: EditResult = { file, focusKey: null }
+  const text = normalizeEolText(payload.text)
+  if (!isBlockPaste(text)) return noop
+  const next = cloneFile(file)
+  const target = locate(next, key)
+  if (!target) return noop
+  const { roots, pastedUnit } = forestFromPaste(text)
+  if (roots.length === 0) return noop
+
+  const unit = detectIndentUnit(next)
+  const eol = fileEol(next)
+  const baseIndent = indentText(target.block.head.text)
+  for (const root of roots) retargetPastedIndent(root, unit, baseIndent, pastedUnit, eol)
+
+  const beforeLines = payload.before.split('\n')
+  const afterLines = payload.after === '' ? [] : payload.after.split('\n')
+  const keepAnchor =
+    beforeLines.some((line) => line.trim() !== '') ||
+    target.block.children.length > 0 ||
+    target.block.extra.some((x) => x.kind === 'prop')
+
+  if (keepAnchor) {
+    setHeadText(target.block, `${baseIndent}- ${beforeLines[0].replace(/\s+$/, '')}`)
+    writeContentLines(target.block, beforeLines.slice(1), baseIndent, unit, eol)
+  }
+  insertManyAfter(next, target, roots)
+  // 空块被顶替:先插再摘,粘贴块正好落在它原来的位置
+  if (!keepAnchor) removeAt(next, target)
+
+  if (afterLines.length > 0) {
+    const tail = newBlock(afterLines[0], baseIndent, eol)
+    writeContentLines(tail, afterLines.slice(1), baseIndent, unit, eol)
+    insertAfterByRef(next, roots[roots.length - 1], tail)
+  }
+
+  reindex(next)
+  return { file: next, focusKey: roots[roots.length - 1].key }
 }
 

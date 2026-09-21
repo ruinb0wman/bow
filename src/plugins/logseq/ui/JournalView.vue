@@ -13,7 +13,7 @@
  * 未落盘窗口 = 400ms(防抖):`Ctrl+W` 由主进程在页面之前吃掉(见 `shared/shortcuts.ts`),
  * 页面拦不住它,所以只能把窗口压小 —— 这是 README 里写明的代价。
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { CalendarDays, ChevronLeft, ChevronRight, FolderOpen, RefreshCw, Search, Star, X } from 'lucide-vue-next'
 import { LOGSEQ_URL } from '@shared/internalPages'
 import type { PaneDir } from '@shared/split'
@@ -37,6 +37,8 @@ import {
   outdentBlock,
   outdentBlocks,
   parseLogseqFile,
+  pasteIntoBlock,
+  type PastePayload,
   serializeLogseqFile,
   setBlockContentLines,
   shiftDay,
@@ -133,6 +135,14 @@ let clipboardTimer: number | null = null
  * 内部页面对外部站点不可达(`bow://logseq` 才有这个把手)。
  */
 let forceCopyFailure = false
+
+/**
+ * **E2E / 真机排障专用**:最近一次「按块粘贴」的载荷。
+ *
+ * 为什么留它:合成 `ClipboardEvent` 时 `clipboardData` 到底有没有把多行缩进文本原样传进来,
+ * 是这条链路上最不可控的一环(也正因为如此,E2E 里无法用 CDP 真按 `Ctrl+V`)。
+ */
+let lastPaste: PastePayload | null = null
 
 function notifyClipboard(kind: 'ok' | 'err', text: string, keepMs: number): void {
   if (clipboardTimer != null) {
@@ -500,6 +510,10 @@ interface BlockAction {
   lines?: string[]
   offset?: number
   lineIndex?: number
+  /** 按块粘贴:`text` = 剪贴板原文,`before`/`after` = 光标前后的块正文 */
+  text?: string
+  before?: string
+  after?: string
 }
 
 function onBlockAction(payload: BlockAction): void {
@@ -531,6 +545,33 @@ function onBlockAction(payload: BlockAction): void {
     case 'split':
       commit(splitBlock(current, payload.key, payload.offset ?? 0, unit.value))
       return
+    case 'paste': {
+      // 返回**同一个 file 对象** = 不是块状粘贴 / 块已不在(UI 层已用 `isBlockPaste` 拦过):
+      // 当 no-op,不推 undo。
+      const prevKey = editingKey.value
+      const payloadIn: PastePayload = {
+        before: payload.before ?? '',
+        after: payload.after ?? '',
+        text: payload.text ?? ''
+      }
+      lastPaste = payloadIn
+      const res = pasteIntoBlock(current, payload.key, payloadIn)
+      if (res.file === current) return
+      commit(res)
+      trace(`paste:focus=${res.focusKey ?? '-'}`)
+      // 焦点块 key 没变(往空块里粘了**一个**块):Vue 按 `row.block.key` 复用同一个 BlockRow,
+      // `editing` 一直是 true ⇒ 「进入编辑态」那个 watcher 不再跑,光标不会主动落到末尾。
+      // 显式重挂一次 textarea(先置 null,下一次 tick 置回),让 watcher 按 `caretIntent = null`
+      // 把光标摆到块尾 —— 与「粘完接着往下写」的预期一致。
+      if (res.focusKey && res.focusKey === prevKey) {
+        editingKey.value = null
+        void nextTick(() => {
+          editingKey.value = res.focusKey
+          caretIntent.value = null
+        })
+      }
+      return
+    }
     case 'toggle-task': {
       const next = toggleTaskMarker(current, payload.key, payload.lineIndex ?? 0)
       // no-op(行里没有 `[ ]` / `[x]`)时返回同一个对象:不推 undo、不标脏
@@ -969,6 +1010,9 @@ function exposeDebugHandle(): void {
     },
     get clipboardNotice() {
       return plain(clipboardNotice.value)
+    },
+    get lastPaste() {
+      return plain(lastPaste)
     },
     get rawLineCount() {
       return rawLineCount.value

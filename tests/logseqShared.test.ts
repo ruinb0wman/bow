@@ -42,6 +42,8 @@ import {
   parseJournalStem,
   parseLooseDay,
   parseView,
+  pasteIntoBlock,
+  isBlockPaste,
   serializeLogseqFile,
   selectedRoots,
   setBlockContentLines,
@@ -605,5 +607,144 @@ describe('多块选区(批量命令)', () => {
     const out = deleteBlocks(file, ['2'])
     expect(topBlocks(out.file)[0].head).toBe(topBlocks(file)[0].head)
     expect(topBlocks(out.file)[0].extra[0].line).toBe(topBlocks(file)[0].extra[0].line)
+  })
+})
+
+describe('按块粘贴(`- ` 行拆成块)', () => {
+  const paste = (raw: string, key: string, payload: { before?: string; after?: string; text: string }): string =>
+    serializeLogseqFile(
+      pasteIntoBlock(parseLogseqFile(raw), key, {
+        before: payload.before ?? '',
+        after: payload.after ?? '',
+        text: payload.text
+      }).file
+    )
+
+  it('块行判据:`- ` / 裸 `-` / 带缩进都算,纯文本不算', () => {
+    expect(isBlockPaste('- 甲\n')).toBe(true)
+    expect(isBlockPaste('-')).toBe(true)
+    expect(isBlockPaste('正文\n  - 缩进的块行\n')).toBe(true)
+    expect(isBlockPaste(' 甲\n-乙\n')).toBe(false) // `-甲` 不是块行(Logseq 要求 `- ` 或裸 `-`)
+    expect(isBlockPaste('第一行\n第二行\n')).toBe(false)
+    expect(isBlockPaste('')).toBe(false)
+  })
+
+  it('纯文本返回同一个 file 对象(交给浏览器默认粘贴,不推 undo)', () => {
+    const file = parseLogseqFile('- a\n')
+    const res = pasteIntoBlock(file, '0', { before: 'a', after: '', text: '第一行\n第二行\n' })
+    expect(res.file).toBe(file)
+    expect(res.focusKey).toBeNull()
+  })
+
+  it('块不存在时也是同一个 file 对象(no-op)', () => {
+    const file = parseLogseqFile('- a\n')
+    expect(pasteIntoBlock(file, '9', { before: '', after: '', text: '- 甲\n' }).file).toBe(file)
+  })
+
+  it('空块被粘贴内容顶替(不留空块),缩进还原成嵌套', () => {
+    const out = paste('- 甲\n-\n- 乙\n', '1', { text: '- 一\n  - 一子\n- 二\n' })
+    expect(out).toBe('- 甲\n- 一\n  - 一子\n- 二\n- 乙\n')
+  })
+
+  it('光标落在最后一个粘贴块上(焦点 key 指向「二」)', () => {
+    const file = parseLogseqFile('- 甲\n-\n- 乙\n')
+    const res = pasteIntoBlock(file, '1', { before: '', after: '', text: '- 一\n  - 一子\n- 二\n' })
+    // 甲=0,一=1,一子=1.0,二=2,乙=3
+    expect(res.focusKey).toBe('2')
+    expect(serializeLogseqFile(res.file)).toContain('- 二\n- 乙\n')
+  })
+
+  it('非 `-` 行归上一个块做块内内容行(与 Ctrl+Enter 等价)', () => {
+    expect(paste('-\n', '0', { text: '- 甲\n续行\n- 乙\n' })).toBe('- 甲\n  续行\n- 乙\n')
+  })
+
+  it('块之后的裸行归「最后一个块的最深处」,顺序不变', () => {
+    expect(paste('-\n', '0', { text: '- 甲\n  - 甲子\n结尾\n' })).toBe('- 甲\n  - 甲子\n    结尾\n')
+  })
+
+  it('开头就是裸行 → 单独成一块,不留空头块', () => {
+    expect(paste('-\n', '0', { text: '正文\n续句\n- 甲\n' })).toBe('- 正文\n  续句\n- 甲\n')
+  })
+
+  it('光标处劈开:光标前留原块,光标后成为最后一个粘贴块之后的新块', () => {
+    const file = parseLogseqFile('- 甲乙丙\n  因此\n')
+    const res = pasteIntoBlock(file, '0', { before: '甲', after: '乙丙\n因此', text: '- 一\n- 二\n' })
+    expect(serializeLogseqFile(res.file)).toBe('- 甲\n- 一\n- 二\n- 乙丙\n  因此\n')
+    // 甲=0,一=1,二=2(焦点),尾块=3
+    expect(res.focusKey).toBe('2')
+  })
+
+  it('光标在块尾(after 为空)时不额外造尾块', () => {
+    expect(paste('- 底\n', '0', { before: '底', after: '', text: '- 一\n- 二\n' })).toBe('- 底\n- 一\n- 二\n')
+  })
+
+  it('before 为空 + after 非空:空锚点被顶替,after 成为新块(不丢字)', () => {
+    const file = parseLogseqFile('- X\n')
+    const res = pasteIntoBlock(file, '0', { before: '', after: 'X', text: '- 一\n' })
+    expect(serializeLogseqFile(res.file)).toBe('- 一\n- X\n')
+    expect(res.focusKey).toBe('0')
+  })
+
+  it('有属性行的空块**不**被顶替(id:: 等原样保住)', () => {
+    const out = paste('-\n  id:: abc\n', '0', { text: '- 一\n- 二\n' })
+    expect(out).toBe('- \n  id:: abc\n- 一\n- 二\n')
+    expect(out).toContain('id:: abc')
+  })
+
+  it('有子块的块不被顶替(否则会静默丢掉整棵子树)', () => {
+    expect(paste('-\n  - 子\n', '0', { text: '- 一\n' })).toBe('- \n  - 子\n- 一\n')
+  })
+
+  it('4 空格缩进粘进 2 空格文件 → 归一成 2 空格', () => {
+    // 顶层兄弟插在锚点子树之后(数据模型是同层兄弟,不是「插在头行后面」)
+    expect(paste('- X\n  - Y\n', '0', { before: 'X', after: '', text: '- 甲\n    - 甲孙\n' })).toBe(
+      '- X\n  - Y\n- 甲\n  - 甲孙\n'
+    )
+  })
+
+  it('tab 文件里粘 2 空格缩进 → 按 tab 写回', () => {
+    expect(paste('- X\n\t- Y\n', '0', { before: 'X', after: '', text: '- 甲\n  - 甲子\n' })).toBe(
+      '- X\n\t- Y\n- 甲\n\t- 甲子\n'
+    )
+  })
+
+  it('内容行按「块缩进 + 一个 unit」写回,更深的相对缩进原样保留', () => {
+    expect(paste('-\n', '0', { text: '- 甲\n  ```js\n    const x = 1\n  ```\n' })).toBe(
+      '- 甲\n  ```js\n    const x = 1\n  ```\n'
+    )
+  })
+
+  it('粘进子块 → 粘贴块与它在同一层(沿用父块的缩进)', () => {
+    expect(paste('- P\n  - 子\n- Z\n', '0.0', { before: '子', after: '', text: '- 甲\n' })).toBe(
+      '- P\n  - 子\n  - 甲\n- Z\n'
+    )
+  })
+
+  it('复制 → 粘贴往返:blocksToMarkdown 的原文粘回空块 = 逐字节还原', () => {
+    const src = parseLogseqFile(FIXTURE)
+    const md = blocksToMarkdown(src, ['0'])
+    const res = pasteIntoBlock(parseLogseqFile('-\n'), '0', { before: '', after: '', text: md })
+    expect(serializeLogseqFile(res.file)).toBe(md)
+  })
+
+  it('CRLF 剪贴板文本照常拆块(行尾归一,写回文件自己的行尾)', () => {
+    expect(paste('- X\r\n', '0', { before: 'X', after: '', text: '- 甲\r\n  - 甲子\r\n' })).toBe(
+      '- X\r\n- 甲\r\n  - 甲子\r\n'
+    )
+  })
+
+  it('剪贴板尾部的空行不会变成多余的内容行', () => {
+    expect(paste('- 底\n', '0', { before: '底', after: '', text: '- 一\n\n\n' })).toBe('- 底\n- 一\n')
+  })
+
+  it('粘贴是纯函数:不改动输入文件,未触及的行复用同一份 SourceLine', () => {
+    const file = parseLogseqFile(FIXTURE)
+    const before = serializeLogseqFile(file)
+    const res = pasteIntoBlock(file, '1', { before: 'bet', after: 'a', text: '- 新\n' })
+    expect(serializeLogseqFile(res.file)).not.toBe(before)
+    expect(serializeLogseqFile(file)).toBe(before)
+    // 0 号块(在粘贴目标之前)一个字节都没动
+    expect(topBlocks(res.file)[0].head).toBe(topBlocks(file)[0].head)
+    expect(topBlocks(res.file)[0].extra[0].line).toBe(topBlocks(file)[0].extra[0].line)
   })
 })
