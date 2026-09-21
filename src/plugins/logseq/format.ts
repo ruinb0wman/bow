@@ -509,18 +509,37 @@ function matchEmphasis(
   return null
 }
 
-// ---------- 行级标记(标题 / 复选框 / 引用 / 列表 / 水平线 / 围栏) ----------
+// ---------- 行级标记(标题 / 复选框 / 引用 / 列表 / 水平线 / 围栏 / 表格) ----------
 
 /**
  * 一行开头的「标记」—— 渲染时这些字符**不显示原文**,而是变成结构(标题样式、勾选框、引用条、圆点)。
  * 与行内 token 一样带 `raw`(被吃掉的原文切片),所以「标记原文 + 剩余文本的 token 拼接 === 整行原文」
  * 这条零丢字不变式在行级也成立(见 `tests/logseqFormat.test.ts`)。
  */
-export type LineMarkKind = 'plain' | 'heading' | 'task' | 'quote' | 'bullet' | 'ordered' | 'hr' | 'fence'
+export type LineMarkKind = 'plain' | 'heading' | 'task' | 'quote' | 'bullet' | 'ordered' | 'hr' | 'fence' | 'table'
+
+/** 表格列对齐(`:--` 左 / `--:` 右 / `:--:` 中;没有冒号 = null) */
+export type TableAlign = 'left' | 'center' | 'right' | null
+
+/**
+ * 一个表格单元格。`text` 是**去首尾空白后**的内容,`srcStart/srcEnd` 是它在原文里的绝对区间
+ * (所以 `line.text.slice(cell.srcStart - line.base, cell.srcEnd - line.base) === cell.text`),
+ * `tokens` 与正文用同一套行内 tokenizer(双链 / 标签 / 强调照旧可点)。
+ */
+export interface TableCell {
+  text: string
+  srcStart: number
+  srcEnd: number
+  align: TableAlign
+  tokens: Token[]
+}
 
 export interface LineMark {
   kind: LineMarkKind
-  /** 行首被标记吃掉的原文(`plain` / 围栏内容行为 `''`) */
+  /**
+   * 行首被标记吃掉的原文(`plain` / 围栏内容行为 `''`)。
+   * **表格行是例外**:`raw` = 整行原文(token 另由 `cells` 承载,与 `hr` 同款)。
+   */
   raw: string
   /** heading 级别 1..6 */
   level?: number
@@ -532,7 +551,9 @@ export interface LineMark {
   marker?: string
   /** 围栏字符(``` / ~~~),由 `analyzeBlockLines` 填 */
   fence?: string
-  role?: 'open' | 'content' | 'close'
+  role?: 'open' | 'content' | 'close' | 'header' | 'delim' | 'row'
+  /** 表格行的单元格(仅 `kind === 'table'`;分隔行也有,用来取对齐) */
+  cells?: TableCell[]
 }
 
 /** ATX 标题:要求 `#` 后有空白(或行尾)⇒ 与 `#标签`(无空格)天然互斥 */
@@ -592,47 +613,161 @@ function isFenceClose(text: string, fence: { char: string; len: number }): boole
   return m[1][0] === fence.char && m[1].length >= fence.len
 }
 
+/** 分隔行的一个单元格:`:` 可选、`-` 至少两个、前后可有空白 */
+const TABLE_DELIM_CELL_RE = /^[ \t]*:?-{2,}:?[ \t]*$/
+
+/**
+ * 按**未转义的** `|` 切分表格行。
+ *
+ * - 去掉前导空白后不以 `|` 开头 ⇒ `null`(不是表格行);
+ * - 返回的是每个单元格的**原始切片**(含首尾空白)与它在整行里的区间 —— 交给 `tableCellsFor` 去空白;
+ * - `\|` 视为转义(不切分),转义符本身留在单元格文本里原样显示 —— 我们**只渲染不写回**,不猜 Logseq 的转义语义。
+ */
+export function splitTableRow(text: string): Array<{ raw: string; start: number; end: number }> | null {
+  const lead = /^[ \t]*/.exec(text)?.[0].length ?? 0
+  if (text[lead] !== '|') return null
+  const cells: Array<{ raw: string; start: number; end: number }> = []
+  let cellStart = lead + 1
+  let i = lead + 1
+  while (i < text.length) {
+    const ch = text[i]
+    if (ch === '\\' && i + 1 < text.length) {
+      i += 2
+      continue
+    }
+    if (ch === '|') {
+      cells.push({ raw: text.slice(cellStart, i), start: cellStart, end: i })
+      cellStart = i + 1
+    }
+    i++
+  }
+  // 没有尾 `|` 时把最后一段也算一个单元格(Logseq 自己都会写尾 `|`,这里只是兼容)
+  if (cellStart < text.length) cells.push({ raw: text.slice(cellStart), start: cellStart, end: text.length })
+  return cells.length > 0 ? cells : null
+}
+
+/**
+ * 分隔行 ⇒ 每列的对齐方式;不是表格行、或任一单元格不是 `:?---:?` ⇒ `null`。
+ *
+ * 「表头行 + 紧跟的分隔行」是**严格判据**(与 Logseq / CommonMark 一致):没有分隔行的 `|` 行照旧当普通文本,
+ * 不会把正文里凑巧带竖线的几行误渲染成表格。
+ */
+export function matchTableDelimiter(text: string): TableAlign[] | null {
+  const cells = splitTableRow(text)
+  if (!cells) return null
+  const aligns: TableAlign[] = []
+  for (const cell of cells) {
+    if (!TABLE_DELIM_CELL_RE.test(cell.raw)) return null
+    const trimmed = cell.raw.trim()
+    const left = trimmed.startsWith(':')
+    const right = trimmed.endsWith(':')
+    aligns.push(left && right ? 'center' : left ? 'left' : right ? 'right' : null)
+  }
+  return aligns
+}
+
+/** 表格行 ⇒ 单元格(去首尾空白、带全局偏移的行内 token、按列取对齐) */
+export function tableCellsFor(text: string, base: number, aligns: readonly TableAlign[]): TableCell[] {
+  const parts = splitTableRow(text) ?? []
+  return parts.map((cell, index) => {
+    const content = cell.raw.trim()
+    const start = base + cell.start + (cell.raw.length - cell.raw.trimStart().length)
+    return {
+      text: content,
+      srcStart: start,
+      srcEnd: start + content.length,
+      align: aligns[index] ?? null,
+      tokens: tokenizeInline(content, start)
+    }
+  })
+}
+
+/** `analyzeBlockLines()` 的分组结果:普通行各占一组,连续的表格行合成一组(渲染成一张 `<table>`) */
+export type RenderedGroup = { kind: 'line'; line: RenderedLine } | { kind: 'table'; rows: RenderedLine[] }
+
+/** 把渲染行按「表格 / 非表格」分组 —— 表格行必须整组交给同一个组件,否则画不出真 `<table>` */
+export function groupBlockLines(lines: readonly RenderedLine[]): RenderedGroup[] {
+  const groups: RenderedGroup[] = []
+  let i = 0
+  while (i < lines.length) {
+    if (lines[i].mark.kind !== 'table') {
+      groups.push({ kind: 'line', line: lines[i] })
+      i++
+      continue
+    }
+    const rows: RenderedLine[] = []
+    while (i < lines.length && lines[i].mark.kind === 'table') rows.push(lines[i++])
+    groups.push({ kind: 'table', rows })
+  }
+  return groups
+}
+
 /**
  * 把 `blockLinesForDisplay()` 出来的多行文本变成「可直接渲染的行」——
- * 跨行维护围栏状态,并给每行算出**全局 base 偏移**(textarea 里回车劈块、点哪落哪都靠它)。
+ * 跨行维护**围栏**与**表格**状态,并给每行算出**全局 base 偏移**(textarea 里回车劈块、点哪落哪都靠它)。
  *
- * 围栏内容**不 token 化**(代码里的 `[[x]]` / `#tag` 不该变成可点链接),只作为纯文本 token;
- * 于是「`mark.raw` + token 原文拼接 === 整行原文」对每一行都成立。
+ * 优先级:围栏 > 表格 > 行级标记。围栏内容**不 token 化**(代码里的 `[[x]]` / `#tag` 不该变成可点链接),
+ * 只作为纯文本 token;表格行的单元格另放在 `mark.cells`(见 `tableCellsFor`)。
+ * 于是「`mark.raw` + token 原文拼接 === 整行原文」对每一行都成立(表格行 `raw` = 整行、`tokens` 为空,与 `hr` 同款)。
  */
 export function analyzeBlockLines(lines: readonly string[]): RenderedLine[] {
   const out: RenderedLine[] = []
   let base = 0
   let open: { char: string; len: number } | null = null
 
-  lines.forEach((text, index) => {
-    const line = (mark: LineMark, tokens: Token[]): void => {
-      out.push({ index, text, base, mark, tokens })
-      base += text.length + 1
-    }
+  const push = (index: number, text: string, mark: LineMark, tokens: Token[]): void => {
+    out.push({ index, text, base, mark, tokens })
+    base += text.length + 1
+  }
+
+  let i = 0
+  while (i < lines.length) {
+    const text = lines[i]
 
     if (open) {
       if (isFenceClose(text, open)) {
-        line({ kind: 'fence', raw: text, fence: open.char.repeat(open.len), role: 'close' }, [])
+        push(i, text, { kind: 'fence', raw: text, fence: open.char.repeat(open.len), role: 'close' }, [])
         open = null
       } else {
-        line({ kind: 'fence', raw: '', role: 'content' }, [
+        push(i, text, { kind: 'fence', raw: '', role: 'content' }, [
           { kind: 'text', raw: text, srcStart: base, srcEnd: base + text.length }
         ])
       }
-      return
+      i++
+      continue
     }
 
     const fence = FENCE_LINE_RE.exec(text)
     if (fence) {
       open = { char: fence[1][0], len: fence[1].length }
-      line({ kind: 'fence', raw: text, fence: fence[1], role: 'open' }, [])
-      return
+      push(i, text, { kind: 'fence', raw: text, fence: fence[1], role: 'open' }, [])
+      i++
+      continue
+    }
+
+    // 表格:表头行 + **紧跟的分隔行**才成立(严格判据;只有表头没有分隔行时原样当普通文本)
+    if (splitTableRow(text) && i + 1 < lines.length) {
+      const aligns = matchTableDelimiter(lines[i + 1])
+      if (aligns) {
+        const head = text
+        push(i, head, { kind: 'table', raw: head, role: 'header', cells: tableCellsFor(head, base, aligns) }, [])
+        const sep = lines[i + 1]
+        push(i + 1, sep, { kind: 'table', raw: sep, role: 'delim', cells: tableCellsFor(sep, base, aligns) }, [])
+        i += 2
+        while (i < lines.length && splitTableRow(lines[i])) {
+          const row = lines[i]
+          push(i, row, { kind: 'table', raw: row, role: 'row', cells: tableCellsFor(row, base, aligns) }, [])
+          i++
+        }
+        continue
+      }
     }
 
     const mark = matchLineMark(text)
     const tokens = mark.kind === 'hr' ? [] : tokenizeInline(text.slice(mark.raw.length), base + mark.raw.length)
-    line(mark, tokens)
-  })
+    push(i, text, mark, tokens)
+    i++
+  }
 
   return out
 }

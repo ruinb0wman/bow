@@ -18,8 +18,10 @@ import {
   blockText,
   cloneFile,
   detectIndentUnit,
+  hasBlocks,
   indentText,
   reindex,
+  serializeLogseqFile,
   type BlockNode,
   type ParsedFile,
   type SourceLine
@@ -1029,5 +1031,153 @@ export function deleteBlock(file: ParsedFile, key: string): EditResult {
   removeAt(next, target)
   reindex(next)
   return { file: next, focusKey: fallback ? fallback.key : null }
+}
+
+// ---------- 多块选区(批量命令) ----------
+//
+// 选区是「一段连续的可见行」,可能跨层级。四条不变式:
+// 1. 先取**选中根**(`selectedRoots`):祖先已被选中的块不再单独处理 —— 选中父块时子树跟着一起动/删/复制;
+// 2. **不能链式调用 `indentBlock()` / `deleteBlock()`**:它们每次都会 `reindex()`,第二个块的旧 key
+//    会指到别的块(实测推演:`[P,B,C]` 缩进 B 之后 C 的旧 key 已经指不到 C)。批量命令内部一律用**对象引用**;
+// 3. 顶层块必须走 `entries` 感知的助手(`detachBlocks` / `insertTopBlock`)—— `topBlocks()` 是派生数组;
+// 4. 「整组缩进/反缩进」只支持**同一 list 里连续的同级兄弟**(含只有 1 个根的情形);混合层级的选区
+//    原样返回 —— 不猜 Logseq 在那种情况下的语义。
+
+/** 选区里的「根」:按文档顺序取出祖先未被选中的块 */
+export function selectedRoots(file: ParsedFile, keys: readonly string[]): BlockNode[] {
+  const wanted = new Set(keys)
+  const out: BlockNode[] = []
+  const walk = (blocks: readonly BlockNode[], inside: boolean): void => {
+    for (const block of blocks) {
+      const selected = inside || wanted.has(block.key)
+      if (selected && !inside) out.push(block)
+      walk(block.children, selected)
+    }
+  }
+  walk(topBlocks(file), false)
+  return out
+}
+
+/** 按**对象引用**定位(只读:`topBlocks()` 是派生数组,不能拿它改结构) */
+function locateRef(file: ParsedFile, block: BlockNode): { parent: BlockNode | null; index: number } | null {
+  const walk = (list: readonly BlockNode[], parent: BlockNode | null): { parent: BlockNode | null; index: number } | null => {
+    for (let i = 0; i < list.length; i++) {
+      if (list[i] === block) return { parent, index: i }
+      const hit = walk(list[i].children, list[i])
+      if (hit) return hit
+    }
+    return null
+  }
+  return walk(topBlocks(file), null)
+}
+
+/** 某个块的前一个同级兄弟(没有则 null) */
+function siblingBefore(file: ParsedFile, block: BlockNode): BlockNode | null {
+  const loc = locateRef(file, block)
+  if (!loc || loc.index === 0) return null
+  const list = loc.parent ? loc.parent.children : topBlocks(file)
+  return list[loc.index - 1] ?? null
+}
+
+/** 摘除一组块(按对象同一性匹配)。调用方保证这组块里没有彼此的祖先/后代。 */
+function detachBlocks(file: ParsedFile, blocks: readonly BlockNode[]): void {
+  const wanted = new Set(blocks)
+  const filter = (list: BlockNode[]): void => {
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (wanted.has(list[i])) list.splice(i, 1)
+      else filter(list[i].children)
+    }
+  }
+  for (const entry of file.entries) if (entry.kind === 'block') filter(entry.block.children)
+  file.entries = file.entries.filter((entry) => !(entry.kind === 'block' && wanted.has(entry.block)))
+}
+
+/**
+ * 删除选中的块(含各自子树)。
+ *
+ * 全删光时补一个空块 —— 与 `loadRaw()` 的「空页面也得有地方输入」是同一条不变式(否则界面会彻底空掉)。
+ */
+export function deleteBlocks(file: ParsedFile, keys: readonly string[]): EditResult {
+  const probe = selectedRoots(file, keys)
+  if (probe.length === 0) return { file, focusKey: null }
+  const next = cloneFile(file)
+  const targets = selectedRoots(next, keys)
+  const prev = siblingBefore(next, targets[0])
+  detachBlocks(next, targets)
+  if (!hasBlocks(next)) next.entries.push({ kind: 'block', block: newBlock('', '', fileEol(next)) })
+  reindex(next)
+  return { file: next, focusKey: prev ? prev.key : null }
+}
+
+/** Tab:整组缩进 —— 目标父块 = 组里第一个根的前一个兄弟(没有前一个兄弟 ⇒ 不动) */
+export function indentBlocks(file: ParsedFile, keys: readonly string[]): EditResult {
+  const roots = selectedRoots(file, keys)
+  if (roots.length === 0) return { file, focusKey: null }
+  const first = locateRef(file, roots[0])
+  if (!first || first.index === 0) return { file, focusKey: null }
+  for (let i = 1; i < roots.length; i++) {
+    const loc = locateRef(file, roots[i])
+    if (!loc || loc.parent !== first.parent || loc.index !== first.index + i) return { file, focusKey: null }
+  }
+
+  const next = cloneFile(file)
+  const targets = selectedRoots(next, keys)
+  const start = locateRef(next, targets[0])
+  const list = start?.parent ? start.parent.children : topBlocks(next)
+  const prev = list[(start?.index ?? 0) - 1]
+  if (!prev) return { file, focusKey: null }
+  const unit = detectIndentUnit(next)
+  const targetWidth = indentText(prev.head.text).length + unit.length
+  detachBlocks(next, targets)
+  for (const block of targets) {
+    prev.children.push(block)
+    alignIndent(block, unit, targetWidth)
+  }
+  reindex(next)
+  return { file: next, focusKey: targets[0].key }
+}
+
+/** Shift+Tab:整组反缩进 —— 插到父块之后一层(顶层块没有父块 ⇒ 不动) */
+export function outdentBlocks(file: ParsedFile, keys: readonly string[]): EditResult {
+  const roots = selectedRoots(file, keys)
+  if (roots.length === 0) return { file, focusKey: null }
+  const first = locateRef(file, roots[0])
+  if (!first || !first.parent) return { file, focusKey: null }
+  for (let i = 1; i < roots.length; i++) {
+    const loc = locateRef(file, roots[i])
+    if (!loc || loc.parent !== first.parent || loc.index !== first.index + i) return { file, focusKey: null }
+  }
+
+  const parentKey = first.parent.key
+  const next = cloneFile(file)
+  const probe = locate(next, parentKey)
+  if (!probe) return { file, focusKey: null }
+  const grand = probe.parent
+  const unit = detectIndentUnit(next)
+  const targets = selectedRoots(next, keys)
+  detachBlocks(next, targets)
+  // 父块在摘除后位置不变:它不在被摘的集合里(被选中的是它的孩子)
+  const parentLoc = locate(next, parentKey)
+  if (!parentLoc) return { file, focusKey: null }
+  if (parentLoc.parent) parentLoc.parent.children.splice(parentLoc.index + 1, 0, ...targets)
+  else for (let i = 0; i < targets.length; i++) insertTopBlock(next, parentLoc.index + 1 + i, targets[i])
+  const targetWidth = grand ? indentText(grand.head.text).length + unit.length : 0
+  for (const block of targets) alignIndent(block, unit, targetWidth)
+  reindex(next)
+  return { file: next, focusKey: targets[0].key }
+}
+
+/**
+ * 选中的块 → Logseq markdown(复制 / 剪切用):每个「根」块连同子树按文件里的原文拼出来。
+ * 嵌套块保留它自己的缩进(复制就是复制原文);末尾补一个行尾,避免粘贴时与下一行黏在一起。
+ */
+export function blocksToMarkdown(file: ParsedFile, keys: readonly string[]): string {
+  const roots = selectedRoots(file, keys)
+  if (roots.length === 0) return ''
+  const text = serializeLogseqFile({
+    entries: roots.map((block) => ({ kind: 'block' as const, block }))
+  })
+  if (text === '' || text.endsWith('\n')) return text
+  return `${text}${fileEol(file)}`
 }
 

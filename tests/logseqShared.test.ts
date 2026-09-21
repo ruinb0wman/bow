@@ -20,11 +20,14 @@ import {
   decodePageName,
   defaultSettings,
   deleteBlock,
+  deleteBlocks,
   encodePageName,
   expandTemplate,
   formatDayTitle,
   formatJournalStem,
+  blocksToMarkdown,
   indentBlock,
+  indentBlocks,
   insertFirstBlock,
   insertSiblingAfter,
   isJournalDay,
@@ -33,12 +36,14 @@ import {
   normalizeSettings,
   normalizeView,
   outdentBlock,
+  outdentBlocks,
   parseConfigEdn,
   parseLogseqFile,
   parseJournalStem,
   parseLooseDay,
   parseView,
   serializeLogseqFile,
+  selectedRoots,
   setBlockContentLines,
   setBlockText,
   shiftDay,
@@ -485,5 +490,120 @@ describe('块编辑命令', () => {
     expect(topBlocks(parseLogseqFile('- x\n')).map(blockText)).toEqual(['x'])
     expect(topBlocks(parseLogseqFile('-\n')).map(blockText)).toEqual([''])
     expect(topBlocks(parseLogseqFile('-   y\n')).map(blockText)).toEqual(['  y'])
+  })
+})
+
+describe('多块选区(批量命令)', () => {
+  it('selectedRoots:按文档顺序取根,父块被选中时子块不重复', () => {
+    const file = parseLogseqFile(FIXTURE)
+    // '0.0' 是 '0' 的子块:只报 '0'
+    expect(selectedRoots(file, ['0.0', '0', '1']).map((b) => b.key)).toEqual(['0', '1'])
+    // 子块单独选中时照常报它自己
+    expect(selectedRoots(file, ['0.0', '2']).map((b) => b.key)).toEqual(['0.0', '2'])
+    expect(selectedRoots(file, ['9'])).toEqual([])
+  })
+
+  it('deleteBlocks:删掉整组(含子树),raw 段(页面属性)原封不动', () => {
+    const file = parseLogseqFile(FIXTURE)
+    const out = deleteBlocks(file, ['0', '1'])
+    expect(serializeLogseqFile(out.file)).toBe(['title:: Test', '', '- gamma', ''].join('\n'))
+    // 焦点 = 第一个被删块的前一个兄弟(这里没有 ⇒ null)
+    expect(out.focusKey).toBeNull()
+    // 纯函数
+    expect(serializeLogseqFile(file)).toBe(FIXTURE)
+  })
+
+  it('deleteBlocks:焦点落到被删组之前的那个兄弟;混进不存在的 key 也当没事', () => {
+    const file = parseLogseqFile(FIXTURE)
+    const out = deleteBlocks(file, ['1', '2', '不存在'])
+    expect(serializeLogseqFile(out.file)).toBe(
+      ['title:: Test', '', '- alpha', '  id:: 11111111-1111-4111-8111-111111111111', '  - alpha child', ''].join('\n')
+    )
+    expect(out.focusKey).toBe('0')
+  })
+
+  it('deleteBlocks:把整页删空时补一个空块(否则界面没地方输入)', () => {
+    const out = deleteBlocks(parseLogseqFile('- a\n  - a1\n- b\n'), ['0', '1'])
+    expect(serializeLogseqFile(out.file)).toBe('- \n')
+  })
+
+  it('deleteBlocks:删父块时子块跟着走,不会因 key 过时而删错(回归:key 会 reindex)', () => {
+    const out = deleteBlocks(parseLogseqFile('- a\n  - a1\n- b\n- c\n'), ['0', '1'])
+    expect(serializeLogseqFile(out.file)).toBe('- c\n')
+  })
+
+  it('indentBlocks:同级连续的一组整体缩进到上一个兄弟之下,顺序不变', () => {
+    const file = parseLogseqFile('- P\n- A\n- B\n- C\n- D\n')
+    const out = indentBlocks(file, ['1', '2', '3'])
+    expect(serializeLogseqFile(out.file)).toBe('- P\n  - A\n  - B\n  - C\n- D\n')
+    expect(out.focusKey).toBe('0.0')
+  })
+
+  it('indentBlocks:子树与属性行跟着缩进', () => {
+    const file = parseLogseqFile('- P\n- A\n  id:: u\n  - A1\n- B\n')
+    // 顶层块是 '0'(P)/'1'(A)/'2'(B);A 的子块是 '1.0'
+    const out = indentBlocks(file, ['1'])
+    expect(serializeLogseqFile(out.file)).toBe('- P\n  - A\n    id:: u\n    - A1\n- B\n')
+    expect(out.focusKey).toBe('0.0')
+  })
+
+  it('indentBlocks:顶层第一组缩不动 / 非连续同级 / 混合层级 → 原样返回', () => {
+    const file = parseLogseqFile(FIXTURE)
+    expect(indentBlocks(file, ['0']).file).toBe(file) // 第一个块没有前一个兄弟
+    expect(indentBlocks(file, ['0', '0.0']).file).toBe(file) // 根只有 '0',同样缩不动
+    // 非连续的同级兄弟(A 与 C 之间隔着 B)
+    const gap = parseLogseqFile('- P\n- A\n- B\n- C\n')
+    expect(indentBlocks(gap, ['1', '3']).file).toBe(gap)
+    // 混合层级(子块 X 与顶层块 Z 一起选;X 有前一个兄弟,所以走得到层级校验)
+    const mixed = parseLogseqFile('- P\n  - W\n  - X\n- Z\n')
+    expect(indentBlocks(mixed, ['0.1', '1']).file).toBe(mixed)
+  })
+
+  it('indentBlocks:新缩进按目标父块的实际缩进算(tab 文件里用 tab)', () => {
+    const out = indentBlocks(parseLogseqFile('- P\n\t- X\n- A\n- B\n'), ['1', '2'])
+    expect(serializeLogseqFile(out.file)).toBe('- P\n\t- X\n\t- A\n\t- B\n')
+  })
+
+  it('outdentBlocks:整组反缩进到父块之后,顺序不变', () => {
+    const file = parseLogseqFile('- P\n  - A\n  - B\n  - C\n- Z\n')
+    const out = outdentBlocks(file, ['0.0', '0.1', '0.2'])
+    expect(serializeLogseqFile(out.file)).toBe('- P\n- A\n- B\n- C\n- Z\n')
+    expect(out.focusKey).toBe('1')
+  })
+
+  it('outdentBlocks:顶层块 / 混合层级 → 原样返回', () => {
+    const file = parseLogseqFile(FIXTURE)
+    expect(outdentBlocks(file, ['0']).file).toBe(file)
+    expect(outdentBlocks(file, ['0.0', '1']).file).toBe(file)
+  })
+
+  it('blocksToMarkdown:选中块的原文逐字节一致(含子块缩进与属性行),末尾补行尾', () => {
+    const file = parseLogseqFile(FIXTURE)
+    expect(blocksToMarkdown(file, ['0'])).toBe(
+      ['- alpha', '  id:: 11111111-1111-4111-8111-111111111111', '  - alpha child', ''].join('\n')
+    )
+    expect(blocksToMarkdown(file, ['1', '2'])).toBe(['- beta', '  collapsed:: true', '- gamma', ''].join('\n'))
+    expect(blocksToMarkdown(file, ['9'])).toBe('')
+  })
+
+  it('blocksToMarkdown:无尾换行的文件也补上行尾(粘贴不与下一行黏住)', () => {
+    expect(blocksToMarkdown(parseLogseqFile('- a'), ['0'])).toBe('- a\n')
+  })
+
+  it('批量命令是纯函数:不改动输入文件,未触及的行复用同一份 SourceLine', () => {
+    const file = parseLogseqFile(FIXTURE)
+    const before = serializeLogseqFile(file)
+    expect(serializeLogseqFile(deleteBlocks(file, ['1', '2']).file)).not.toBe(before)
+    expect(serializeLogseqFile(indentBlocks(file, ['1', '2']).file)).not.toBe(before)
+    const nested = parseLogseqFile('- P\n  - A\n  - B\n- Z\n')
+    const nestedBefore = serializeLogseqFile(nested)
+    expect(serializeLogseqFile(outdentBlocks(nested, ['0.0', '0.1']).file)).not.toBe(nestedBefore)
+    // 三个输入文件都没被动过
+    expect(serializeLogseqFile(file)).toBe(before)
+    expect(serializeLogseqFile(nested)).toBe(nestedBefore)
+    // 未触及的行:原样复用同一份 SourceLine 对象(「逐字节不变」的实现方式)
+    const out = deleteBlocks(file, ['2'])
+    expect(topBlocks(out.file)[0].head).toBe(topBlocks(file)[0].head)
+    expect(topBlocks(out.file)[0].extra[0].line).toBe(topBlocks(file)[0].extra[0].line)
   })
 })

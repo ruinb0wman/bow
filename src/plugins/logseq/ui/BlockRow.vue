@@ -5,17 +5,26 @@
  * 交互(计划 §3.7):
  * - 渲染态点一下 → 就地进入编辑态,光标落到**被点那一行的行尾**(多行块 = 那一行,不是整块);
  *   行尾偏移由 `analyzeBlockLines` 给每行算出的 `base + text.length`(`data-end`)提供;
+ *   表格行的 `data-end` 在 `<tr>` 上(见 `MarkdownTable.vue`),所以点单元格也是「落该行行尾」;
+ * - **拖选文本不会进编辑态**:鼠标拖选后浏览器仍会派发 click,这里的守卫把那次 click 让给选区;
  * - 编辑态是一个 textarea,内容是块的**全部正文行**(多行内容也在里面),Enter/Tab/Backspace 全部
- *   交给上层换算成块操作;`Shift+Enter` 才真的换行;
+ *   交给上层换算成块操作;`Ctrl/Cmd+Enter`(以及 `Shift+Enter`)才是块内换行;
  * - `[[` / `#[[` 输入中给出页面补全(数据源是上图索引,由上层注入 `suggest`);
- * - `Esc` 退出编辑态。
+ * - `Esc` 退出编辑态;
+ * - 左侧圆点/折叠区按下鼠标 = 「从圆点拖选多个块」的起点(拖选逻辑全在 `JournalView`,这里只报意图)。
  *
  * 组件本身**不改数据**,只 emit 意图 —— 状态与保存策略全在 `JournalView` 里。
  */
 import { computed, nextTick, ref, watch } from 'vue'
-import { analyzeBlockLines, blockLinesForDisplay, type BlockNode } from '@plugins/logseq/shared'
+import {
+  analyzeBlockLines,
+  blockLinesForDisplay,
+  groupBlockLines,
+  type BlockNode
+} from '@plugins/logseq/shared'
 import type { PageHit } from '@plugins/logseq/graph'
 import MarkdownLine from './MarkdownLine.vue'
+import MarkdownTable from './MarkdownTable.vue'
 
 const props = defineProps<{
   block: BlockNode
@@ -28,6 +37,8 @@ const props = defineProps<{
   caretIntent: number | null
   collapsed: boolean
   childCount: number
+  /** 是否在多块选区里(拖选圆点选中;选中态的视觉与键位都在 JournalView) */
+  selected: boolean
   /** 页面补全的数据源(上图索引) */
   suggest: (query: string) => Promise<PageHit[]>
 }>()
@@ -46,6 +57,8 @@ const suggestionIndex = ref(0)
 const displayLines = computed(() => blockLinesForDisplay(props.block, props.unit))
 /** 行级渲染数据:结构标记 + 带全局偏移的行内 token(点哪落哪靠它) */
 const renderLines = computed(() => analyzeBlockLines(displayLines.value))
+/** 分组:普通行各一组,连续的表格行合成一组(整组交给 `MarkdownTable`,否则画不出真 `<table>`) */
+const renderGroups = computed(() => groupBlockLines(renderLines.value))
 const visibleProps = computed(() =>
   props.block.extra
     .filter((x) => x.kind === 'prop')
@@ -55,6 +68,8 @@ const visibleProps = computed(() =>
 
 function startEdit(event: MouseEvent): void {
   if (props.editing) return
+  // 拖选文本后浏览器仍会派发 click(此时选区还是非折叠的)。不拦的话每次拖选都会立刻进编辑态、选区被丢
+  if (!window.getSelection()?.isCollapsed) return
   const target = event.target as HTMLElement | null
   // 光标落在**被点那一行的行尾**(行内偏移 `data-end` = 该行 display 文本在 textarea 全文里的结束偏移)
   // —— 点空白 / 引用边框 / 被隐藏的标记行时退到整块末尾(offset 为 undefined)。
@@ -104,6 +119,9 @@ function applySuggestion(hit: PageHit): void {
 }
 
 function onKeydown(event: KeyboardEvent): void {
+  // 输入法组合中的按键一律交给 IME:中文「上屏」用的回车不能被当成建新块(否则会在候选未落字前劈块)
+  if (event.isComposing || event.keyCode === 229) return
+
   const el = area.value
   const start = el?.selectionStart ?? 0
   const end = el?.selectionEnd ?? start
@@ -111,7 +129,8 @@ function onKeydown(event: KeyboardEvent): void {
   /** 有选区时不能把按键当成「块首」去合并/跳块 —— 全选后按 Backspace 会把整块并进上一行(见下方) */
   const hasSelection = start !== end
 
-  if (suggestions.value.length > 0 && (event.key === 'Enter' || event.key === 'Tab')) {
+  // `Ctrl/Cmd+Enter` 不在这里被吞:补全下拉只吃「裸 Enter / Tab」
+  if (suggestions.value.length > 0 && (event.key === 'Enter' || event.key === 'Tab') && !event.ctrlKey && !event.metaKey) {
     event.preventDefault()
     applySuggestion(suggestions.value[suggestionIndex.value] ?? suggestions.value[0])
     return
@@ -145,7 +164,10 @@ function onKeydown(event: KeyboardEvent): void {
     return
   }
 
-  if (event.key === 'Enter' && event.shiftKey) {
+  // 块内换行:`Shift+Enter` 与 `Ctrl/Cmd+Enter` 等价。
+  // 主推 Ctrl+Enter —— 中文输入法常把单按 Shift 当「中/英切换」吃掉,`Shift+Enter` 到达页面时
+  // `shiftKey` 已经是 false、变成普通 Enter 去建新块了(这时页面侧拿不到任何补救信息)。
+  if (event.key === 'Enter' && (event.shiftKey || event.ctrlKey || event.metaKey)) {
     event.preventDefault()
     const before = draft.value.slice(0, caret)
     const after = draft.value.slice(caret)
@@ -223,8 +245,12 @@ function onFocus(): void {
 </script>
 
 <template>
-  <div class="block-row" :class="{ editing }" :data-key="block.key" :data-depth="depth">
-    <div class="block-gutter" :style="{ paddingLeft: `${depth * 18}px` }">
+  <div class="block-row" :class="{ editing, selected }" :data-key="block.key" :data-depth="depth">
+    <div
+      class="block-gutter"
+      :style="{ paddingLeft: `${depth * 18}px` }"
+      @mousedown.left="emit('action', { type: 'select-start', key: block.key })"
+    >
       <button
         v-if="childCount > 0"
         class="collapse"
@@ -252,16 +278,28 @@ function onFocus(): void {
 
       <template v-else>
         <div class="block-rendered" @click="startEdit">
-          <template v-for="(line, index) in renderLines" :key="index">
-            <div class="block-line" :data-line="index" :data-base="line.base" :data-end="line.base + line.text.length">
+          <template v-for="(group, gi) in renderGroups" :key="gi">
+            <div
+              v-if="group.kind === 'line'"
+              class="block-line"
+              :data-line="group.line.index"
+              :data-base="group.line.base"
+              :data-end="group.line.base + group.line.text.length"
+            >
               <MarkdownLine
-                :line="line"
-                :line-index="index"
+                :line="group.line"
+                :line-index="group.line.index"
                 @open-page="emit('open-page', $event)"
                 @open-url="emit('open-url', $event)"
                 @toggle-task="(i: number) => emit('action', { type: 'toggle-task', key: block.key, lineIndex: i })"
               />
             </div>
+            <MarkdownTable
+              v-else
+              :rows="group.rows"
+              @open-page="emit('open-page', $event)"
+              @open-url="emit('open-url', $event)"
+            />
           </template>
           <div v-if="displayLines.every((l) => l === '')" class="block-empty">空白块(点这里输入)</div>
         </div>
@@ -293,6 +331,12 @@ function onFocus(): void {
   padding: 1px 0;
 }
 
+/* 多块选区(从圆点拖选):在 JournalView 里维护,这里只负责画 */
+.block-row.selected {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-radius: 3px;
+}
+
 .block-gutter {
   flex: none;
   display: flex;
@@ -300,6 +344,8 @@ function onFocus(): void {
   gap: 2px;
   padding-top: 3px;
   padding-right: 2px;
+  /* 从圆点拖选多个块:拖动期间不要顺手把旁边的文字选中 */
+  user-select: none;
 }
 
 .collapse {

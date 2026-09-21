@@ -15,14 +15,18 @@ import {
   DEFAULT_HIDDEN_PROPERTIES,
   detectIndentUnit,
   findBlock,
+  groupBlockLines,
   indentText,
   matchBlockLine,
   matchLineMark,
+  matchTableDelimiter,
   parseLogseqFile,
   propertyOf,
   refsOfTokens,
   serializeLogseqFile,
   splitLines,
+  splitTableRow,
+  tableCellsFor,
   tokenizeInline,
   tokensToRaw,
   visibleProperties,
@@ -301,5 +305,95 @@ describe('行级标记', () => {
     expect(backtickInside.map((l) => l.mark.role)).toEqual(['open', 'content', 'close'])
     const shorter = analyzeBlockLines(['`````', '```', '`````'])
     expect(shorter.map((l) => l.mark.role)).toEqual(['open', 'content', 'close'])
+  })
+})
+
+describe('表格', () => {
+  it('splitTableRow:按竖线切,前导空白不计入,没有尾竖线也认', () => {
+    expect(splitTableRow('| a | b |')?.map((c) => c.raw)).toEqual([' a ', ' b '])
+    expect(splitTableRow('   |  甲|乙  |')?.map((c) => c.raw)).toEqual(['  甲', '乙  '])
+    expect(splitTableRow('| a | b')?.map((c) => c.raw)).toEqual([' a ', ' b'])
+    // 不是表格行:不以竖线开头(空行 / 正文 / 只有 `- ` 的行)
+    expect(splitTableRow('a | b')).toBeNull()
+    expect(splitTableRow('')).toBeNull()
+    expect(splitTableRow('|')).toBeNull()
+  })
+
+  it('splitTableRow:`\|` 转义不切分', () => {
+    const cells = splitTableRow('| a \\| b | c |')
+    expect(cells?.map((c) => c.raw)).toEqual([' a \\| b ', ' c '])
+  })
+
+  it('matchTableDelimiter:三种对齐 + 不是分隔行返回 null', () => {
+    expect(matchTableDelimiter('| --- | :--- | ---: | :---: |')).toEqual([null, 'left', 'right', 'center'])
+    expect(matchTableDelimiter('|---|')).toEqual([null])
+    expect(matchTableDelimiter('| -- |')).toEqual([null]) // 两个 `-` 也算(至少两个)
+    expect(matchTableDelimiter('| - |')).toBeNull() // 一个 `-` 不算
+    expect(matchTableDelimiter('| abc |')).toBeNull()
+    expect(matchTableDelimiter('普通文本')).toBeNull()
+    expect(matchTableDelimiter('| a | b |')).toBeNull()
+  })
+
+  it('tableCellsFor:去空白、偏移是全局的、单元格内 token 化', () => {
+    const line = '  | 甲 | [[页]] |'
+    const cells = tableCellsFor(line, 100, ['center', null])
+    expect(cells.map((c) => c.text)).toEqual(['甲', '[[页]]'])
+    expect(cells.map((c) => c.align)).toEqual(['center', null])
+    for (const cell of cells) {
+      expect(line.slice(cell.srcStart - 100, cell.srcEnd - 100)).toBe(cell.text)
+      expect(tokensToRaw(cell.tokens)).toBe(cell.text)
+    }
+    expect(cells[1].tokens.map((t) => t.kind)).toEqual(['page'])
+    expect(cells[1].tokens[0]).toMatchObject({ target: '页', label: '页' })
+  })
+
+  it('analyzeBlockLines:表头 + 分隔行 + 数据行,后续非表格行收尾', () => {
+    const lines = ['| a | b |', '| --- | ---: |', '| 1 | 2 |', '普通文本', '| 孤行没有分隔 |']
+    const out = analyzeBlockLines(lines)
+    expect(out.map((l) => l.mark.kind)).toEqual(['table', 'table', 'table', 'plain', 'plain'])
+    expect(out.map((l) => l.mark.role)).toEqual(['header', 'delim', 'row', undefined, undefined])
+    expect(out[2].mark.cells?.map((c) => c.align)).toEqual([null, 'right'])
+    expect(out[2].mark.cells?.map((c) => c.text)).toEqual(['1', '2'])
+    // 表格行的零丢字:raw = 整行,tokens 为空(与 hr 同款)
+    for (const line of out.slice(0, 3)) {
+      expect(line.mark.raw + tokensToRaw(line.tokens), line.text).toBe(line.text)
+    }
+    // base 仍逐行累积
+    expect(out.map((l) => l.base)).toEqual([0, 10, 25, 35, 40])
+  })
+
+  it('只有表头没有分隔行 / 只有分隔行:都不算表格', () => {
+    expect(analyzeBlockLines(['| a | b |', '| 1 | 2 |']).map((l) => l.mark.kind)).toEqual(['plain', 'plain'])
+    expect(analyzeBlockLines(['|---|', '| a |']).map((l) => l.mark.kind)).toEqual(['plain', 'plain'])
+  })
+
+  it('围栏里的 `|` 行仍是代码(围栏优先)', () => {
+    const out = analyzeBlockLines(['```', '| a | b |', '| --- | --- |', '```'])
+    expect(out.map((l) => l.mark.kind)).toEqual(['fence', 'fence', 'fence', 'fence'])
+    expect(out[1].tokens.map((t) => t.kind)).toEqual(['text'])
+  })
+
+  it('列数不齐不抛异常:对齐按分隔行的列号,缺列 align 为 null', () => {
+    const out = analyzeBlockLines(['| a | b | c |', '| --- | ---: |', '| 1 |'])
+    expect(out[0].mark.cells).toHaveLength(3)
+    expect(out[2].mark.cells).toHaveLength(1)
+    expect(out[2].mark.cells?.[0].align).toBeNull()
+  })
+
+  it('groupBlockLines:连续表格行合成一组,其余各占一组', () => {
+    const lines = ['开头', '| a |', '| --- |', '| 1 |', '结尾']
+    const groups = groupBlockLines(analyzeBlockLines(lines))
+    expect(groups.map((g) => g.kind)).toEqual(['line', 'table', 'line'])
+    const table = groups[1]
+    expect(table.kind === 'table' && table.rows.map((r) => r.text)).toEqual(['| a |', '| --- |', '| 1 |'])
+  })
+
+  it('整块的表格:display 行去掉块缩进后照样认(块头是第一行)', () => {
+    const file = parseLogseqFile(['- | 表头 |', '  | --- |', '  | 值 |', ''].join('\n'))
+    const block = allBlocks(file)[0]
+    const display = blockLinesForDisplay(block, detectIndentUnit(file))
+    const out = analyzeBlockLines(display)
+    expect(out.map((l) => l.mark.role)).toEqual(['header', 'delim', 'row'])
+    expect(out[2].mark.cells?.[0].text).toBe('值')
   })
 })

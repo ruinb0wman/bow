@@ -19,19 +19,23 @@ import { LOGSEQ_URL } from '@shared/internalPages'
 import type { PaneDir } from '@shared/split'
 import {
   blockLinesForDisplay,
+  blocksToMarkdown,
   DEFAULT_HIDDEN_PROPERTIES,
   DEFAULT_LOGSEQ_FONT_SIZE,
   deleteBlock,
+  deleteBlocks,
   detectIndentUnit,
   findBlock,
   formatDayTitle,
   hasBlocks,
   indentBlock,
+  indentBlocks,
   insertFirstBlock,
   insertSiblingAfter,
   LOGSEQ_EVENT,
   mergeWithPrevious,
   outdentBlock,
+  outdentBlocks,
   parseLogseqFile,
   serializeLogseqFile,
   setBlockContentLines,
@@ -87,6 +91,17 @@ const meta = ref<{
 const editingKey = ref<string | null>(null)
 const caretIntent = ref<number | null>(null)
 const collapsed = ref<Set<string>>(new Set())
+/**
+ * 多块选区(`anchor`/`focus` 都是块 key):选中的是 `visibleRows` 里两者之间的**连续区间**。
+ * 入口只有「从圆点/折叠区按下拖动」(见 `startSelectDrag`);`Esc` / 点空白处 / 任何结构改动都会清掉。
+ */
+const selection = ref<{ anchor: string; focus: string } | null>(null)
+/** 正在拖选(普通变量:不参与渲染) */
+let dragSelecting = false
+/** 本次拖选是否真的滑过了别的块(没滑过 = 点圆点,照旧走折叠) */
+let dragMoved = false
+/** 拖选结束后那一次 `click` 要吃掉(否则圆点折叠 / 正文「点一下进编辑」会跟着触发) */
+let suppressNextClick = false
 const dirty = ref(false)
 const saving = ref(false)
 /**
@@ -179,6 +194,7 @@ function loadResult(res: FileRead, opts: { keepEditing?: boolean } = {}): void {
   message.value = ''
   undoStack.value = []
   redoStack.value = []
+  selection.value = null
   undoArmed = false
   dayDraft.value = res.view.kind === 'journal' ? res.view.day : dayDraft.value
   document.title = res.view.kind === 'journal' ? `笔记 — ${res.view.day}` : `笔记 — ${res.view.name}`
@@ -295,8 +311,14 @@ async function openFavorite(target: LogseqView): Promise<void> {
   await openView(target)
 }
 
-/** 点在下拉之外就关掉(星标/搜索那种 `blur` 在这里不适用:按钮与列表不是同一个可聚焦元素) */
+/** 点在下拉之外就关掉(星标/搜索那种 `blur` 在这里不适用:按钮与列表不是同一个可聚焦元素);
+ * 顺便负责「点别处 = 放弃多块选区」。 */
 function onDocumentMousedown(event: MouseEvent): void {
+  // 上一次拖选若没跟来 click(拖到窗口外松手),在这里复位拦截标志
+  suppressNextClick = false
+  const target = event.target as HTMLElement | null
+  // 点圆点是「开始新拖选」,不清;点其它任何地方都放弃当前选区
+  if (selection.value && !target?.closest?.('.block-gutter')) selection.value = null
   if (!favOpen.value) return
   const el = favWrap.value
   if (el && event.target instanceof Node && el.contains(event.target)) return
@@ -410,6 +432,8 @@ function commit(result: EditResult): void {
   if (result.file === file.value) return
   pushUndo()
   file.value = result.file
+  // 结构变了:旧的块 key 可能已经指向别的块,选区必须先清掉
+  selection.value = null
   unit.value = detectIndentUnit(result.file)
   dirty.value = true
   scheduleSave()
@@ -424,6 +448,7 @@ function undo(): void {
   if (prev === undefined) return
   redoStack.value.push(currentRaw())
   loadRaw(prev)
+  selection.value = null
   dirty.value = true
   undoArmed = false
   scheduleSave()
@@ -434,6 +459,7 @@ function redo(): void {
   if (next === undefined) return
   undoStack.value.push(currentRaw())
   loadRaw(next)
+  selection.value = null
   dirty.value = true
   undoArmed = false
   scheduleSave()
@@ -505,6 +531,9 @@ function onBlockAction(payload: BlockAction): void {
       collapsed.value = next
       return
     }
+    case 'select-start':
+      startSelectDrag(payload.key)
+      return
     case 'move': {
       const rows = visibleRows.value
       const index = rows.findIndex((row) => row.block.key === payload.key)
@@ -552,6 +581,113 @@ const hiddenProps = computed(() => [
 
 function blockPreview(row: VisibleRow): string {
   return blockLinesForDisplay(row.block, unit.value)[0] ?? ''
+}
+
+// ---------- 多块选区(从圆点拖选 + 批量命令) ----------
+
+/** 选区里的块 key(按可见顺序);拖到窗口外 / 块被折叠隐藏时自动只剩看得见的那部分 */
+const selectedKeys = computed<string[]>(() => {
+  const sel = selection.value
+  if (!sel) return []
+  const rows = visibleRows.value
+  const a = rows.findIndex((row) => row.block.key === sel.anchor)
+  const b = rows.findIndex((row) => row.block.key === sel.focus)
+  if (a < 0 || b < 0) return []
+  const [from, to] = a <= b ? [a, b] : [b, a]
+  return rows.slice(from, to + 1).map((row) => row.block.key)
+})
+const selectedSet = computed(() => new Set(selectedKeys.value))
+
+/** 按下圆点/折叠区:起一次拖选(不移动就还是「点圆点 = 折叠」) */
+function startSelectDrag(key: string): void {
+  dragSelecting = true
+  dragMoved = false
+  selection.value = { anchor: key, focus: key }
+}
+
+/** 拖动中:鼠标底下是哪个块,选区就延伸到哪个块(用 `elementFromPoint`,不依赖每个块都监听鼠标事件) */
+function onSelectMouseMove(event: MouseEvent): void {
+  if (!dragSelecting || !selection.value) return
+  const el = document.elementFromPoint(event.clientX, event.clientY)
+  const row = el?.closest?.('.block-row') as HTMLElement | null
+  const key = row?.dataset.key
+  if (!key) return
+  if (key !== selection.value.anchor) dragMoved = true
+  if (key !== selection.value.focus) selection.value = { anchor: selection.value.anchor, focus: key }
+}
+
+function onSelectMouseUp(): void {
+  if (!dragSelecting) return
+  dragSelecting = false
+  if (!dragMoved) {
+    // 没滑过别的块:这不是拖选,把选区还给「点圆点 = 折叠」
+    selection.value = null
+    return
+  }
+  // 真拖选了:吃掉松手时那一次 click(否则会跟着折叠 / 进编辑态)
+  suppressNextClick = true
+  trace(`select:${selectedKeys.value.length}`)
+}
+
+/** 拖选结束后的那一次 click:capture 阶段一次性吃掉 */
+function onClickCapture(event: MouseEvent): void {
+  if (!suppressNextClick) return
+  suppressNextClick = false
+  event.preventDefault()
+  event.stopPropagation()
+}
+
+async function copySelected(): Promise<string> {
+  const current = file.value
+  const keys = selectedKeys.value
+  if (!current || keys.length === 0) return ''
+  const text = blocksToMarkdown(current, keys)
+  if (!text) return ''
+  try {
+    const ok = await api.writeClipboardText(text)
+    if (!ok) message.value = '复制失败'
+  } catch (e) {
+    message.value = e instanceof Error ? e.message : String(e)
+  }
+  trace(`copy:${keys.length}`)
+  return text
+}
+
+/** 有块选区时的键位。返回 true = 已经处理(调用方直接 return) */
+function handleSelectionKey(event: KeyboardEvent): boolean {
+  const mod = event.ctrlKey || event.metaKey
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    selection.value = null
+    return true
+  }
+  if ((event.key === 'Backspace' || event.key === 'Delete') && !mod && !event.altKey) {
+    event.preventDefault()
+    const current = file.value
+    if (current) commit(deleteBlocks(current, selectedKeys.value))
+    return true
+  }
+  if (mod && !event.altKey && (event.key.toLowerCase() === 'c' || event.key.toLowerCase() === 'x')) {
+    const cut = event.key.toLowerCase() === 'x'
+    event.preventDefault()
+    void (async () => {
+      const text = await copySelected()
+      const current = file.value
+      // 复制失败(剪贴板拒绝)时不删 —— 删了就等于静默丢内容
+      if (cut && text && current) commit(deleteBlocks(current, selectedKeys.value))
+    })()
+    return true
+  }
+  if (event.key === 'Tab' && !mod && !event.altKey) {
+    event.preventDefault()
+    const current = file.value
+    if (!current) return true
+    const res = event.shiftKey ? outdentBlocks(current, selectedKeys.value) : indentBlocks(current, selectedKeys.value)
+    // 缩不动(第一个兄弟 / 混合层级)时保持选区,不让用户以为操作生效了
+    commit(res)
+    return true
+  }
+  return false
 }
 
 // ---------- 导航 ----------
@@ -655,6 +791,8 @@ async function switchGraph(path: string): Promise<void> {
 // ---------- 键位 ----------
 
 function onWindowKeydown(event: KeyboardEvent): void {
+  // 有块选区时选区键位优先(Delete / Ctrl+C / Ctrl+X / Tab / Esc)
+  if (selection.value && handleSelectionKey(event)) return
   const mod = event.ctrlKey || event.metaKey
   if (mod && event.key.toLowerCase() === 'z') {
     event.preventDefault()
@@ -759,6 +897,12 @@ function exposeDebugHandle(): void {
     get isFavorite() {
       return isFavorite.value
     },
+    get selection() {
+      return plain(selection.value)
+    },
+    get selectedKeys() {
+      return [...selectedKeys.value]
+    },
     toggleFavorite: toggleFavoriteView,
     openFavorite,
     openPage,
@@ -779,6 +923,9 @@ onMounted(async () => {
   exposeDebugHandle()
   subscribe()
   window.addEventListener('keydown', onWindowKeydown, true)
+  window.addEventListener('mousemove', onSelectMouseMove)
+  window.addEventListener('mouseup', onSelectMouseUp)
+  window.addEventListener('click', onClickCapture, true)
   document.addEventListener('mousedown', onDocumentMousedown, true)
   await boot()
 })
@@ -787,6 +934,9 @@ onBeforeUnmount(() => {
   unsubs.forEach((unsub) => unsub())
   unsubs.length = 0
   window.removeEventListener('keydown', onWindowKeydown, true)
+  window.removeEventListener('mousemove', onSelectMouseMove)
+  window.removeEventListener('mouseup', onSelectMouseUp)
+  window.removeEventListener('click', onClickCapture, true)
   document.removeEventListener('mousedown', onDocumentMousedown, true)
   if (saveTimer != null) clearTimeout(saveTimer)
   if (searchTimer != null) clearTimeout(searchTimer)
@@ -937,6 +1087,7 @@ watch(
           :caret-intent="editingKey === row.block.key ? caretIntent : null"
           :collapsed="row.collapsed"
           :child-count="row.childCount"
+          :selected="selectedSet.has(row.block.key)"
           :suggest="suggestPages"
           @action="onBlockAction"
           @open-page="openPage"
@@ -946,8 +1097,9 @@ watch(
         <BacklinksPanel :links="links" :loading="linksLoading" @open-page="openPage" />
       </main>
 
-      <!-- 编辑期瞬态状态:固定右下角浮层,不参与文档流 —— 出现/消失不会推动正文(见 .status-float) -->
-      <div v-if="saving || dirty || externalChanged || message" class="status-float">
+      <!-- 编辑期瞬态状态 / 多块选区:固定右下角浮层,不参与文档流 —— 出现/消失不会推动正文 -->
+      <div v-if="saving || dirty || externalChanged || message || selectedKeys.length > 0" class="status-float">
+        <span v-if="selectedKeys.length > 0" class="chip">已选 {{ selectedKeys.length }} 块</span>
         <span v-if="saving" class="chip">保存中…</span>
         <span v-else-if="dirty" class="chip warn">未保存</span>
         <span v-if="externalChanged" class="chip warn">外部已改动</span>
