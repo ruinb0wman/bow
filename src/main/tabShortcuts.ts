@@ -171,17 +171,22 @@ export function setupTabShortcuts(
         return
       }
       // 分屏快捷键:`Ctrl/Cmd+Shift+方向` 分屏、`Alt+Shift+方向` 调整当前窗格大小。
-      // 接管判据在 `shouldTakeSplitHotkey()`:普通网页标签与**终端页**归浏览器
-      // (终端页里 xterm 会把这些组合编成 CSI 序列送进 pty,不拦就完全没反应);
-      // 地址栏(rec=null)、设置页、DevTools 前端里的这些组合原样留给它们。
-      // 代价已记在文档里:普通网页里的输入框、以及终端里的 shell/程序也拿不到这两个组合。
+      // 接管判据在 `shouldTakeSplitHotkey()`:普通网页标签、**终端页**与**DevTools 前端标签(inspector)**归浏览器
+      // (终端页里 xterm 会把这些组合编成 CSI 序列送进 pty,不拦就完全没反应;
+      //  DevTools 前端没有 preload,页面自己调不了 `splitPane` —— 2026-09-21 起也归浏览器);
+      // 地址栏(rec=null)与设置页里的这些组合原样留给它们。
+      // 代价已记在文档里:普通网页里的输入框、终端里的 shell/程序、以及 DevTools 内部输入框都拿不到这两个组合。
       const splitHk = matchSplitHotkey(input)
       if (splitHk) {
         const tabId = getTabs().findTabIdByWebContents(contents)
         const rec = tabId != null ? getTabs().getView(tabId) : null
         if (
           rec &&
-          shouldTakeSplitHotkey({ internal: !!rec.info.internal, internalPageId: rec.internalId })
+          shouldTakeSplitHotkey({
+            internal: !!rec.info.internal,
+            internalPageId: rec.internalId,
+            inspector: !!rec.info.inspector
+          })
         ) {
           // 全窗弹层开着时不抢焦点也不分屏(与 Ctrl+T / Ctrl+L 同策略)
           if (getOverlay().isFullOpen) return

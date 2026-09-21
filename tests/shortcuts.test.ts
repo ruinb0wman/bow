@@ -392,19 +392,23 @@ describe('matchSplitHotkey 分屏快捷键识别', () => {
 
 describe('shouldTakeSplitHotkey 分屏快捷键接管判据', () => {
   it('普通网页标签 → 接管', () => {
-    expect(shouldTakeSplitHotkey({ internal: false, internalPageId: null })).toBe(true)
+    expect(shouldTakeSplitHotkey({ internal: false, internalPageId: null, inspector: false })).toBe(true)
   })
 
   it('终端页 → 接管(终端里 xterm 只会把组合送进 pty,不拦就分不了屏)', () => {
-    expect(shouldTakeSplitHotkey({ internal: true, internalPageId: 'terminal' })).toBe(true)
+    expect(shouldTakeSplitHotkey({ internal: true, internalPageId: 'terminal', inspector: false })).toBe(true)
   })
 
   it('设置页 → 不接管(输入框要保住 Ctrl+Shift+方向 的按词选择)', () => {
-    expect(shouldTakeSplitHotkey({ internal: true, internalPageId: 'settings' })).toBe(false)
+    expect(shouldTakeSplitHotkey({ internal: true, internalPageId: 'settings', inspector: false })).toBe(false)
   })
 
-  it('DevTools 前端标签(internal=true 但没有内部页 id)→ 不接管', () => {
-    expect(shouldTakeSplitHotkey({ internal: true, internalPageId: null })).toBe(false)
+  it('DevTools 前端标签(inspector)→ 接管(手机调试窗格要能跟终端 / 笔记并排)', () => {
+    expect(shouldTakeSplitHotkey({ internal: true, internalPageId: null, inspector: true })).toBe(true)
+  })
+
+  it('inspector 不是靠 internalPageId === null 兜住的 → 非 inspector 的内部页面仍然不接管', () => {
+    expect(shouldTakeSplitHotkey({ internal: true, internalPageId: null, inspector: false })).toBe(false)
   })
 
   it('null(地址栏 / 浮层 / 别的窗口)→ 不接管', () => {

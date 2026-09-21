@@ -162,6 +162,8 @@ export interface SplitHotkeyTarget {
   internal: boolean
   /** 内部页面 id(`bow://` 页面才有,非内部页面为 null) */
   internalPageId: InternalPageId | null
+  /** 是否为远程调试的 DevTools 前端标签(`TabInfo.inspector`) —— 它也是内部页面(无 preload、internalId 为 null) */
+  inspector: boolean
 }
 
 /**
@@ -169,11 +171,17 @@ export interface SplitHotkeyTarget {
  * - 普通网页标签:接管(代价是网页 `<input>` 也拿不到,见 README);
  * - 终端页(`bow://terminal`):**接管** —— 终端窗格也是「要分屏 / 要调大小」的地方,
  *   而 xterm 只会把这两个组合当输入送进 pty,不拦就等于按键没反应;
- * - 设置页、DevTools 前端标签(inspector):不接管(它们自己的文本选择 / 前端快捷键要留着);
+ * - DevTools 前端标签(inspector,**2026-09-21 起接管**):手机调试的窗格正是「要跟终端 / 笔记并排」的地方;
+ *   它没有 preload(`tabManager.createInspectorTab` 的 webPreferences 里没有 `preload`),
+ *   所以**页面自己调不了** `splitPane` IPC(笔记页有 preload,才走页面自处理那条路)。
+ *   代价:DevTools 内部输入框的 `Ctrl+Shift+方向` 按词选择让位(`Alt+Shift+方向` 它没有绑定,零代价)。
+ * - 设置页:不接管(输入框要保住按词选择);
  * - `null`(地址栏 / 浮层 / 别的窗口的 webContents):不接管。
  */
 export function shouldTakeSplitHotkey(target: SplitHotkeyTarget | null): boolean {
   if (!target) return false
+  // inspector 必须**先**判:它满足 `internal === true && internalPageId === null`,否则会被下面那条挡住
+  if (target.inspector) return true
   return !target.internal || target.internalPageId === 'terminal'
 }
 
@@ -184,9 +192,10 @@ export function shouldTakeSplitHotkey(target: SplitHotkeyTarget | null): boolean
  * - split **忽略自动重复**(长按方向键不会一口气开出一屏窗格);
  * - resize **允许自动重复**(按住不放连续调整大小)。
  *
- * 调用方用 `shouldTakeSplitHotkey()` 决定是否接管:普通网页标签与**终端页**都接管
- * (终端里 xterm 会把组合编成 CSI 序列送进 pty,不拦就永远分不了屏 / 调不了大小),
- * 地址栏 / 设置页 / DevTools 前端里的这些组合原样留给它们。
+ * 调用方用 `shouldTakeSplitHotkey()` 决定是否接管:普通网页标签、**终端页**与**DevTools 前端标签**都接管
+ * (终端里 xterm 会把组合编成 CSI 序列送进 pty,不拦就永远分不了屏 / 调不了大小;
+ *  DevTools 前端没有 preload,页面自己调不了 `splitPane`),
+ * 地址栏 / 设置页里的这些组合原样留给它们。
  *
  * ⚠️ 顺带更正一句老注释:终端页里 `Ctrl+Shift+方向` **不是**「xterm 的选择扩展」——
  * xterm 的 `SelectionService.shouldForceSelection()` 只看鼠标事件,键盘上是 `evaluateKeyboardEvent()`
