@@ -676,6 +676,213 @@ export function readScreenshotData(raw: unknown): string | null {
   return typeof data === 'string' && data ? data : null
 }
 
+// ---------------------------------------------------------------- MCP 操作:键位表与日志归一化
+
+/**
+ * `Input.dispatchKeyEvent` 一次按键所需的字段。
+ *
+ * 有 `text` 的键发 `keyDown`(Chromium 会顺带产生字符),否则发 `rawKeyDown` —— 与 Puppeteer 同款。
+ * 单个可打印字符**不在这里**(文字输入走 `device_type` → `Input.insertText`,那是 IME 路径)。
+ */
+export interface CdpKeySpec {
+  /** 入参原样回显(如用户写 `esc`) */
+  input: string
+  /** `key` 字段(`Enter` / `ArrowUp` / …) */
+  key: string
+  /** `code` 字段(物理键) */
+  code: string
+  /** `windowsVirtualKeyCode` 与 `nativeVirtualKeyCode` 同值 */
+  keyCode: number
+  /** 会产生字符的键(Enter → `'\r'`) */
+  text?: string
+}
+
+interface CdpKeyDef {
+  names: string[]
+  key: string
+  code: string
+  keyCode: number
+  text?: string
+}
+
+/** 与核心 `browser_press_key` 的别名表(`main/actions.ts` 的 `resolveKey`)对齐,只少了单字符 */
+const CDP_KEY_DEFS: CdpKeyDef[] = [
+  { names: ['enter', 'return'], key: 'Enter', code: 'Enter', keyCode: 13, text: '\r' },
+  { names: ['tab'], key: 'Tab', code: 'Tab', keyCode: 9 },
+  { names: ['escape', 'esc'], key: 'Escape', code: 'Escape', keyCode: 27 },
+  { names: ['space', 'spacebar'], key: ' ', code: 'Space', keyCode: 32, text: ' ' },
+  { names: ['backspace'], key: 'Backspace', code: 'Backspace', keyCode: 8 },
+  { names: ['delete', 'del'], key: 'Delete', code: 'Delete', keyCode: 46 },
+  { names: ['arrowup', 'up'], key: 'ArrowUp', code: 'ArrowUp', keyCode: 38 },
+  { names: ['arrowdown', 'down'], key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 },
+  { names: ['arrowleft', 'left'], key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37 },
+  { names: ['arrowright', 'right'], key: 'ArrowRight', code: 'ArrowRight', keyCode: 39 },
+  { names: ['home'], key: 'Home', code: 'Home', keyCode: 36 },
+  { names: ['end'], key: 'End', code: 'End', keyCode: 35 },
+  { names: ['pageup'], key: 'PageUp', code: 'PageUp', keyCode: 33 },
+  { names: ['pagedown'], key: 'PageDown', code: 'PageDown', keyCode: 34 }
+]
+
+const CDP_KEY_TABLE = new Map<string, Omit<CdpKeySpec, 'input'>>()
+for (const def of CDP_KEY_DEFS) {
+  const { names, ...spec } = def
+  for (const name of names) CDP_KEY_TABLE.set(name, spec)
+}
+
+/** `Enter` / `arrowdown` / `esc` → CDP 键位;不认识(含单个字符)返回 null */
+export function resolveCdpKey(key: string): CdpKeySpec | null {
+  const input = String(key ?? '').trim()
+  const spec = CDP_KEY_TABLE.get(input.toLowerCase())
+  return spec ? { input, ...spec } : null
+}
+
+/** 日志/文本的截断上限:AI 要看上下文,但一条日志不能把整个返回体吃满 */
+export const MAX_CONSOLE_TEXT = 500
+const MAX_CONSOLE_STACK = 1000
+
+function capText(value: string, limit = MAX_CONSOLE_TEXT): string {
+  return value.length > limit ? `${value.slice(0, limit)}…` : value
+}
+
+/** CDP `RemoteObject` → 一行短字符串(取值优先:`unserializableValue` → `value` → `description` → `preview`) */
+export function stringifyRemoteObject(raw: unknown): string {
+  if (raw === null) return 'null'
+  if (raw === undefined) return 'undefined'
+  if (typeof raw !== 'object') return capText(String(raw))
+  const obj = raw as {
+    type?: unknown
+    value?: unknown
+    unserializableValue?: unknown
+    description?: unknown
+    preview?: { properties?: Array<{ name?: unknown; type?: unknown; value?: unknown }>; overflow?: unknown }
+  }
+  if (typeof obj.unserializableValue === 'string') return capText(obj.unserializableValue)
+  if (obj.value !== undefined) {
+    if (typeof obj.value === 'string') return capText(obj.value)
+    try {
+      return capText(JSON.stringify(obj.value) ?? String(obj.value))
+    } catch {
+      return capText(String(obj.value))
+    }
+  }
+  if (typeof obj.description === 'string' && obj.description) return capText(obj.description)
+  const props = obj.preview?.properties
+  if (Array.isArray(props) && props.length > 0) {
+    const body = props
+      .map((p) => `${String(p.name ?? '?')}: ${String(p.value ?? p.type ?? '')}`)
+      .join(', ')
+    return capText(`{ ${body}${obj.preview?.overflow ? ', …' : ''} }`)
+  }
+  return obj.type === 'undefined' ? 'undefined' : ''
+}
+
+/** 一条归一化后的控制台/异常/日志条目(`source` = 它从哪个 CDP 事件来) */
+export interface ConsoleEntry {
+  source: 'console' | 'exception' | 'log'
+  /** CDP 原始 level/type(`log`/`debug`/`info`/`error`/`warning`/`verbose`…) */
+  level: string
+  text: string
+  url?: string
+  /** **1 起算**的行号(CDP 里是 0 起算,显示与代码编辑器口径一致更省心) */
+  line?: number
+  timestamp?: number
+  stack?: string
+  /** `Log.entryAdded` 才有的 CDP 来源(`javascript` / `network` / `security` / …) */
+  origin?: string
+}
+
+interface CdpStackFrame {
+  url?: unknown
+  lineNumber?: unknown
+  columnNumber?: unknown
+  functionName?: unknown
+}
+
+function stackOf(stackTrace: unknown): { stack?: string } {
+  const frames = (stackTrace as { callFrames?: CdpStackFrame[] } | undefined)?.callFrames
+  if (!Array.isArray(frames) || frames.length === 0) return {}
+  const lines = frames.map((f) => {
+    const fn = typeof f.functionName === 'string' && f.functionName ? f.functionName : '<anonymous>'
+    const at = [f.url ?? '?', Number(f.lineNumber ?? 0) + 1, Number(f.columnNumber ?? 0) + 1].join(':')
+    return `at ${fn} (${at})`
+  })
+  return { stack: capText(lines.join('\n'), MAX_CONSOLE_STACK) }
+}
+
+/** `Runtime.consoleAPICalled` → 条目;形状不对返回 null(调用方跳过而不是抛) */
+export function consoleEntryOf(params: unknown): ConsoleEntry | null {
+  if (!params || typeof params !== 'object') return null
+  const p = params as { type?: unknown; args?: unknown; timestamp?: unknown; stackTrace?: unknown }
+  const args = Array.isArray(p.args) ? p.args : []
+  const text = args
+    .map((a) => stringifyRemoteObject(a))
+    .filter((s) => s !== '')
+    .join(' ')
+  const frame = ((p.stackTrace as { callFrames?: CdpStackFrame[] } | undefined)?.callFrames ?? [])[0]
+  return {
+    source: 'console',
+    level: typeof p.type === 'string' && p.type ? p.type : 'log',
+    text: capText(text),
+    ...(typeof frame?.url === 'string' && frame.url ? { url: frame.url } : {}),
+    ...(typeof frame?.lineNumber === 'number' ? { line: frame.lineNumber + 1 } : {}),
+    ...(typeof p.timestamp === 'number' ? { timestamp: p.timestamp } : {}),
+    ...stackOf(p.stackTrace)
+  }
+}
+
+/** `Runtime.exceptionThrown` → 条目(未捕获异常/未处理 rejection) */
+export function exceptionEntryOf(params: unknown): ConsoleEntry | null {
+  if (!params || typeof params !== 'object') return null
+  const p = params as {
+    timestamp?: unknown
+    exceptionDetails?: {
+      text?: unknown
+      url?: unknown
+      lineNumber?: unknown
+      exception?: { description?: unknown; value?: unknown }
+      stackTrace?: unknown
+    }
+  }
+  const d = p.exceptionDetails
+  if (!d || typeof d !== 'object') return null
+  const detail = d.exception?.description ?? d.exception?.value ?? d.text ?? '未捕获异常'
+  return {
+    source: 'exception',
+    level: 'error',
+    text: capText(String(detail)),
+    ...(typeof d.url === 'string' && d.url ? { url: d.url } : {}),
+    ...(typeof d.lineNumber === 'number' ? { line: d.lineNumber + 1 } : {}),
+    ...(typeof p.timestamp === 'number' ? { timestamp: p.timestamp } : {}),
+    ...stackOf(d.stackTrace)
+  }
+}
+
+/** `Log.entryAdded` → 条目(浏览器侧日志:CSP / 网络 / 安全 …) */
+export function logEntryOf(params: unknown): ConsoleEntry | null {
+  if (!params || typeof params !== 'object') return null
+  const entry = (params as { entry?: unknown }).entry
+  if (!entry || typeof entry !== 'object') return null
+  const e = entry as {
+    source?: unknown
+    level?: unknown
+    text?: unknown
+    url?: unknown
+    lineNumber?: unknown
+    timestamp?: unknown
+    stackTrace?: unknown
+  }
+  return {
+    source: 'log',
+    level: typeof e.level === 'string' && e.level ? e.level : 'info',
+    text: capText(typeof e.text === 'string' ? e.text : ''),
+    ...(typeof e.url === 'string' && e.url ? { url: e.url } : {}),
+    ...(typeof e.lineNumber === 'number' ? { line: e.lineNumber + 1 } : {}),
+    ...(typeof e.timestamp === 'number' ? { timestamp: e.timestamp } : {}),
+    ...stackOf(e.stackTrace),
+    ...(typeof e.source === 'string' && e.source ? { origin: e.source } : {})
+  }
+}
+
 // ---------------------------------------------------------------- 展示与提示
 
 export const TARGET_TYPE_LABELS: Record<string, string> = {

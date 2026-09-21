@@ -91,9 +91,25 @@ const names = tools.map((t) => t.name)
 console.log(`✓ 工具数: ${names.length} -> ${names.join(', ')}`)
 assert(names.includes('browser_navigate') && names.includes('browser_screenshot'), '工具清单完整')
 assert(names.includes('browser_wait'), '等待工具 browser_wait 已注册')
-// 插件贡献的工具应随插件激活一并注册(书签插件 / 广告拦截参考插件)
+// 插件贡献的工具应随插件激活一并注册(书签插件 / 广告拦截参考插件 / 设备检查插件)
 assert(names.includes('browser_add_bookmark'), '书签插件已贡献 MCP 工具')
 assert(names.includes('adblock_stats'), '广告拦截插件已贡献 MCP 工具')
+// 设备检查插件:只验工具在册(真正的行为要连真机,不在冒烟里做)
+for (const deviceTool of [
+  'device_list_targets',
+  'device_inspect',
+  'device_eval',
+  'device_screenshot',
+  'device_connect',
+  'device_snapshot',
+  'device_tap',
+  'device_type',
+  'device_press_key',
+  'device_scroll',
+  'device_console'
+]) {
+  assert(names.includes(deviceTool), `设备检查插件已注册 ${deviceTool}`)
+}
 
 // 0. 服务器级使用说明(instructions)应随 initialize 下发
 const instructions = client.getInstructions()

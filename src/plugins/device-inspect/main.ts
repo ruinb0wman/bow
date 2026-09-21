@@ -34,7 +34,7 @@ import {
   rawAdb,
   type AdbSession
 } from './adb'
-import { connectCdp, cdpEvaluate, cdpScreenshot } from './cdp'
+import { connectCdp, cdpConsole, cdpEvaluate, cdpPressKey, cdpScreenshot, cdpScroll, cdpSnapshot, cdpTap, cdpType } from './cdp'
 import {
   discover,
   nodeHttpDeps,
@@ -316,32 +316,42 @@ function createDeviceInspectPlugin(): PluginMain {
     }
   }
 
-  /** MCP 的 CDP 工具统一入口:连一下、发命令、无论如何都断开(避免把一个 CDP 连接挂在设备上) */
+  /**
+   * MCP 的 CDP 工具统一入口:连一下、发命令、无论如何都断开(避免把一个 CDP 连接挂在设备上)。
+   * `run` 的第二个参数是**实际选中的目标** —— 返回体里带上 `targetKey` 让 AI 在后续调用里显式寻址
+   * (省略 targetKey 只在「恰好一个目标」时生效,目标一变就得重新指定)。
+   */
   async function withCdp<T>(
     context: PluginContext,
     targetKey: string | undefined,
-    run: (client: Awaited<ReturnType<typeof connectCdp>>) => Promise<T>
-  ): Promise<{ ok: true; value: T } | { ok: false; error: string }> {
+    run: (client: Awaited<ReturnType<typeof connectCdp>>, target: DeviceTarget) => Promise<T>
+  ): Promise<{ ok: true; value: T; target: DeviceTarget } | { ok: false; error: string }> {
     const picked = await pickTarget(context, targetKey)
     if (!picked.ok) return picked
+    const { target } = picked
     let client: Awaited<ReturnType<typeof connectCdp>>
     try {
-      client = await connectCdp(picked.target.wsUrl)
+      client = await connectCdp(target.wsUrl)
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }
     try {
-      return { ok: true, value: await run(client) }
+      return { ok: true, value: await run(client, target), target }
     } finally {
       client.close()
     }
   }
 
+  /** MCP 参数里的 targetKey(unknown → string | undefined);空串与缺省等价 */
+  const targetKeyOf = (args: Record<string, unknown>): string | undefined =>
+    typeof args.targetKey === 'string' && args.targetKey.trim() ? args.targetKey.trim() : undefined
+
   const plugin: PluginMain = {
     manifest: {
       id: 'device-inspect',
       name: '设备检查(手机)',
-      description: '用 adb 发现手机上的可调试 WebView / Chrome,在标签页里打开 DevTools;并提供 AI 可用的 device_* 工具',
+      description:
+        '用 adb 发现手机上的可调试 WebView / Chrome,在标签页里打开 DevTools;并提供 AI 可用的 device_* 工具(列目标 / 截图 / 评估,以及快照、点击、输入、按键、滚动、日志观测)',
       version: '1.0.0'
     },
     capabilities: ['ui', 'mcp'],
@@ -510,9 +520,7 @@ function createDeviceInspectPlugin(): PluginMain {
         async (args) => {
           const code = String(args.code ?? '')
           if (!code.trim()) return textContent({ ok: false, error: 'code 不能为空' })
-          const result = await withCdp(context, typeof args.targetKey === 'string' ? args.targetKey : undefined, (client) =>
-            cdpEvaluate(client, code)
-          )
+          const result = await withCdp(context, targetKeyOf(args), (client) => cdpEvaluate(client, code))
           if (!result.ok) return textContent({ ok: false, error: result.error })
           return textContent(
             result.value.ok ? { ok: true, result: result.value.result ?? null } : { ok: false, error: result.value.error }
@@ -531,12 +539,192 @@ function createDeviceInspectPlugin(): PluginMain {
           }
         },
         async (args) => {
-          const result = await withCdp(context, typeof args.targetKey === 'string' ? args.targetKey : undefined, (client) =>
-            cdpScreenshot(client, { fullPage: args.fullPage === true })
-          )
+          const result = await withCdp(context, targetKeyOf(args), (client) => cdpScreenshot(client, { fullPage: args.fullPage === true }))
           if (!result.ok) return textContent({ ok: false, error: result.error })
           if (!result.value.ok) return textContent({ ok: false, error: result.value.error })
           return imageContent(result.value.data)
+        }
+      )
+
+      // ---------- 操作 + 观测(真输入事件 / 元素快照 / 日志) ----------
+      // 这一组的定位:让 AI 能**像人一样**操作手机页面(isTrusted 的 touch/key/输入),
+      // 而不是只能 device_eval 里 document.querySelector().click()(合成事件、拿不到焦点链路)。
+      // 分工:注入脚本只负责量坐标/摆焦点,真事件一律走 CDP Input.*(见 cdp.ts 顶部注释)。
+
+      context.mcp.tool(
+        'device_snapshot',
+        {
+          description:
+            '拿手机页面的可操作元素快照(与 browser_snapshot 同一份脚本、同一种返回形状)。返回的 selector 可以直接喂给 device_tap / device_type —— 不要自己猜 CSS 选择器,也不要用 device_eval 反复手写查询',
+          inputSchema: {
+            targetKey: z.string().optional().describe('目标标识;只有一个目标时可省略'),
+            maxElements: z.number().int().positive().max(1000).optional().describe('最多返回元素数,默认 200')
+          }
+        },
+        async (args) => {
+          const result = await withCdp(context, targetKeyOf(args), (client) =>
+            cdpSnapshot(client, typeof args.maxElements === 'number' ? args.maxElements : 200)
+          )
+          if (!result.ok) return textContent({ ok: false, error: result.error })
+          if (!result.value.ok) return textContent({ ok: false, error: result.value.error })
+          return textContent({ ok: true, targetKey: result.target.key, data: result.value.data })
+        }
+      )
+
+      context.mcp.tool(
+        'device_tap',
+        {
+          description:
+            '在手机页面上点一下(默认发真实触摸事件 Input.dispatchTouchEvent,与 chrome://inspect 的 screencast 同款)。至少要给 selector 或 x/y 之一。作用对象是**手机上的页面**,不是 bow 的标签页',
+          inputSchema: {
+            targetKey: z.string().optional().describe('目标标识;只有一个目标时可省略'),
+            selector: z.string().optional().describe('CSS 选择器(优先用 device_snapshot 返回的那个)'),
+            x: z.number().optional().describe('视口 CSS 像素;与 y 同时给,和 selector 二选一'),
+            y: z.number().optional().describe('视口 CSS 像素;与 x 同时给'),
+            mode: z
+              .enum(['touch', 'mouse'])
+              .optional()
+              .describe('输入事件的起点:默认 touch(手机真实路径);touch 不可用时自动降级为 mouse —— 以返回的 mode 为准')
+          }
+        },
+        async (args) => {
+          const selector =
+            typeof args.selector === 'string' && args.selector.trim() ? args.selector.trim() : undefined
+          const x = typeof args.x === 'number' ? args.x : undefined
+          const y = typeof args.y === 'number' ? args.y : undefined
+          const mode = args.mode === 'mouse' ? 'mouse' : 'touch'
+          const result = await withCdp(context, targetKeyOf(args), (client) =>
+            cdpTap(client, { selector, x, y, mode })
+          )
+          if (!result.ok) return textContent({ ok: false, error: result.error })
+          if (!result.value.ok) return textContent({ ok: false, error: result.value.error })
+          return textContent({
+            ok: true,
+            targetKey: result.target.key,
+            mode: result.value.mode,
+            x: result.value.x,
+            y: result.value.y,
+            ...(selector ? { selector } : {})
+          })
+        }
+      )
+
+      context.mcp.tool(
+        'device_type',
+        {
+          description:
+            '往手机页面的输入框里输文字(聚焦 + 可选全选,再 Input.insertText 走 IME 路径 —— 受控输入框的 onChange / beforeinput 都会收到真事件)。省略 selector 则输入到当前聚焦元素;传空 text 即「清空当前选区」(个别 WebView 上偶有差异,必要时用 device_eval 兜底)',
+          inputSchema: {
+            targetKey: z.string().optional().describe('目标标识;只有一个目标时可省略'),
+            selector: z.string().optional().describe('CSS 选择器(优先用 device_snapshot 返回的那个);省略则用当前聚焦元素'),
+            text: z.string().describe('要输入的文字'),
+            clear: z.boolean().optional().describe('输入前是否全选替换原内容,默认 true;false = 插入到光标处')
+          }
+        },
+        async (args) => {
+          const text = String(args.text ?? '')
+          const selector =
+            typeof args.selector === 'string' && args.selector.trim() ? args.selector.trim() : undefined
+          const result = await withCdp(context, targetKeyOf(args), (client) =>
+            cdpType(client, { selector, text, clear: args.clear !== false })
+          )
+          if (!result.ok) return textContent({ ok: false, error: result.error })
+          if (!result.value.ok) return textContent({ ok: false, error: result.value.error })
+          return textContent({
+            ok: true,
+            targetKey: result.target.key,
+            typed: text,
+            value: result.value.value
+          })
+        }
+      )
+
+      context.mcp.tool(
+        'device_press_key',
+        {
+          description:
+            '在手机页面上按一个功能键(Enter / Tab / Escape / Backspace / Delete / 四个方向键 / Home / End / PageUp / PageDown) —— 输入文字请用 device_type,这里不接受单个字符',
+          inputSchema: {
+            targetKey: z.string().optional().describe('目标标识;只有一个目标时可省略'),
+            key: z.string().describe('按键名,如 Enter / ArrowDown / Esc;大小写不敏感')
+          }
+        },
+        async (args) => {
+          const key = String(args.key ?? '')
+          const result = await withCdp(context, targetKeyOf(args), (client) => cdpPressKey(client, key))
+          if (!result.ok) return textContent({ ok: false, error: result.error })
+          if (!result.value.ok) return textContent({ ok: false, error: result.value.error })
+          return textContent({
+            ok: true,
+            targetKey: result.target.key,
+            pressed: result.value.key.input,
+            keyCode: result.value.key.keyCode
+          })
+        }
+      )
+
+      context.mcp.tool(
+        'device_scroll',
+        {
+          description:
+            '滚动手机页面或页面内的某个可滚动容器(与 browser_scroll 同一套语义)。注意:这是脚本滚动(改 scrollTop),不是触摸手势 —— 自定义手势滚动条目前不在工具面里',
+          inputSchema: {
+            targetKey: z.string().optional().describe('目标标识;只有一个目标时可省略'),
+            selector: z.string().optional().describe('要滚动的元素;省略则滚页面本身'),
+            direction: z.enum(['up', 'down', 'top', 'bottom']).describe('滚动方向'),
+            amount: z.number().positive().optional().describe('滚动像素;缺省滚动约一屏的 70%')
+          }
+        },
+        async (args) => {
+          const direction = String(args.direction ?? '')
+          const result = await withCdp(context, targetKeyOf(args), (client) =>
+            cdpScroll(client, {
+              ...(typeof args.selector === 'string' && args.selector.trim() ? { selector: args.selector.trim() } : {}),
+              direction,
+              ...(typeof args.amount === 'number' ? { amount: args.amount } : {})
+            })
+          )
+          if (!result.ok) return textContent({ ok: false, error: result.error })
+          if (!result.value.ok) return textContent({ ok: false, error: result.value.error })
+          return textContent({
+            ok: true,
+            targetKey: result.target.key,
+            direction,
+            top: result.value.top
+          })
+        }
+      )
+
+      context.mcp.tool(
+        'device_console',
+        {
+          description:
+            '采集手机页面在**接下来这段时间**里的控制台输出、未捕获异常与浏览器日志(Runtime.enable + Log.enable)。⚠️ 只能看到调用期间产生的新日志:要看页面加载期的日志请传 reload: true(会重载页面)',
+          inputSchema: {
+            targetKey: z.string().optional().describe('目标标识;只有一个目标时可省略'),
+            durationMs: z.number().int().positive().max(10000).optional().describe('采集窗口毫秒数,默认 800'),
+            reload: z.boolean().optional().describe('是否先重载页面以捕获加载期日志(会丢当前页面状态),默认 false'),
+            maxEntries: z.number().int().positive().max(500).optional().describe('最多返回多少条,默认 100')
+          }
+        },
+        async (args) => {
+          const result = await withCdp(context, targetKeyOf(args), (client) =>
+            cdpConsole(client, {
+              ...(typeof args.durationMs === 'number' ? { durationMs: args.durationMs } : {}),
+              reload: args.reload === true,
+              ...(typeof args.maxEntries === 'number' ? { maxEntries: args.maxEntries } : {})
+            })
+          )
+          if (!result.ok) return textContent({ ok: false, error: result.error })
+          if (!result.value.ok) return textContent({ ok: false, error: result.value.error })
+          return textContent({
+            ok: true,
+            targetKey: result.target.key,
+            durationMs: result.value.durationMs,
+            total: result.value.total,
+            truncated: result.value.truncated,
+            entries: result.value.entries
+          })
         }
       )
 

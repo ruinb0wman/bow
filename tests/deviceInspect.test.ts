@@ -15,19 +15,25 @@ import {
   adbSocketsArgv,
   androidPackageFromVersion,
   browserNameFromVersion,
+  consoleEntryOf,
   DEFAULT_ADB_COMMAND,
   effectiveStrategy,
+  exceptionEntryOf,
   firstSuggestedFrontendUrl,
   FRONTEND_STORAGE_KEY_MIN_MAJOR,
   frontendNotice,
   frontendUrlFor,
   isWslAdb,
+  logEntryOf,
+  MAX_CONSOLE_TEXT,
   needsDeviceFrontend,
   normalizeSocketName,
   normalizeStrategy,
   parseAdbSetting,
   parseBrowserMajor,
   parseDevices,
+  resolveCdpKey,
+  stringifyRemoteObject,
   parseForwardList,
   parseSockets,
   problemHint,
@@ -561,5 +567,162 @@ describe('problemHint', () => {
 
   it('只有 adb 走 WSL 时才提 WSL2 镜像网络', () => {
     expect(problemHint('port-unreachable', { wsl: true }).detail).toContain('Mirrored')
+  })
+})
+
+describe('resolveCdpKey(device_press_key 的键位表)', () => {
+  it('Enter / return 带 \\r(Chromium 靠它产生默认动作)', () => {
+    expect(resolveCdpKey('enter')).toEqual({ input: 'enter', key: 'Enter', code: 'Enter', keyCode: 13, text: '\r' })
+    expect(resolveCdpKey(' return ')).toEqual({
+      input: 'return',
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 13,
+      text: '\r'
+    })
+  })
+
+  it('大小写不敏感,Escape 有 esc 别名', () => {
+    expect(resolveCdpKey('ESC')?.keyCode).toBe(27)
+    expect(resolveCdpKey('Escape')?.code).toBe('Escape')
+  })
+
+  it('方向键两种写法都认,且不带 text(不带 text 的键发 rawKeyDown)', () => {
+    for (const name of ['arrowdown', 'down']) {
+      const spec = resolveCdpKey(name)
+      expect(spec?.key).toBe('ArrowDown')
+      expect(spec?.code).toBe('ArrowDown')
+      expect(spec?.keyCode).toBe(40)
+      expect(spec?.text).toBeUndefined()
+    }
+    expect(resolveCdpKey('up')?.keyCode).toBe(38)
+    expect(resolveCdpKey('left')?.keyCode).toBe(37)
+    expect(resolveCdpKey('right')?.keyCode).toBe(39)
+  })
+
+  it('翻页/首尾/空格/退格:键码正确,空格带 text', () => {
+    expect(resolveCdpKey('pageup')?.keyCode).toBe(33)
+    expect(resolveCdpKey('pagedown')?.keyCode).toBe(34)
+    expect(resolveCdpKey('home')?.keyCode).toBe(36)
+    expect(resolveCdpKey('end')?.keyCode).toBe(35)
+    expect(resolveCdpKey('space')).toMatchObject({ key: ' ', code: 'Space', keyCode: 32, text: ' ' })
+    expect(resolveCdpKey('backspace')?.keyCode).toBe(8)
+    expect(resolveCdpKey('delete')?.keyCode).toBe(46)
+    expect(resolveCdpKey('del')?.key).toBe('Delete')
+  })
+
+  it('单个字符与未知键返回 null(文字输入走 device_type,不在这里)', () => {
+    expect(resolveCdpKey('a')).toBeNull()
+    expect(resolveCdpKey('F5')).toBeNull()
+    expect(resolveCdpKey('')).toBeNull()
+    expect(resolveCdpKey('ctrl+w')).toBeNull()
+  })
+})
+
+describe('stringifyRemoteObject(CDP RemoteObject → 一行文本)', () => {
+  it('取值优先 unserializableValue → value → description', () => {
+    expect(stringifyRemoteObject({ type: 'string', value: 'hello' })).toBe('hello')
+    expect(stringifyRemoteObject({ type: 'number', value: 1.5 })).toBe('1.5')
+    expect(stringifyRemoteObject({ type: 'number', unserializableValue: 'NaN' })).toBe('NaN')
+    expect(stringifyRemoteObject({ type: 'undefined' })).toBe('undefined')
+    expect(stringifyRemoteObject({ type: 'function', description: 'function f() {}' })).toBe(
+      'function f() {}'
+    )
+    expect(stringifyRemoteObject(null)).toBe('null')
+    expect(stringifyRemoteObject(undefined)).toBe('undefined')
+  })
+
+  it('对象取值走 JSON,拿不到 description 时用 preview 兑底', () => {
+    expect(stringifyRemoteObject({ type: 'object', value: { a: 1 } })).toBe('{"a":1}')
+    expect(
+      stringifyRemoteObject({
+        type: 'object',
+        preview: { properties: [{ name: 'a', value: '1' }, { name: 'b', type: 'string' }], overflow: true }
+      })
+    ).toBe('{ a: 1, b: string, … }')
+  })
+
+  it('超长文本截断到上限(不把整个返回体吃满)', () => {
+    const long = 'x'.repeat(MAX_CONSOLE_TEXT + 50)
+    const out = stringifyRemoteObject({ type: 'string', value: long })
+    expect(out.endsWith('…')).toBe(true)
+    expect(out.length).toBe(MAX_CONSOLE_TEXT + 1)
+  })
+})
+
+describe('CDP 事件 → 归一化日志条目', () => {
+  it('Runtime.consoleAPICalled:多个参数拼一行,行号 1 起算,带堆栈首帧', () => {
+    expect(
+      consoleEntryOf({
+        type: 'error',
+        args: [{ type: 'string', value: 'boom' }, { type: 'object', preview: { properties: [{ name: 'code', value: '500' }] } }],
+        timestamp: 1234.5,
+        stackTrace: {
+          callFrames: [{ functionName: 'onClick', url: 'https://a/b.js', lineNumber: 41, columnNumber: 2 }]
+        }
+      })
+    ).toEqual({
+      source: 'console',
+      level: 'error',
+      text: 'boom { code: 500 }',
+      url: 'https://a/b.js',
+      line: 42,
+      timestamp: 1234.5,
+      stack: 'at onClick (https://a/b.js:42:3)'
+    })
+  })
+
+  it('Runtime.consoleAPICalled:缺 args / 缺 type 也能得到一个可读条目', () => {
+    expect(consoleEntryOf({})).toEqual({ source: 'console', level: 'log', text: '' })
+    expect(consoleEntryOf({ args: [] })).toEqual({ source: 'console', level: 'log', text: '' })
+    expect(consoleEntryOf(null)).toBeNull()
+    expect(consoleEntryOf('nope')).toBeNull()
+  })
+
+  it('Runtime.exceptionThrown:取 exception.description,level 固定 error', () => {
+    const entry = exceptionEntryOf({
+      timestamp: 9,
+      exceptionDetails: {
+        text: 'Uncaught',
+        url: 'https://a/app.js',
+        lineNumber: 9,
+        exception: { description: 'Error: boom' },
+        stackTrace: { callFrames: [{ url: 'https://a/app.js', lineNumber: 9, columnNumber: 0 }] }
+      }
+    })
+    expect(entry).toMatchObject({
+      source: 'exception',
+      level: 'error',
+      text: 'Error: boom',
+      url: 'https://a/app.js',
+      line: 10,
+      timestamp: 9
+    })
+    expect(entry?.stack).toContain('at <anonymous> (https://a/app.js:10:1)')
+  })
+
+  it('Runtime.exceptionThrown:只有 text 时也能用;缺 exceptionDetails 返回 null', () => {
+    expect(exceptionEntryOf({ exceptionDetails: { text: 'Uncaught' } })).toMatchObject({
+      source: 'exception',
+      text: 'Uncaught'
+    })
+    expect(exceptionEntryOf({})).toBeNull()
+    expect(exceptionEntryOf(null)).toBeNull()
+  })
+
+  it('Log.entryAdded:保留 CDP 原始 level 与来源(source → origin)', () => {
+    expect(
+      logEntryOf({ entry: { source: 'network', level: 'error', text: 'Failed to load', url: 'https://a/x.png', lineNumber: 0, timestamp: 3 } })
+    ).toEqual({
+      source: 'log',
+      level: 'error',
+      text: 'Failed to load',
+      url: 'https://a/x.png',
+      line: 1,
+      timestamp: 3,
+      origin: 'network'
+    })
+    expect(logEntryOf({})).toBeNull()
+    expect(logEntryOf(null)).toBeNull()
   })
 })
