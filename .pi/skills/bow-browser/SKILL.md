@@ -5,7 +5,7 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 
 # bow 浏览器(MCP 服务器 `browser`)
 
-本地 Electron 多标签浏览器,42 个工具(19 核心 + 23 插件,随插件启停浮动);**你的每次操作用户都实时可见**,所以破坏性操作前先说明意图。
+本地 Electron 多标签浏览器,44 个工具(19 核心 + 25 插件,随插件启停浮动);**你的每次操作用户都实时可见**,所以破坏性操作前先说明意图。
 
 ## 第一步:确认工具怎么调
 
@@ -27,6 +27,7 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 | 要看整页(含滚动到视口外的部分) | `browser_screenshot {fullPage:true}` | 一次截全,不用边滚边截 |
 | 等异步渲染 | `browser_wait` | 等元素出现,而不是靠猜时长 |
 | 标签管理 | `browser_list_tabs` / `browser_new_tab` / `browser_switch_tab` | |
+| 下载文件 / 看下载进度 | `browser_download` / `browser_list_downloads` | 下载不需要页面上的点击;AI 发起的下载**不弹保存对话框**,直接落到下载目录(可用 `saveDir` 指定),同名文件自动加 `(1)` |
 | 调试**手机**上的 WebView / Chrome | `device_list_targets` → `device_snapshot` → `device_tap` / `device_type` | 这些作用于 adb 连着的真机页面,不是 bow 自己的标签页;用 `targetKey` 寻址 |
 | 看手机页面的控制台 / 未捕获异常 | `device_console` | 只覆盖**调用期间**的日志(默认 800ms);要加载期日志传 `reload: true`(会重载页面) |
 | 在手机页面取值 / 批量读 | `device_eval` | 与 `browser_eval` 同套路,但作用于手机页面(最省 token) |

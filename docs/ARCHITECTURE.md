@@ -101,7 +101,7 @@ src/
     ua.ts           bowUserAgent() 纯函数
     devtools.ts     DevTools 前端 URL 构造(tabManager 与设备检查插件共用的唯一来源)
     adblock.ts      广告规则模型/解析/索引/匹配/迁移(v3),~1400 行
-tests/            vitest 45 个测试文件(965 个用例)+ 3 个测试替身(fakeTabs/fakeWc/fakeKernel)
+tests/            vitest 46 个测试文件(1001 个用例)+ 3 个测试替身(fakeTabs/fakeWc/fakeKernel)
 scripts/          构建与运维脚本(见 §11)
 docs/             本文件 + opencode-session-header.md
 .pi/skills/bow-browser/SKILL.md      给 AI 的能力索引(由 mcp:install 同步到 ~/.pi/agent/skills/)
@@ -496,6 +496,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `device-inspect` | — | ui, mcp | `list` `open` `getSettings` `setSettings` `checkAdb` `connect` `pair` `cleanupForwards` `rawAdb` | `device_list_targets` `device_inspect` `device_snapshot` `device_tap` `device_type` `device_press_key` `device_scroll` `device_console` `device_eval` `device_screenshot` `device_connect` | — | — | — | — | — | `device-inspect.json`(adb 命令 / 前端策略 / 端口转发记录) |
 | `terminal` | — | ui | `getSettings` `setSettings` `listCandidates` `attach` `write` `resize` `detach` | — | — | — | — | — | on `tab:closed`(按 tabId 回收 shell);emit `data` `exit` `settings-changed` `session-closed` | `terminal.json`(字体/字号/滚动缓冲 + shell 配置列表) |
 | `logseq` | — | ui | `getState` `pickGraph` `setGraph` `rebuildIndex` `getSettings` `setSettings` `toggleFavorite` `readJournal` `readPage` `listJournals` `listPages` `backlinks` `listTemplates` `savePage` `attach` `setView` `openInNewPane` | — | — | — | — | — | on `tab:closed`(按 tabId 丢视图状态);emit `graph-changed` `settings-changed` `favorites-changed` | `logseq.json`(图目录 + 最近图 + 正文字号 + 每个图的收藏) |
+| `downloads` | — | ui, mcp | `list` `pause` `resume` `cancel` `retry` `remove` `clear` `openFile` `showInFolder` `getSettings` `setSettings` `pickDirectory` `revealDir` | `browser_list_downloads` `browser_download` | — | — | — | — | emit `changed` | `downloads.json`(记录)+ `downloads-settings.json`(目录 / 询问 / 保留条数) |
 
 **渲染层侧**(`registry.ts` / 各插件 `ui.ts`)
 
@@ -511,12 +512,13 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `device-inspect` | — | `DeviceInspectButton` | `plugin:device-inspect:panel`(full,`DeviceInspectPanel`) | —(adb 设置放在面板内的折叠区,不占设置页侧栏) |
 | `terminal` | — | `TerminalButton` | —(终端是**内部页面**不是浮层:`bow://terminal`) | `TerminalSettings` |
 | `logseq` | — | `LogseqButton` | —(笔记也是**内部页面**:`bow://logseq`) | `LogseqSettings` |
+| `downloads` | — | `DownloadsButton` | `plugin:downloads:panel`(full,`DownloadsPanel`) | `DownloadsSettings` |
 
 ⚠️ 终端插件的 `ui/TerminalView.vue` 与笔记插件的 `ui/JournalView.vue` **不在**注册表里 ——
 它们分别是 `bow://terminal` / `bow://logseq` 页面的主体,由 `renderer/src/<entry>/main.ts` 直接引用。
 插槽/浮层注册表面向的是 chrome 与 overlay 两个宿主。
 
-`SLOT_PLUGIN_ORDER.toolbar = ['bookmarks','mcp-http','adblock','element-fullscreen','terminal','logseq']`;
+`SLOT_PLUGIN_ORDER.toolbar = ['bookmarks','downloads','mcp-http','adblock','element-fullscreen','terminal','logseq']`;
 `addressbar-trailing` 为空(保持注册顺序)。未列出的插件排在已列出者之后。
 
 **笔记插件(`bow://logseq`)的四条不变式**(它是唯一直接读写用户仓库外文件的插件,改它之前请务必看这几条,
@@ -586,18 +588,20 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `browser_screenshot` | tabId, fullPage | fullPage falsy | **image content**(`image/png`);失败才是 text |
 | `browser_get_info` | tabId | — | `{ok,info:TabInfo}` |
 
-插件工具 23 个:`browser_add_bookmark` `browser_list_bookmarks`(书签)、
+插件工具 25 个:`browser_add_bookmark` `browser_list_bookmarks`(书签)、
 `adblock_stats` `adblock_list_rules` `adblock_add_rule` `adblock_remove_rule` `adblock_set_enabled`
 `adblock_import_rules` `adblock_subscribe` `adblock_refresh_subscriptions`(广告)、
 `browser_fullscreen_element` `browser_exit_fullscreen`(元素全屏)、
 `device_list_targets` `device_inspect` `device_snapshot` `device_tap` `device_type` `device_press_key`
-`device_scroll` `device_console` `device_eval` `device_screenshot` `device_connect`(设备检查)
-—— 共 23 个,合计 **42** 个工具。
+`device_scroll` `device_console` `device_eval` `device_screenshot` `device_connect`(设备检查)、
+`browser_list_downloads` `browser_download`(下载)
+—— 共 25 个,合计 **44** 个工具。
 
 静态计数来源:`CORE_MCP_TOOL_NAMES`(19)+ `ctx.mcp.tool(...)` 的调用点
 (`bookmarks/main.ts:137,165`、`adblock/main.ts:711,730,752,799,821,835,853,874`、
 `element-fullscreen/main.ts:196,227`、
-`device-inspect/main.ts:451,493,510,531,554,574,612,642,666,698,731`)。
+`device-inspect/main.ts:451,493,510,531,554,574,612,642,666,698,731`、
+`downloads/main.ts:500,529`)。
 ⚠️ 实际工具面**随插件启停变化**:停用 adblock 就少 8 个,停用 device-inspect 就少 11 个。
 
 ⚠️ 插件工具的 schema **不做 strict 校验**(走 `kernel.mcp` 声明快照),未知参数会被静默丢弃。
@@ -787,6 +791,10 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 - **终端**分区:字体族 / 字号 / 滚动缓冲三个外观项 + shell 配置列表(名称/可执行文件/参数/工作目录,
   单选一套作默认)。「从预设添加」的候选由 `listCandidates` 给出(平台预设 + 在 PATH/常见路径里能否找到),
   参数与工作目录都即时保存;字号/字体改动经 `settings-changed` 广播,**已打开的终端立即跟随**。
+- **下载**分区:保存目录(显示解析后的实际路径 + 「系统默认」标记,可「选择目录」/「打开目录」)、
+  「下载前询问保存位置」开关(关掉后静默保存到该目录,同名文件自动加 `(1)` 不覆盖)、记录保留条数
+  (默认 500,范围 1–5000,**进行中的记录永不裁剪**)、「清空全部记录」。整节同样自带 `padding: 4px 14px 20px`
+  与 `flex: 1; min-height: 0; overflow-y: auto`(父层 `.settings-body-plugin` 是 `overflow: hidden`)。
 
 ---
 
@@ -816,6 +824,8 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `device-inspect.json` | `{version, adbCommand, strategy, forwards[]}` | `{version:2, adbCommand:'', strategy:'auto', forwards:[]}`;`strategy` 三选一(`auto`/`electron-bundled`/`device-suggested`,见 `shared.effectiveStrategy()`;旧名 `device-bundled` 会被归一成 `device-suggested`);v1 → v2 只把默认值换成 `auto`;`forwards` 是端口转发记录(adb 侧的转发登记在 adb server 里,靠它回收) | device-inspect |
 | `terminal.json` | `TerminalSettings` | `{version:1, defaultProfileId, fontFamily, fontSize:14, scrollback:5000, profiles[]}`;profiles 按平台给预设(powershell/pwsh/cmd/wsl/git-bash 或 $SHELL/bash/zsh);每次读写都过 `normalizeSettings()` 夹紧/去重/兜底 | terminal |
 | `logseq.json` | 笔记插件的图目录 + 最近图 | `{version:1, graphPath:'', recentGraphs:[]}` | logseq(图里的笔记内容本身属于用户的 Logseq 图,不在这里) |
+| `downloads.json` | 下载记录(数组整体替换;`DownloadRecord[]`,读盘时过 `sanitizeRecords()` + `reconcileOnStart()`) | `[]` | downloads |
+| `downloads-settings.json` | `{askWhereToSave, downloadDir, maxRecords}` | `{askWhereToSave:true, downloadDir:'', maxRecords:500}`(`downloadDir` 为空 = `app.getPath('downloads')`) | downloads |
 | `browser.log` | 日志(MCP 模式) | — | logger |
 
 ---
@@ -968,8 +978,8 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
   ⚠️ 给主进程加新的 `tabs.*` / `wc.*` 调用时**必须同步补假实现**,否则测试会红得莫名其妙。
 - `tests/mcpServer.test.ts`(861 行)用 `InMemoryTransport` + 真实 `McpServer`/`Client` 握手,
   覆盖 instructions 下发、工具面与 schema、`waitUntil` 语义、失败一律 `isError`、内部页面边界、插件工具错误传播。
-- **当前基线(2026-09-21 复测:手机 DevTools 窗格分屏 + device_* 操作/观测工具后)**:`bun run test` → **45 个文件 / 965 个用例全绿**,约 9s。
-  45 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
+- **当前基线(2026-09-22 复测:下载插件后)**:`bun run test` → **46 个文件 / 1001 个用例全绿**,约 9s。
+  46 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
   `fakeWc.ts`、`fakeKernel.ts`。
 - ⚠️ **`.vue` 组件不在 `tsc` 的类型检查范围内**(`npm run typecheck` 只跑 `.ts`):组件里「导入了不存在的
   符号」这类错误只有 `npm run build`(rollup)才会报。改渲染层之后**必须跑一次 build** ——
@@ -992,7 +1002,8 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 `adblockPickerScript`(4)、`elementFullscreenPlugin`(3)、`localFile`(6)、`navInput`(9)、`openArgs`(14)、
 `defaultBrowser`(60)、`closeConfirm`(6)、`split`(53,嵌套分屏树 / 几何 / 原地换叶子 / 布局形状与归一化)、
 `groups`(26,树版组记账 + 原地换叶子)、`terminalShared`(39,纯逻辑:设置规范化 /
-平台预设 / spawn 参数 / 环境变量清洗 / 回放缓冲 / PATH 查找 / 参数文本 / 复制粘贴键位)。合计 **740**。
+平台预设 / spawn 参数 / 环境变量清洗 / 回放缓冲 / PATH 查找 / 参数文本 / 复制粘贴键位)、
+`downloadsShared`(33,下载记录的纯逻辑:设置归一 / 动作可用性 / 启动归一 / 裁剪排序 / 重名去重 / 格式化)。合计 **773**。
 
 笔记插件(`bow://logseq`)另加 4 个文件 / 146 例,外加 `internalPages` 的 2 例:
 
@@ -1003,7 +1014,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `logseqGraph.test.ts` | 256 | 16 | 索引(mtime 增量 / `:hidden` 三种写法)、反链排序与「不算自己的反链」、搜索、日期列表 |
 | `logseqPlugin.test.ts` | 493 | 31 | **真实临时目录**:原子写不留 `.tmp`、越界路径被拒、只写 `journals/`+`pages/`、mtime 冲突不覆盖、模板只在第一次编辑落盘、视图状态按 tabId |
 
-**合计 965**。
+**合计 1001**。
 
 设备检查插件的三个测试文件(它们不在上表里:代码量不大,但每一条都在钉外部格式):
 
@@ -1098,6 +1109,11 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
     轴一致的分隔条,`ratio` 只按箭头方向走(`leading ? +step : -step`,与聚焦窗格在哪一侧无关)。
     **夹紧后不要向上找**:外层同轴的箭头侧可能相反(`row(A | row(N|N2))` 里 N 按 ←,内层到底后若去推外层,
     外层会把这支往左扩 ⇒ N 反而变宽)。
+12. **注册表里没有的浮层 id 会得到一个「透明但要命」的遮罩**(2026-09-22 加下载插件时确认):
+    `OverlayApp.vue` 对未知 id 渲染 `null`,但 `OverlayManager.show()` 已经把 overlay 视图 `setVisible(true)`
+    并铺满整个窗口 —— 结果是页面/工具栏**点不动**、又看不到任何遮罩,而且没有 `ModalShell` 就没有 Esc 处理,
+    只能靠再按一次打开它的快捷键(或重启)收拾。所以「由核心直接打开插件浮层」的入口(如 `Ctrl+J` →
+    `plugin:downloads:panel`)必须先确认插件已启用(`kernel.list()`),不能盲开。
 5. IPC 不能传 Vue 响应式代理(结构化克隆),`App.vue` 的 `toPlainRows()` 就是为此。
 6. 内部页面标签持有 preload,**任何**让它能载入远程内容的改动都是安全漏洞(`will-navigate` 与 `navigate()` 双重拦截)。
 
