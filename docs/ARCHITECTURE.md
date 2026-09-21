@@ -1141,6 +1141,27 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
     三套编码与 `Ctrl+Alt+Shift`、数字符号(`Ctrl+Alt+2` 会退化成 `Alt+2`、`Ctrl+Alt+[` 会变成裸 CSI)。
     取不到内部判据就返回 `false`(退化成丢键,绝不发错字节),`__bowTerminal.ctrlAltRepaired` 暴露这个结果。
     边界:AltGr 布局里 Chromium 给真组合也置上 AltGraph ⇒ 仍分不出来;mac 的 `Ctrl+Option+字母` 是另一处原因(未修)。
+26. **xterm 6 的 `.xterm-viewport` 是遗留空节点,要藏掉**(2026-09-21 修):`CoreBrowserTerminal` 仍在建它
+    (`classList.add('xterm-viewport')`),但**滚动与主题底色已经搬到新的 `.xterm-scrollable-element`**
+    (`Viewport.ts`:`new SmoothScrollableElement(screenElement, …)` 的 DOM 被 append 进 `.xterm`,并由
+    `themeService.colors.background` 上色);而 `xterm.css` 对它的老规则还在(`overflow-y: scroll` +
+    `background-color: #000`,v6 不再用主题色覆盖)。
+    **真机 Chromium 实测**(xterm 6.0.0 + 真实 xterm.css 的探针页):该节点 `overflowY: scroll`、
+    `backgroundColor: rgb(0,0,0)`、**原生滚动条占 15px**(`offsetWidth - clientWidth`),而它自己
+    `scrollHeight - clientHeight === 0` ⇒ **与滚动无关,纯装饰性残余**。平时看不见是因为
+    `.xterm-scrollable-element`(不透明主题底 `#1e1f24`、全宽)盖住了它 —— **但只盖到自己的盒子底部**;
+    它比 `.xterm` 矮多少,底部就露出多少「`.xterm-viewport` 的纯黑底 + 原生滚动条尾巴」(探针截图可见)。
+    那个差值在 **-10px ~ +一行高** 之间摆动:`@xterm/addon-fit` 用 `getComputedStyle(父).height` 算 rows,
+    而 `.terminal-host` 是 `box-sizing: border-box` + `padding: 6px 4px 4px 8px` ⇒ 它读到的是**边框盒**高
+    (内容盒短 10px),于是屏幕高会在两个行数间跳(探针实测:host 262px → 余量 +6px,host 250px → -6px)。
+    修法 = `ui/TerminalView.vue` 里 `:deep(.xterm-viewport) { display: none }`。
+    ⚠️ **不要 `remove()`**:`OverviewRulerRenderer` 拿它当插入锚点
+    (`_viewportElement.parentElement?.insertBefore(canvas, _viewportElement)`),节点一删就被可选链**静默跳过**
+    —— 现在没开 `overviewRuler`(默认 `{}`、宽度 0 ⇒ renderer 根本不建),以后一开就是「查不出来的功能失踪」;
+    `DomRenderer` 也读它的 `style.height`(`_selectionContainer.style.height = …`,v6 里恒为空串、两边都是空操作)。
+    探针页实测:开了 `overviewRuler:{width:10}` 的终端在 `display:none` 下那个 canvas 仍被插进 DOM 且宽 10px
+    (锚点不变),而滚动/`scrollLines` 两种情形的行为完全一致 —— 这就是「隐藏而非删节点」的实证。
+    `display: none` 对这两处引用零影响,所以**只隐藏、不删节点**。
 
 **MCP 层**
 
