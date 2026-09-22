@@ -34,8 +34,12 @@ const wirelessAddress = ref('')
 const wirelessCode = ref('')
 const copied = ref('')
 
+/** 复制按钮的两种目标:ws 地址、点「检查」会打开的 DevTools 前端地址 */
+type CopyKind = 'ws' | 'frontend'
+
 let timer: number | undefined
 let noticeTimer: number | undefined
+let copiedTimer: number | undefined
 
 function requestClose(): void {
   emit('overlay-event', 'close-request')
@@ -94,11 +98,19 @@ async function inspect(targetKey: string): Promise<void> {
   }
 }
 
-async function copyWs(wsUrl: string): Promise<void> {
+/** 勾选态按 `<kind>:<rowKey>` 记:两个复制按钮各自独立,不会被另一行/另一个按钮顶掉 */
+const isCopied = (kind: CopyKind, key: string): boolean => copied.value === `${kind}:${key}`
+
+async function copyText(kind: CopyKind, key: string, text: string, label: string): Promise<void> {
   try {
-    await navigator.clipboard.writeText(wsUrl)
-    copied.value = wsUrl
-    flash('已复制 ws 地址')
+    // 走主进程剪贴板(与下载面板同一套):渲染层的 navigator.clipboard 依赖 secure context 与焦点
+    await api.writeClipboardText(text)
+    copied.value = `${kind}:${key}`
+    if (copiedTimer) window.clearTimeout(copiedTimer)
+    copiedTimer = window.setTimeout(() => {
+      copied.value = ''
+    }, 2000)
+    flash(`已复制${label}`)
   } catch {
     flash('复制失败(剪贴板被拒绝)')
   }
@@ -225,6 +237,7 @@ const rows = computed(() => {
     title: string
     url: string
     wsUrl: string
+    frontendUrl: string
   }> = []
   for (const group of state.value?.devices ?? []) {
     for (const socket of group.sockets) {
@@ -241,7 +254,8 @@ const rows = computed(() => {
           type: targetTypeLabel(target.type),
           title: target.title || '(无标题)',
           url: target.url,
-          wsUrl: target.wsUrl
+          wsUrl: target.wsUrl,
+          frontendUrl: target.frontendUrl
         })
       }
     }
@@ -268,6 +282,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   stopPolling()
   if (noticeTimer) window.clearTimeout(noticeTimer)
+  if (copiedTimer) window.clearTimeout(copiedTimer)
 })
 </script>
 
@@ -397,9 +412,23 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <div class="dvi-target-actions">
-              <button class="btn" :title="row.wsUrl" @click="copyWs(row.wsUrl)">
-                <Copy v-if="copied !== row.wsUrl" :size="13" />
-                <Check v-else :size="13" />
+              <button
+                class="btn"
+                :title="`复制 WebSocket 地址:${row.wsUrl}`"
+                @click="copyText('ws', row.key, row.wsUrl, ' WebSocket 地址')"
+              >
+                <Check v-if="isCopied('ws', row.key)" :size="13" />
+                <Copy v-else :size="13" />
+                复制 ws
+              </button>
+              <button
+                class="btn"
+                :title="`复制检查地址(DevTools 前端):${row.frontendUrl}`"
+                @click="copyText('frontend', row.key, row.frontendUrl, '检查地址')"
+              >
+                <Check v-if="isCopied('frontend', row.key)" :size="13" />
+                <Copy v-else :size="13" />
+                复制地址
               </button>
               <button class="btn primary" :disabled="busyKey === row.key" @click="inspect(row.key)">检查</button>
             </div>
@@ -418,6 +447,8 @@ onBeforeUnmount(() => {
   width: min(880px, 86vw);
   max-height: 78vh;
   min-height: 320px;
+  /* 全局 .modal 只画边框圆角、内边距归各面板自己:不给我们这里就是列表顶到弹窗边框 */
+  padding: 12px 14px;
 }
 
 .dvi-head {
