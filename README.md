@@ -684,7 +684,9 @@ MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生
 
 ### 设备检查插件(手机 WebView / Chrome)
 
-工具栏「设备检查」按钮(手机图标)→ 全窗面板:设备 → 套接字 → 可调试目标,点「检查」就把该目标接进 DevTools 前端(在 bow 的**标签页**里打开,不是新窗口)。
+工具栏「设备检查」按钮(手机图标)→ 全窗面板:设备 → 套接字 → 可调试目标,点「检查」就把该目标接进 DevTools 前端(在 bow 的**标签页**里打开,不是新窗口);每行也可以**复制 ws 地址**或**复制地址**(即点「检查」会打开的那个 DevTools 前端地址,免去先开一个标签)。
+
+⚠️「复制地址」拿到的是**那一刻**的前端地址:bow 自带那份是 `devtools://…`,只有 bow 自己能开;设备指定那份是 appspot 的 `https://…`,任何浏览器都能开,但前提是 bow 的端口转发与中继还活着(关掉面板重新刷新可能换端口)。
 
 复制的是 `chrome://inspect` 那条链路:adb 设备 → `cat /proc/net/unix` 找出 `webview_devtools_remote_<pid>` / `chrome_devtools_remote` → `adb forward` → 设备 `/json` 目标列表 → DevTools 前端。所属 App 的包名来自 `/json/version` 的 `Android-Package` 字段(Chromium 只在 Android 上返回它)。
 
