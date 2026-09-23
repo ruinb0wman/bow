@@ -705,6 +705,30 @@ function insertAfter(file: ParsedFile, loc: Located, block: BlockNode): void {
   else insertTopBlock(file, loc.index + 1, block)
 }
 
+/**
+ * 在块**之前**插入兄弟块(块首回车,见 `insertSiblingBefore`)。
+ *
+ * ⚠️ 顶层块**不能**写成 `insertTopBlock(file, loc.index, block)`:那个助手在 `blockIndex <= 0`
+ * 时是 `entries.unshift()`,而块区**前面可能有 raw 行**(页面属性 `title:: …`、空行),unshift
+ * 会把它们挤到块的后面 —— Logseq 只认页首的属性行,那是静默改坏用户的页面。所以顶层块必须
+ * **按 entry 定位**:插在第 `loc.index` 条 `kind === 'block'` 的 entry 之前。
+ */
+function insertBefore(file: ParsedFile, loc: Located, block: BlockNode): void {
+  if (loc.parent) {
+    loc.parent.children.splice(loc.index, 0, block)
+    return
+  }
+  let seen = -1
+  for (let i = 0; i < file.entries.length; i++) {
+    if (file.entries[i].kind !== 'block') continue
+    if (++seen === loc.index) {
+      file.entries.splice(i, 0, { kind: 'block', block })
+      return
+    }
+  }
+  file.entries.push({ kind: 'block', block })
+}
+
 function removeAt(file: ParsedFile, loc: Located): void {
   if (loc.parent) loc.parent.children.splice(loc.index, 1)
   else removeTopBlock(file, loc.index)
@@ -803,6 +827,27 @@ export function insertSiblingAfter(file: ParsedFile, key: string, text = ''): Ed
   return { file: next, focusKey: block.key }
 }
 
+/**
+ * 在 `key` 块**之前**插入一个同级新块(块首回车),焦点落在新空块上。
+ *
+ * 原块整体不动 —— 文字、多行内容、属性行(`id::` / `collapsed::`)、子块全都留在原地。
+ * 这与 Logseq 的「光标移到块首按回车 = 在上面建一个块」一致。
+ *
+ * ⚠️ 这里**不**调 `ensureEolOnBlockTail(target.block)`:插在目标块前面时,需要行尾的是**前一行**;
+ * 而「缺行尾的行只可能是文件最后一行」,所以前一行必然有行尾。反过来给目标块补行尾,会给本来
+ * 没有尾换行的文件凭空加一个字节。
+ */
+export function insertSiblingBefore(file: ParsedFile, key: string, text = ''): EditResult {
+  const next = cloneFile(file)
+  const target = locate(next, key)
+  if (!target) return { file, focusKey: null }
+  const eol = fileEol(next)
+  const block = newBlock(text, indentText(target.block.head.text), eol)
+  insertBefore(next, target, block)
+  reindex(next)
+  return { file: next, focusKey: block.key }
+}
+
 /** 空文件(或只有页面属性的文件)里插入第一个块 */
 export function insertFirstBlock(file: ParsedFile, text = ''): EditResult {
   const next = cloneFile(file)
@@ -820,8 +865,14 @@ export function insertFirstBlock(file: ParsedFile, text = ''): EditResult {
  * `unit` 省略时只劈第一行(旧行为,多行内容原样留在左块);传入 `unit` 时 `offset` 是
  * `blockLinesForDisplay(block, unit).join('\n')`(= textarea 全文)里的偏移,任意一行都能劈,
  * 光标后的行归新块。UI 一律传 `unit`。
+ *
+ * `offset 0`(光标在块首)是退化情形:前半什么都没有。这时**不是**把整块搬到后面的新块里
+ * (那会让子块与属性行留在被清空的块上),而是在**前面插一个空块**、原块整体不动 ——
+ * 见 `insertSiblingBefore`。
  */
 export function splitBlock(file: ParsedFile, key: string, offset: number, unit?: string): EditResult {
+  // 块首回车:交给「在前面插空块」。放在最前面,后面的 `at === 0` 分支就只剩真正的中段劈开。
+  if (offset <= 0) return insertSiblingBefore(file, key)
   const next = cloneFile(file)
   const target = locate(next, key)
   if (!target) return { file, focusKey: null }
@@ -994,19 +1045,37 @@ export function outdentBlock(file: ParsedFile, key: string): EditResult {
 }
 
 /**
+ * 空块:没有正文、没有内容行 / 属性行、没有子块 —— 删掉它不会丢任何东西。
+ *
+ * 带 `id::` / `collapsed::` 这类属性行的块**不算**空块:那是用户/Logseq 写在文件里的东西。
+ */
+function isEmptyBlock(block: BlockNode): boolean {
+  return blockText(block).trim() === '' && block.extra.length === 0 && block.children.length === 0
+}
+
+/**
  * 块首 Backspace:并入上一个兄弟;自己没有上一个兄弟、或上一块**有子块**(且自己还能反缩进)时
  * 改为反缩进 —— 与 Logseq 的规则一致。
  *
  * 理由:顶层块没地方可反缩进,如果上一块还有子块就只剩「什么都不做」这一种结果,
  * 那对用户是死键。所以两种情况的优先级写成「能反缩进就反缩进,否则合并」。
+ *
+ * 顶层**第一块**既没有上一个兄弟、又反缩不掉,是唯一还会落到「什么都不做」的一格。这里补一条:
+ * 它如果是**空块**就删掉自己(块首回车在页面上方建出来的空块靠这条能收掉),焦点交给下一块;
+ * 非空块 / 页面上唯一的块保持原样(与 Logseq 一致 —— 不能删掉页面里最后一块)。
  */
 export function mergeWithPrevious(file: ParsedFile, key: string): EditResult {
   const probe = locate(file, key)
   if (!probe) return { file, focusKey: null }
   const hasPrev = probe.index > 0
   const prevHasChildren = hasPrev && probe.list[probe.index - 1].children.length > 0
-  if (!hasPrev || (prevHasChildren && probe.parent !== null)) return outdentBlock(file, key)
-
+  if (!hasPrev || (prevHasChildren && probe.parent !== null)) {
+    const out = outdentBlock(file, key)
+    // 反缩进成功(自己是个子块)→ 就是它,与既有行为一致
+    if (out.file !== file) return out
+    if (probe.list.length > 1 && isEmptyBlock(probe.block)) return deleteBlock(file, key)
+    return { file, focusKey: null }
+  }
   const next = cloneFile(file)
   const target = locate(next, key)
   if (!target || target.index === 0) return { file, focusKey: null }

@@ -328,6 +328,50 @@ describe('写', () => {
   })
 })
 
+describe('页面名的别名(文件名 ↔ title::)与新建文件的保存守卫', () => {
+  it('用文件名打开 title:: 不同的页:读到磁盘内容,保存后一个字节不变', async () => {
+    const path = join(graph, 'pages', 'enter-top-props.md')
+    const raw = 'title:: EnterTopProps\n- 甲\n'
+    write(path, raw)
+    await call('rebuildIndex')
+
+    const read = await call<FileRead>('readPage', 'enter-top-props')
+    // 旧行为:exists=false + 空内容 ⇒ 编辑器以为在新建页,而路径就是上面那个文件 ⇒ 一保存就覆盖
+    expect(read.exists).toBe(true)
+    expect(read.raw).toBe(raw)
+    expect(read.view).toEqual({ kind: 'page', name: 'EnterTopProps' })
+
+    const saved = await call<SaveResult>('savePage', {
+      path: read.path,
+      raw: read.raw,
+      baseMtimeMs: read.mtimeMs
+    })
+    expect(saved.ok).toBe(true)
+    expect(readFileSync(path, 'utf8')).toBe(raw)
+  })
+
+  it('expectMissing:文件在打开之后才出现 → 报冲突而不是覆盖', async () => {
+    const path = join(graph, 'pages', 'race.md')
+    write(path, '- Logseq 先建的\n')
+
+    const res = await call<SaveResult>('savePage', {
+      path,
+      raw: '- bow 以为在新建的\n',
+      baseMtimeMs: null,
+      expectMissing: true
+    })
+    expect(res.ok).toBe(false)
+    expect(res.conflict).toBe(true)
+    expect(res.diskRaw).toBe('- Logseq 先建的\n')
+    expect(readFileSync(path, 'utf8')).toBe('- Logseq 先建的\n')
+
+    // 缺省(不传 expectMissing)时行为不变:仍是「强行覆盖」(冲突横幅的出口靠它)
+    const forced = await call<SaveResult>('savePage', { path, raw: '- 强行覆盖\n', baseMtimeMs: null })
+    expect(forced.ok).toBe(true)
+    expect(readFileSync(path, 'utf8')).toBe('- 强行覆盖\n')
+  })
+})
+
 describe('fs.watch 回声(自己写的文件不能让页面重载)', () => {
   // 这一组钉的是 2026-09-20 那个「每次自动保存后编辑器退出、焦点丢」的根因:
   // 自家写入的 watcher 通知被当成「外部改动」广播出去 ⇒ 页面静默重载 ⇒ editingKey 被清。

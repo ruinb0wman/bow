@@ -30,6 +30,7 @@ import {
   indentBlocks,
   insertFirstBlock,
   insertSiblingAfter,
+  insertSiblingBefore,
   isJournalDay,
   favoritesFor,
   mergeWithPrevious,
@@ -333,6 +334,72 @@ describe('块编辑命令', () => {
     expect(out).toBe(
       ['title:: Test', '', '- alpha', '  id:: 11111111-1111-4111-8111-111111111111', '  - alpha child', '- be', '  collapsed:: true', '- ta', '- gamma', ''].join('\n')
     )
+  })
+
+  it('块首回车:在前面插空块,原块的文字 / 属性行 / 子块都不动', () => {
+    const file = parseLogseqFile('- a\n  id:: 11111111-1111-4111-8111-111111111111\n  - a child\n- b\n')
+    const out = splitBlock(file, '0', 0, detectIndentUnit(file))
+    // 第一个 `- ` 后面有一个空格(与 `insertSiblingAfter` 写空块的形式一致)
+    expect(serializeLogseqFile(out.file)).toBe('- \n- a\n  id:: 11111111-1111-4111-8111-111111111111\n  - a child\n- b\n')
+    expect(out.focusKey).toBe('0') // 新空块占 0 号位,原块变成 '1'
+    expect(blockText(topBlocks(out.file)[0])).toBe('')
+    expect(topBlocks(out.file)[1].children.length).toBe(1) // 子块跟着原块,没被留在空块上
+  })
+
+  it('块首回车:页面属性不会被挤到块后面(文件第一块也一样)', () => {
+    const file = parseLogseqFile('title:: T\n- a\n')
+    expect(serializeLogseqFile(splitBlock(file, '0', 0, detectIndentUnit(file)).file)).toBe('title:: T\n- \n- a\n')
+  })
+
+  it('块首回车:子块也在它的前面插同级空块', () => {
+    const file = parseLogseqFile('- a\n  - b\n')
+    const out = splitBlock(file, '0.0', 0, detectIndentUnit(file))
+    expect(serializeLogseqFile(out.file)).toBe('- a\n  - \n  - b\n')
+    expect(out.focusKey).toBe('0.0')
+  })
+
+  it('insertSiblingBefore:同级空块插在目标块前面,原块逐字节不动', () => {
+    const file = parseLogseqFile(FIXTURE)
+    const betaHead = topBlocks(file)[1].head
+    const out = insertSiblingBefore(file, '1', 'new')
+    expect(serializeLogseqFile(out.file)).toBe(
+      ['title:: Test', '', '- alpha', '  id:: 11111111-1111-4111-8111-111111111111', '  - alpha child', '- new', '- beta', '  collapsed:: true', '- gamma', ''].join('\n')
+    )
+    // 未触及的行:原样复用同一份 SourceLine 对象
+    expect(topBlocks(out.file)[2].head).toBe(betaHead)
+    expect(serializeLogseqFile(file)).toBe(FIXTURE)
+  })
+
+  it('块首 Backspace:顶层第一块是空块 → 删掉自己,焦点交给下一块', () => {
+    const out = mergeWithPrevious(parseLogseqFile('- \n- 甲\n'), '0')
+    expect(serializeLogseqFile(out.file)).toBe('- 甲\n')
+    expect(out.focusKey).toBe('0') // 下一块现在占了 0 号位
+  })
+
+  it('块首 Backspace:非空的首块 / 唯一的空块 / 带属性行的空块 → 仍是 no-op', () => {
+    const nonEmpty = parseLogseqFile('- 甲\n- 乙\n')
+    expect(mergeWithPrevious(nonEmpty, '0').file).toBe(nonEmpty)
+    const only = parseLogseqFile('- \n')
+    expect(mergeWithPrevious(only, '0').file).toBe(only)
+    // 带属性行 = 文件里有东西,不算空块(删了会丢 id::)
+    const withProp = parseLogseqFile('- \n  id:: x\n- 甲\n')
+    expect(mergeWithPrevious(withProp, '0').file).toBe(withProp)
+    // 带子块的空块同理
+    const withChild = parseLogseqFile('- \n  - 子\n- 甲\n')
+    expect(mergeWithPrevious(withChild, '0').file).toBe(withChild)
+  })
+
+  it('块首回车 + Backspace 合并:首块与非首块都逐字节回到原样', () => {
+    const raw = '- 甲\n- 乙\n  id:: u\n  - 乙的子块\n'
+    const file = parseLogseqFile(raw)
+    const entered = insertSiblingBefore(file, '1')
+    expect(serializeLogseqFile(entered.file)).toBe('- 甲\n- \n- 乙\n  id:: u\n  - 乙的子块\n')
+    // 光标落在新空块上(它的 key 正是原块原来的 key)⇒ Backspace 就是并回上一块
+    expect(serializeLogseqFile(mergeWithPrevious(entered.file, entered.focusKey ?? '').file)).toBe(raw)
+    // 文件第一块:新空块也是空块 ⇒ Backspace 删掉自己(不再是死键),同样回到原样
+    const top = splitBlock(file, '0', 0, detectIndentUnit(file))
+    expect(serializeLogseqFile(top.file)).toBe('- \n- 甲\n- 乙\n  id:: u\n  - 乙的子块\n')
+    expect(serializeLogseqFile(mergeWithPrevious(top.file, top.focusKey ?? '').file)).toBe(raw)
   })
 
   it('Tab:成为上一个兄弟的最后一个子块(缩进整棵子树)', () => {

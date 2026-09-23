@@ -215,10 +215,11 @@ interface BlockNode {
 | 命令 | 语义 |
 | --- | --- |
 | `insertSiblingAfter` | Enter(光标在末尾)→ 同级新空块 |
+| `insertSiblingBefore` | Enter(光标在**块首**)→ 同级新空块插在**前面**,原块(文字 / 多行内容 / 属性行 / 子块)整体不动;`splitBlock(0)` 就是这个退化情形 |
 | `splitBlock(offset)` | Enter(光标在中段)→ 原块留前半、后半成新兄弟 |
 | `insertMultilineText` | Shift+Enter(块内换行,进 `extraLines`) |
 | `indent` / `outdent` | Tab / Shift+Tab:**整棵子树**平移 2 空格/档;outdent 后若与前一兄弟同级则挂到它下面(Logseq 语义) |
-| `mergeWithPrev` | Backspace 在块首:上一块有子块 → 先 outdent;否则拼成一块(保留上一块的属性行) |
+| `mergeWithPrev` | Backspace 在块首:上一块有子块 → 先 outdent;否则拼成一块(保留上一块的属性行);顶层**第一块**空块 → 删掉自己(否则是死键) |
 | `setText(key, text)` | 就地编辑(只替换第一行 `- ` 之后的文本,`extraLines` 不动) |
 | `deleteBlock` | 删块与子树(空块且非唯一块时) |
 | `toggleCollapse` | 折叠(仅会话内,不写 `collapsed::`) |
@@ -252,7 +253,8 @@ type Token =
 interface PageEntry {
   path: string
   mtimeMs: number
-  title: string          // decode 文件名,或 title:: 
+  title: string          // title:: 优先,否则 decode 文件名(页面 identity)
+  stem: string           // 文件名词干(解码后)= 页面名的**别名**,与 title 指向同一个文件
   day: string | null     // 日志才是 YYYY-MM-DD
   refs: string[]         // 出链(小写页面名)
   blocks: Array<{ line: number; text: string; refs: string[] }>  // 供反链定位
@@ -261,6 +263,9 @@ interface PageEntry {
 
 - **建索引**:遍历 `journals/` + `pages/`(config 目录名,跳过 `:hidden`),只读 `.md`;
   每个文件解析一次并把 `mtimeMs` 一起缓存 ⇒ 第二次只重解析变化的文件。
+  三张名字表:`byDay`(日志日期)· `byTitle`(显示名)· `byStem`(文件名词干,**只收页面**);
+  `resolvePage()` 按 title → day → stem 依次命中 —— 只认 title 的话,用文件名打开 `title::` 不同的页
+  会被当成新页,而新页路径正是那个已存在的文件,**第一次保存就把它覆盖掉**。
 - **反链查询**:`refs` 里含目标页面名的文件 → 每条块给出「来源(日期/页面标题)+ 块文本 + 行号」,按日期倒序。
 - **进度**:`index-progress {done, total}` 广播,首次建索引时页面顶部显示一行细进度(不阻塞)。
 - **规模保护**:文件数或总字节超阈值(暂定 5000 文件 / 64MB)时,设置页显示提示并**只对当前页做即时扫描**
@@ -275,7 +280,7 @@ interface PageEntry {
 | 冲突检测 | `savePage({path, raw, baseMtimeMs})`,磁盘 mtime 与 `baseMtimeMs` 不一致 ⇒ 返回 `{conflict:true, diskRaw}`,**绝不覆盖**;UI 顶部横幅给两个按钮「用磁盘版本重载(丢弃本地)」「强制覆盖」 |
 | 外部改动 | `fs.watch` 防抖 200ms → 失效索引 + 广播 `graph-changed`;当前页**干净**则静默重载,**脏**则显示同一横幅 |
 | 自己写的文件 | 记录 `lastWrite: Map<path, {mtimeMs, hash}>`,watcher 事件与之匹配就吞掉(否则每次打字都触发一次重载) |
-| 新建文件 | 只在第一次保存时创建(空日志/空页面不发文件) |
+| 新建文件 | 只在第一次保存时创建(空日志/空页面不发文件);`expectMissing`(编辑器打开时文件不存在)遇上「磁盘上已经有了」⇒ 报冲突,**绝不静默覆盖** |
 | 撤销 | 每标签一个**整篇 raw 快照**栈(上限 50),`Ctrl+Z` / `Ctrl+Shift+Z` → 恢复快照并走同一条保存路径(不做逐块 diff 级 undo) |
 
 ### 3.6 插件主进程 API 面(`ctx.ipc.handle`)

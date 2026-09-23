@@ -205,7 +205,8 @@ function onKeydown(event: KeyboardEvent): void {
 
   if (isEnter && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
     event.preventDefault()
-    // 光标在整块末尾(最后一行行尾)→ 新兄弟块;否则在光标处劈开
+    // 光标在整块末尾(最后一行行尾)→ 新兄弟块;块首(offset 0)→ 由 `splitBlock` 换算成
+    // 「在前面插一个空块」(原块整体不动);其余在光标处劈开
     const atEnd = caret >= draft.value.length
     emit('action', atEnd ? { type: 'new-sibling', key: props.block.key } : { type: 'split', key: props.block.key, offset: caret })
     return

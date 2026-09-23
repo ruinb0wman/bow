@@ -521,7 +521,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 `SLOT_PLUGIN_ORDER.toolbar = ['bookmarks','downloads','mcp-http','adblock','element-fullscreen','terminal','logseq']`;
 `addressbar-trailing` 为空(保持注册顺序)。未列出的插件排在已列出者之后。
 
-**笔记插件(`bow://logseq`)的四条不变式**(它是唯一直接读写用户仓库外文件的插件,改它之前请务必看这几条,
+**笔记插件(`bow://logseq`)的五条不变式**(它是唯一直接读写用户仓库外文件的插件,改它之前请务必看这几条,
 细节与取舍见 `.pi/plans/2026-09-20-logseq-plugin/plan.md`):
 
 | 不变式 | 为什么 | 钉在哪里 |
@@ -530,6 +530,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | 编辑命令只换被碰过的 `SourceLine` 对象(`cloneFile` 是共享式拷贝) | 「没改的行逐字节不变」不靠自觉,靠对象同一性 | `shared.ts` 的 `setHeadText` / `shiftIndentLines` + 纯函数用例 |
 | 只写图目录内 `journals/`+`pages/` 下的 `.md`(「`logseq/config.edn` 永不写回」) | 与 Logseq 共用同一个图,越界写入是**用户的笔记**而不是浏览器数据 | `main.ts` 的 `assertWritable()` + `tests/logseqPlugin.test.ts` |
 | 行级标记也只是渲染:`matchLineMark` 的标记原文 + 行内 token 拼接 === 整行原文 | 标题/复选框/引用/列表/围栏行不改写文件;`analyzeBlockLines` 顺便给每行算出 textarea 全局偏移(点击落行尾)。**表格行是例外**:`mark.raw` = 整行、`tokens` 为空(与 `hr` 同款),单元格另放 `mark.cells`(`tokensToRaw(cell.tokens) === cell.text`) | `format.ts` 的 `matchLineMark` / `analyzeBlockLines` / `tableCellsFor` + `tests/logseqFormat.test.ts` |
+| **绝不静默覆盖**:认页按「显示名 → 日期 → **文件名词干别名**」三条路(`resolvePage`);编辑器以为不存在的文件(`exists:false`)在保存时如果已经出现,一律报冲突 | 用文件名打开一个 `title::` 与文件名不同的页时,旧行为会把它当成新页 —— 而新页路径**就是那个已存在的文件**,第一次保存就把用户的笔记清空(实测过)。别名把这条路堵死,`expectMissing` 守住「打开之后才出现」的竞态(如 Logseq 先建了今日日志) | `graph.ts` 的 `byStem`/`resolvePage` + `main.ts` 的 `savePage(expectMissing)` + `tests/logseqGraph.test.ts` / `tests/logseqPlugin.test.ts` |
 
 ### 5.9 内核事件总线(全部事件名)
 
@@ -1005,16 +1006,16 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 平台预设 / spawn 参数 / 环境变量清洗 / 回放缓冲 / PATH 查找 / 参数文本 / 复制粘贴键位)、
 `downloadsShared`(33,下载记录的纯逻辑:设置归一 / 动作可用性 / 启动归一 / 裁剪排序 / 重名去重 / 格式化)。合计 **773**。
 
-笔记插件(`bow://logseq`)另加 4 个文件 / 146 例,外加 `internalPages` 的 2 例:
+笔记插件(`bow://logseq`)另加 4 个文件 / 157 例,外加 `internalPages` 的 2 例:
 
 | 测试文件 | 行数 | 用例 | 钉住的是什么 |
 | --- | --- | --- | --- |
 | `logseqFormat.test.ts` | 427 | 35 | **字节保真**(`serialize(parse(raw)) === raw`,含 CRLF / 无尾换行 / 空文件 / 4 空格缩进)、块树与属性行、**渲染零丢字**(行内 token、行级标记的 `mark.raw` 拼接 === 原文)、**表格判据与单元格偏移/对齐**(含 Logseq 真实形态 `\|-\|-\|`)与源码区间 |
-| `logseqShared.test.ts` | 750 | 76 | 日期 ↔ 文件名词干(moment 方言整条回落)、页面名 ↔ 文件名(`:triple-lowbar`)、`config.edn` 键值、模板变量、**每个编辑命令的整份文件输出**(含多行劈块、`toggleTaskMarker`、多块选区的删/缩/反缩/复制、**按 `-` 行粘贴拆块**:嵌套还原 / 非 `-` 行归上一块 / 光标处劈开 / 空块顶替 / 缩进归一 / 复制→粘贴往返)、`display → set` 恒等 |
-| `logseqGraph.test.ts` | 256 | 16 | 索引(mtime 增量 / `:hidden` 三种写法)、反链排序与「不算自己的反链」、搜索、日期列表 |
-| `logseqPlugin.test.ts` | 493 | 31 | **真实临时目录**:原子写不留 `.tmp`、越界路径被拒、只写 `journals/`+`pages/`、mtime 冲突不覆盖、模板只在第一次编辑落盘、视图状态按 tabId |
+| `logseqShared.test.ts` | 817 | 83 | 日期 ↔ 文件名词干(moment 方言整条回落)、页面名 ↔ 文件名(`:triple-lowbar`)、`config.edn` 键值、模板变量、**每个编辑命令的整份文件输出**(含多行劈块、**块首回车前插空块 + Backspace 合并往返 / 顶层空块自删**、`toggleTaskMarker`、多块选区的删/缩/反缩/复制、**按 `-` 行粘贴拆块**:嵌套还原 / 非 `-` 行归上一块 / 光标处劈开 / 空块顶替 / 缩进归一 / 复制→粘贴往返)、`display → set` 恒等 |
+| `logseqGraph.test.ts` | 278 | 18 | 索引(mtime 增量 / `:hidden` 三种写法 / **文件名词干别名 `byStem` 只收页面**)、反链排序与「不算自己的反链」、搜索、**页面名别名解析**(`title::` 与文件名不同时两个名字都命中)、日期列表 |
+| `logseqPlugin.test.ts` | 537 | 33 | **真实临时目录**:原子写不留 `.tmp`、越界路径被拒、只写 `journals/`+`pages/`、mtime 冲突不覆盖、**`expectMissing` 拒绝静默覆盖**、**用文件名打开 `title::` 不同的页拿到磁盘内容**、模板只在第一次编辑落盘、视图状态按 tabId |
 
-**合计 1001**。
+**合计 1012**。
 
 设备检查插件的三个测试文件(它们不在上表里:代码量不大,但每一条都在钉外部格式):
 

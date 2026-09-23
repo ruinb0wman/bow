@@ -53,6 +53,7 @@ import {
 } from './shared'
 import {
   backlinksOf,
+  buildIndex,
   indexStats,
   journalDays,
   MAX_INDEX_FILES,
@@ -305,19 +306,21 @@ function createLogseqPlugin(): PluginMain {
     runtime.index = rebuildIndex(files)
   }
 
+  /**
+   * 重拼索引(单个文件变化 / 写完之后)。
+   *
+   * ⚠️ 必须走 `buildIndex()` —— 这里曾经手抄了一份 map 构造(`byPath`/`byDay`/`byTitle`),
+   * 加新索引(`byStem`)时漏改它就会静默失效。
+   */
   function rebuildIndex(files: IndexedFile[]): GraphIndex | null {
     if (!runtime) return null
-    return {
+    return buildIndex({
       root: runtime.root,
       config: runtime.config,
       format: compileDateFormat(runtime.config.fileFormat),
       files,
-      byPath: new Map(files.map((f) => [f.rel, f])),
-      byDay: new Map(files.filter((f) => f.day).map((f) => [f.day as string, f])),
-      byTitle: new Map(files.map((f) => [f.title.trim().toLowerCase(), f])),
-      tooLarge: files.length >= MAX_INDEX_FILES,
-      scannedAt: Date.now()
-    }
+      tooLarge: files.length >= MAX_INDEX_FILES
+    })
   }
 
   // ---------- 路径与写入 ----------
@@ -433,7 +436,12 @@ function createLogseqPlugin(): PluginMain {
 
   // ---------- 写 ----------
 
-  async function savePage(input: { path?: unknown; raw?: unknown; baseMtimeMs?: unknown }): Promise<SaveResult> {
+  async function savePage(input: {
+    path?: unknown
+    raw?: unknown
+    baseMtimeMs?: unknown
+    expectMissing?: unknown
+  }): Promise<SaveResult> {
     if (!runtime) return { ok: false, error: '还没有选择图目录' }
     const path = typeof input?.path === 'string' ? input.path : ''
     const raw = typeof input?.raw === 'string' ? input.raw : ''
@@ -445,6 +453,13 @@ function createLogseqPlugin(): PluginMain {
     }
     const base = typeof input.baseMtimeMs === 'number' ? input.baseMtimeMs : null
     const diskMtime = await io.mtimeMs(path)
+    // 编辑器**以为这个文件还不存在**(新建页面 / 今天的日志还没落盘):那就绝不允许静默覆盖 ——
+    // 打开之后才出现的文件(Logseq 先建了今天的日志、或两个工具在抢同一页)走冲突那条路,
+    // 用户在横幅上选「用磁盘版本重载」还是「强行覆盖」。
+    if (input.expectMissing === true && diskMtime !== null) {
+      const diskRaw = (await readIfExists(path)) ?? ''
+      return { ok: false, conflict: true, diskRaw, mtimeMs: diskMtime }
+    }
     if (base !== null && diskMtime !== null && Math.abs(diskMtime - base) > 1) {
       const diskRaw = (await readIfExists(path)) ?? ''
       return { ok: false, conflict: true, diskRaw, mtimeMs: diskMtime }

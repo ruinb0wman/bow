@@ -408,7 +408,10 @@ async function doSave(): Promise<void> {
     const res = await invoke<SaveResult>('savePage', {
       path: meta.value.path,
       raw,
-      baseMtimeMs: meta.value.mtimeMs
+      baseMtimeMs: meta.value.mtimeMs,
+      // 打开时这页还不存在(`exists: false`)= 我们以为是在新建文件。主进程据此拦住「打开之后
+      // 才出现的同名文件」,不让第一次保存把它覆盖掉(见 main.ts 的 `savePage`)。
+      expectMissing: meta.value.exists === false
     })
     if (res.conflict) {
       trace('conflict:detected')
@@ -445,7 +448,9 @@ async function overwriteDisk(): Promise<void> {
   if (!meta.value) return
   cancelPendingSave()
   conflict.value = null
-  meta.value = { ...meta.value, mtimeMs: null }
+  // `exists: true` 是必须的:否则 `doSave` 依旧会带上 `expectMissing`(新建页),
+  // 主进程会再次判冲突 —— 用户点「强行覆盖」也写不下去。
+  meta.value = { ...meta.value, mtimeMs: null, exists: true }
   dirty.value = true
   await doSave()
 }

@@ -245,6 +245,28 @@ describe('搜索与解析', () => {
     expect(resolvePage(index, '没有这个页')).toBe(null)
   })
 
+  it('页面名的别名:文件名与 title:: 不同时,两个名字都解析到同一个文件', async () => {
+    const io = memIo({
+      '/graph/pages/enter-top-props.md': { content: 'title:: EnterTopProps\n- 甲\n', mtimeMs: 2 }
+    })
+    const index = await scanGraph(io, ROOT, DEFAULT_GRAPH_CONFIG, null)
+    expect(index.files[0].stem).toBe('enter-top-props')
+    expect(index.files[0].title).toBe('EnterTopProps')
+    expect(resolvePage(index, 'EnterTopProps')?.rel).toBe('pages/enter-top-props.md')
+    // 旧行为:null ⇒ `readPage` 把它当成新页,而新页的路径正是这个已存在的文件 ⇒ 一保存就覆盖
+    expect(resolvePage(index, 'enter-top-props')?.rel).toBe('pages/enter-top-props.md')
+    // 搜索框敲文件名也得能看见这一页(否则用户以为它不存在,回车就新建)
+    expect(searchPages(index, 'enter-top').map((h) => h.name)).toEqual(['EnterTopProps'])
+    expect(resolvePage(index, 'enter-top-props-2')).toBe(null)
+  })
+
+  it('byStem 只收页面:日志按日期认,文件名别名不抢键', async () => {
+    const { index } = await build()
+    expect(index.byStem.has('cardinality')).toBe(true)
+    expect(index.byStem.has('数据库')).toBe(true)
+    expect(index.byStem.has('2026_09_20')).toBe(false)
+  })
+
   it('stats 与日期列表', async () => {
     const { index } = await build()
     expect(journalDays(index)).toEqual(['2026-09-20', '2026-09-19'])
