@@ -4,6 +4,8 @@ import type { LayoutPreset, PaneBox, Rect } from './split'
 
 export interface TabInfo {
   id: number
+  /** 所属窗口 id(多窗口下由 `WindowManager.allTabs()` 补上;tabId 全局唯一) */
+  windowId?: number
   url: string
   title: string
   loading: boolean

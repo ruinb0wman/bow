@@ -58,8 +58,10 @@ export interface PluginPageApi {
    * 参数是**已经拼好的前端地址**而不是 ws 地址:前端不一定是 bow 自带的那份 ——
    * 设备检查插件在设备版本与 Electron 不匹配时会用**设备指定的前端**(可能是 `https://…`),
    * 那份地址只有插件知道。bow 自带那份的拼装仍在 `@shared/devtools`(唯一来源)。
+   *
+   * `windowId` 省略时开在**聚焦窗口**;多窗口下插件若要指定窗口需显式传入。
    */
-  openDevToolsTab(frontendUrl: string, title?: string, activate?: boolean): number
+  openDevToolsTab(frontendUrl: string, title?: string, activate?: boolean, windowId?: number): number
 }
 
 /**

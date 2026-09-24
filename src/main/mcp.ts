@@ -8,7 +8,8 @@ import { z } from 'zod'
 import type { WebContents } from 'electron'
 import type { ActionResult, SearchEngineId } from '@shared/types'
 import { isHttpUrl, searchUrl } from '@shared/url'
-import type { TabManager } from './tabManager'
+import type { TabRecord } from './tabManager'
+import type { WindowContext, WindowRegistry } from './windows'
 import { getSettingsStore } from './stores'
 import type { PluginKernel } from './plugins/kernel'
 import type { McpToolSpec } from './plugins/mcpHost'
@@ -26,7 +27,7 @@ import {
 } from './actions'
 import { log, logError } from './logger'
 
-export type MCPDeps = { tabs: TabManager; kernel: PluginKernel }
+export type MCPDeps = { windows: WindowRegistry; kernel: PluginKernel }
 
 /** 核心工具名:预留给内核做插件重名校验 */
 export const CORE_MCP_TOOL_NAMES = [
@@ -70,6 +71,9 @@ export const MCP_INSTRUCTIONS = `这是一个真实的多标签浏览器窗口(�
 - 参数名必须精确:未知参数会被拒绝,报错里会列出本工具接受的参数名,不要凭记忆猜参数。
 - 页面类工具默认作用于「活动标签」。若活动标签是浏览器内部页面(bow://settings,即 browser_list_tabs 里 internal: true),
   会退到最近浏览过的页面标签;一个都没有时会自动新建 about:blank 标签——此时返回的 tabId 并不是你预期的那个,一切以返回值为准。
+- bow 可同时开多个窗口(重复启动会开新窗口)。**tabId 全局唯一**,browser_list_tabs 每条都带 windowId,响应顶层还带 focusedWindowId;
+  省略 tabId 时作用于**当前聚焦窗口**的活动标签。browser_new_tab 可用 windowId 指定在哪个窗口新建;
+  browser_switch_tab 会把目标标签所属的窗口设为**后续操作的默认窗口**(并尝试提到前台;Wayland 下窗口管理器可能拒绝焦点请求)。
 
 推荐工作流
 1. browser_navigate / browser_search / browser_new_tab / browser_reload 默认已等到页面加载完成(waitUntil: 'load');
@@ -129,7 +133,7 @@ export const MCP_INSTRUCTIONS = `这是一个真实的多标签浏览器窗口(�
 
 /** 构建一个注册好全部核心工具的 MCP 服务器(插件工具由调用方按传输方式接入) */
 export function buildBrowserServer(deps: MCPDeps): McpServer {
-  const { tabs } = deps
+  const { windows } = deps
   const server = new McpServer(
     { name: 'mcp-browser', version: '0.1.0' },
     { instructions: MCP_INSTRUCTIONS }
@@ -154,27 +158,34 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
       (args: any, extra: any) => mcpActivity.wrapTool(name, () => handler(args, extra))
     )
 
-  // 当前操作目标视图:可指定 tabId,默认取活动标签(活动标签是内部页面时退到最近浏览的页面标签);
+  // 当前操作目标视图:可指定 tabId(全局唯一,经 WindowManager 跨窗口解析),默认取**聚焦窗口**
+  // 的活动标签(活动标签是内部页面时退到最近浏览的页面标签);
   // 内部页面标签(如 bow://settings)持有应用 preload,一律不作为页面工具的操作目标。
-  const target = (tabId?: number): { view: ReturnType<TabManager['getActiveView']>; fail: string | null } => {
+  const target = (
+    tabId?: number
+  ): { view: TabRecord | null; ctx: WindowContext | null; fail: string | null } => {
     if (tabId != null) {
-      const hit = tabs.getView(tabId)
-      if (!hit) return { view: null, fail: `标签 ${tabId} 不存在` }
-      if (hit.info.internal) return { view: null, fail: `标签 ${tabId} 是浏览器内部页面(设置 / DevTools 前端),不支持页面操作` }
-      return { view: hit, fail: null }
+      const hit = windows.byTabId(tabId)
+      if (!hit) return { view: null, ctx: null, fail: `标签 ${tabId} 不存在` }
+      if (hit.record.info.internal) {
+        return { view: null, ctx: null, fail: `标签 ${tabId} 是浏览器内部页面(设置 / DevTools 前端),不支持页面操作` }
+      }
+      return { view: hit.record, ctx: hit.ctx, fail: null }
     }
-    let hit = tabs.getActiveBrowsingView()
+    const ctx = windows.focused()
+    if (!ctx) return { view: null, ctx: null, fail: '没有可用窗口' }
+    let hit = ctx.tabs.getActiveBrowsingView()
     if (!hit) {
       // 只有内部页面标签(或没有任何标签):新建空白标签作为操作目标
-      const t = tabs.create('about:blank')
-      hit = tabs.getView(t.id)
+      const t = ctx.tabs.create('about:blank')
+      hit = ctx.tabs.getView(t.id)
     }
-    if (!hit) return { view: null, fail: '没有活动标签' }
-    return { view: hit, fail: null }
+    if (!hit) return { view: null, ctx, fail: '没有活动标签' }
+    return { view: hit, ctx, fail: null }
   }
 
   /** 取标签页的 WebContents(等待类工具用) */
-  const wcOf = (tabId: number): WebContents | null => tabs.getView(tabId)?.view.webContents ?? null
+  const wcOf = (tabId: number): WebContents | null => windows.byTabId(tabId)?.record.view.webContents ?? null
 
   /**
    * 等到指定标签导航到 expectUrl 并加载完成;拿不到视图时返回失败体。
@@ -202,19 +213,21 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
       if (!isHttpUrl(url)) return textContent({ ok: false, error: 'navigate 仅接受 http/https 地址' })
       // 指定 tabId:就地导航该标签(是内部页面标签时 target() 会直接拒绝)
       if (tabId != null) {
-        const { view, fail } = target(tabId)
-        if (!view) return textContent({ ok: false, error: fail })
+        const { view, ctx, fail } = target(tabId)
+        if (!view || !ctx) return textContent({ ok: false, error: fail })
         const id = view.info.id
-        if (!tabs.navigate(id, url)) {
+        if (!ctx.tabs.navigate(id, url)) {
           return textContent({ ok: false, tabId: id, error: `标签 ${id} 无法导航到该地址` })
         }
         if (waitUntil === 'none') return textContent({ ok: true, url, tabId: id, createdTab: false })
         const res = await loadFor(id, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS, url)
         return textContent({ ok: res.ok, url, tabId: id, createdTab: false, ...loadFields(res) })
       }
-      // 未指定:活动标签是设置等内部页面时另开新标签(内部页面不可被导航走)
-      const activeBefore = tabs.getActiveView()
-      const tab = tabs.openUrl(url)
+      // 未指定:作用于**聚焦窗口**;活动标签是设置等内部页面时另开新标签(内部页面不可被导航走)
+      const ctx = windows.focused()
+      if (!ctx) return textContent({ ok: false, error: '没有可用窗口' })
+      const activeBefore = ctx.tabs.getActiveView()
+      const tab = ctx.tabs.openUrl(url)
       const createdTab = tab.id !== activeBefore?.info.id
       if (waitUntil === 'none') return textContent({ ok: true, url, tabId: tab.id, createdTab })
       const res = await loadFor(tab.id, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS, url)
@@ -237,18 +250,20 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
       const url = searchUrl(engineId, query)
       // 指定 tabId:就地导航该标签(是内部页面标签时 target() 会直接拒绝)
       if (tabId != null) {
-        const { view, fail } = target(tabId)
-        if (!view) return textContent({ ok: false, error: fail })
+        const { view, ctx, fail } = target(tabId)
+        if (!view || !ctx) return textContent({ ok: false, error: fail })
         const id = view.info.id
-        if (!tabs.navigate(id, url)) {
+        if (!ctx.tabs.navigate(id, url)) {
           return textContent({ ok: false, tabId: id, error: `标签 ${id} 无法导航到该地址` })
         }
         if (waitUntil === 'none') return textContent({ ok: true, engine: engineId, url, tabId: id, createdTab: false })
         const res = await loadFor(id, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS, url)
         return textContent({ ok: res.ok, engine: engineId, url, tabId: id, createdTab: false, ...loadFields(res) })
       }
-      const activeBefore = tabs.getActiveView()
-      const tab = tabs.openUrl(url)
+      const ctx = windows.focused()
+      if (!ctx) return textContent({ ok: false, error: '没有可用窗口' })
+      const activeBefore = ctx.tabs.getActiveView()
+      const tab = ctx.tabs.openUrl(url)
       const createdTab = tab.id !== activeBefore?.info.id
       if (waitUntil === 'none') return textContent({ ok: true, engine: engineId, url, tabId: tab.id, createdTab })
       const res = await loadFor(tab.id, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS, url)
@@ -372,11 +387,11 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
       timeoutMs: z.number().int().positive().optional()
     },
     async ({ key, tabId, waitUntil, timeoutMs }) => {
-      const { view, fail } = target(tabId)
-      if (!view) return textContent({ ok: false, error: fail })
+      const { view, ctx, fail } = target(tabId)
+      if (!view || !ctx) return textContent({ ok: false, error: fail })
       const low = key.toLowerCase()
       if (low === 'f5' || low === 'ctrl+r' || low === 'control+r') {
-        tabs.reload(view.info.id)
+        ctx.tabs.reload(view.info.id)
         const res = await waitForLoad(view.view.webContents, {
           mode: 'maybe-navigation',
           timeoutMs: DEFAULT_LOAD_TIMEOUT_MS
@@ -384,11 +399,11 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
         return textContent({ ok: res.ok, tabId: view.info.id, key, ...loadFields(res) })
       }
       if (low === 'ctrl+w' || low === 'control+w') {
-        tabs.close(view.info.id)
+        ctx.tabs.close(view.info.id)
         return textContent({ ok: true, key, closed: true })
       }
       if (low === 'ctrl+t' || low === 'control+t') {
-        const t = tabs.create('about:blank')
+        const t = ctx.tabs.create('about:blank')
         return textContent({ ok: true, key, newTabId: t.id })
       }
       const res = await pressKey(view.view.webContents, key)
@@ -424,9 +439,9 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
   )
 
   // 后退/前进会引发导航,默认等到加载完成;stop 无等待语义
-  const navigations: Array<{ name: string; fn: (id: number) => void }> = [
-    { name: 'browser_back', fn: (id) => tabs.back(id) },
-    { name: 'browser_forward', fn: (id) => tabs.forward(id) }
+  const navigations: Array<{ name: string; fn: (tabs: WindowContext['tabs'], id: number) => void }> = [
+    { name: 'browser_back', fn: (tabs, id) => tabs.back(id) },
+    { name: 'browser_forward', fn: (tabs, id) => tabs.forward(id) }
   ]
   for (const { name, fn } of navigations) {
     tool(
@@ -437,10 +452,10 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
         timeoutMs: z.number().int().positive().optional()
       },
       async ({ tabId, waitUntil, timeoutMs }) => {
-        const { view, fail } = target(tabId)
-        if (!view) return textContent({ ok: false, error: fail })
+        const { view, ctx, fail } = target(tabId)
+        if (!view || !ctx) return textContent({ ok: false, error: fail })
         const id = view.info.id
-        fn(id)
+        fn(ctx.tabs, id)
         if (waitUntil === 'none') return textContent({ ok: true, tabId: id })
         const res = await waitForLoad(view.view.webContents, {
           mode: 'maybe-navigation',
@@ -452,9 +467,9 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
   }
 
   tool('browser_stop', { tabId: z.number().optional() }, async ({ tabId }) => {
-    const { view, fail } = target(tabId)
-    if (!view) return textContent({ ok: false, error: fail })
-    tabs.stop(view.info.id)
+    const { view, ctx, fail } = target(tabId)
+    if (!view || !ctx) return textContent({ ok: false, error: fail })
+    ctx.tabs.stop(view.info.id)
     return textContent({ ok: true, tabId: view.info.id })
   })
 
@@ -466,10 +481,10 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
       timeoutMs: z.number().int().positive().optional()
     },
     async ({ tabId, waitUntil, timeoutMs }) => {
-      const { view, fail } = target(tabId)
-      if (!view) return textContent({ ok: false, error: fail })
+      const { view, ctx, fail } = target(tabId)
+      if (!view || !ctx) return textContent({ ok: false, error: fail })
       const id = view.info.id
-      tabs.reload(id)
+      ctx.tabs.reload(id)
       if (waitUntil === 'none') return textContent({ ok: true, tabId: id })
       const res = await waitForLoad(view.view.webContents, {
         mode: 'maybe-navigation',
@@ -484,38 +499,50 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
     {
       url: z.string().optional(),
       activate: z.boolean().default(true),
+      windowId: z.number().optional().describe('在哪个窗口新建标签;省略则用聚焦窗口'),
       waitUntil: WaitUntilSchema.default('load').describe("'load' 等到页面加载完成(默认);'none' 立即返回"),
       timeoutMs: z.number().int().positive().optional()
     },
-    async ({ url, activate, waitUntil, timeoutMs }) => {
+    async ({ url, activate, windowId, waitUntil, timeoutMs }) => {
       if (url && !isHttpUrl(url)) return textContent({ ok: false, error: 'new_tab 仅接受 http/https 地址' })
-      const t = tabs.create(url ?? 'about:blank', activate)
+      const ctx = (windowId != null ? windows.byId(windowId) : null) ?? windows.focused()
+      if (!ctx) return textContent({ ok: false, error: '没有可用窗口' })
+      const t = ctx.tabs.create(url ?? 'about:blank', activate)
       // 新建标签的 info.url 要等 did-navigate 才更新,这里先回显请求地址,完成后的真实地址在 loadedUrl
       const requested = url ?? 'about:blank'
-      if (!url || waitUntil === 'none') return textContent({ ok: true, tabId: t.id, url: requested })
+      if (!url || waitUntil === 'none') return textContent({ ok: true, tabId: t.id, windowId: ctx.id, url: requested })
       const res = await loadFor(t.id, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS, url)
-      return textContent({ ok: res.ok, tabId: t.id, url: requested, ...loadFields(res) })
+      return textContent({ ok: res.ok, tabId: t.id, windowId: ctx.id, url: requested, ...loadFields(res) })
     }
   )
 
   tool('browser_close_tab', { tabId: z.number() }, async ({ tabId }) => {
-    const res = tabs.close(tabId)
+    const hit = windows.byTabId(tabId)
+    if (!hit) return textContent({ ok: false, error: `标签 ${tabId} 不存在` })
+    const res = hit.ctx.tabs.close(tabId)
     return textContent(res.ok ? { ok: true, closed: tabId } : { ok: false, error: `标签 ${tabId} 不存在` })
   })
 
   tool('browser_switch_tab', { tabId: z.number() }, async ({ tabId }) => {
-    const hit = tabs.getView(tabId)
+    const hit = windows.byTabId(tabId)
     if (!hit) return textContent({ ok: false, error: `标签 ${tabId} 不存在` })
-    tabs.activate(tabId)
-    return textContent({ ok: true, activate: true, tabId })
+    hit.ctx.tabs.activate(tabId)
+    // 切后台窗口的标签 = 把那个窗口设为后续操作的默认窗口。
+    // 为什么不能只靠 window.focus():Wayland 下窗口管理器可能拒绝焦点请求,
+    // 那样后续省略 tabId 的调用会仍打在旧窗口上 —— markActive 让 switch_tab 的语义确定。
+    if (!hit.ctx.window.isDestroyed()) hit.ctx.window.focus()
+    windows.markActive(hit.ctx)
+    return textContent({ ok: true, activate: true, tabId, windowId: hit.ctx.id })
   })
 
   tool('browser_list_tabs', {}, async () => {
-    const list = tabs.listTabs()
+    const list = windows.allTabs()
     return textContent({
       ok: true,
+      focusedWindowId: windows.focused()?.id ?? null,
       tabs: list.map((t) => ({
         id: t.id,
+        windowId: t.windowId,
         url: t.url,
         title: t.title,
         loading: t.loading,
@@ -541,9 +568,9 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
   )
 
   tool('browser_get_info', { tabId: z.number().optional() }, async ({ tabId }) => {
-    const { view, fail } = target(tabId)
-    if (!view) return textContent({ ok: false, error: fail })
-    return textContent({ ok: true, info: view.info })
+    const { view, ctx, fail } = target(tabId)
+    if (!view || !ctx) return textContent({ ok: false, error: fail })
+    return textContent({ ok: true, info: { ...view.info, windowId: ctx.id } })
   })
 
   return server

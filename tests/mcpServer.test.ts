@@ -16,6 +16,7 @@ import type { TabInfo } from '../src/shared/types'
 import type { FakeWc } from './fakeWc'
 import { FakeKernel } from './fakeKernel'
 import { FakeTabs } from './fakeTabs'
+import { fakeWindows } from './fakeWindows'
 
 vi.mock('electron', async () => {
   const { mkdtempSync } = await import('node:fs')
@@ -37,7 +38,7 @@ async function setup(): Promise<Ctx> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const tabs = new FakeTabs()
   const kernel = new FakeKernel()
-  await startMcpServer({ tabs: tabs as never, kernel: kernel as never }, serverTransport)
+  await startMcpServer({ windows: fakeWindows(tabs) as never, kernel: kernel as never }, serverTransport)
   const client = new Client({ name: 'mcp-browser-test', version: '0.0.0' })
   await client.connect(clientTransport)
   return { client, tabs, kernel }
@@ -521,6 +522,76 @@ describe('MCP 服务器:目标标签边界', () => {
     expect(closed.data.closed).toBe(tab.id)
     const again = await call(client, 'browser_close_tab', { tabId: tab.id })
     expect(again.isError).toBe(true)
+    await client.close()
+  })
+})
+
+describe('MCP 服务器:多窗口寻址', () => {
+  /** 两窗口注册表:window 1 = tabsA,window 2 = tabsB(聚焦窗口 = 2) */
+  function twoWindows(tabsA: FakeTabs, tabsB: FakeTabs) {
+    // 真实 WindowManager 用进程级分配器保证 tabId 全局唯一;FakeTabs 各自从 1 开始,
+    // 这里把第二个窗口的 id 区间错开,模拟全局唯一。
+    tabsB.nextId = 100
+    const a = fakeWindows(tabsA, { id: 1 })
+    const b = fakeWindows(tabsB, { id: 2 })
+    let activeId = 2 // 初始聚焦窗口 = 2
+    return {
+      byId: (id: number) => (id === 1 ? a.focused() : id === 2 ? b.focused() : null),
+      byTabId: (id: number) => a.byTabId(id) ?? b.byTabId(id),
+      focused: () => (activeId === 1 ? a.focused() : b.focused()),
+      markActive: (ctx: { id: number }) => {
+        activeId = ctx.id
+      },
+      allTabs: () => [...a.allTabs(), ...b.allTabs()]
+    }
+  }
+
+  it('list_tabs 带 windowId 与 focusedWindowId;tabId 跨窗口解析', async () => {
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    const tabsA = new FakeTabs()
+    const tabsB = new FakeTabs()
+    await startMcpServer({ windows: twoWindows(tabsA, tabsB) as never, kernel: new FakeKernel() as never }, serverTransport)
+    const client = new Client({ name: 'mcp-browser-test', version: '0.0.0' })
+    await client.connect(clientTransport)
+
+    tabsA.create('https://a.example/')
+    const inA = tabsA.listTabs()[0]
+    const inB = tabsB.create('https://b.example/')
+    const list = await call(client, 'browser_list_tabs')
+    expect(list.isError).toBe(false)
+    expect(list.data.focusedWindowId).toBe(2)
+    expect(list.data.tabs.map((t: TabInfo) => t.windowId)).toEqual([1, 2])
+
+    // 按 tabId 操作后台窗口里的标签(不依赖聚焦窗口)
+    const info = await call(client, 'browser_get_info', { tabId: inB.id })
+    expect(info.data.info.windowId).toBe(2)
+    const switched = await call(client, 'browser_switch_tab', { tabId: inB.id })
+    expect(switched.data.windowId).toBe(2)
+
+    // switch_tab 应把「默认窗口」改成目标窗口(markActive),不依赖 OS 焦点是否真的转移
+    const switchedA = await call(client, 'browser_switch_tab', { tabId: inA.id })
+    expect(switchedA.data.windowId).toBe(1)
+    const afterSwitch = await call(client, 'browser_list_tabs')
+    expect(afterSwitch.data.focusedWindowId).toBe(1)
+    await client.close()
+  })
+
+  it('browser_new_tab 可用 windowId 指定窗口,缺省落聚焦窗口', async () => {
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    const tabsA = new FakeTabs()
+    const tabsB = new FakeTabs()
+    await startMcpServer({ windows: twoWindows(tabsA, tabsB) as never, kernel: new FakeKernel() as never }, serverTransport)
+    const client = new Client({ name: 'mcp-browser-test', version: '0.0.0' })
+    await client.connect(clientTransport)
+
+    const explicit = await call(client, 'browser_new_tab', { url: 'https://in-a.example/', windowId: 1, waitUntil: 'none' })
+    expect(explicit.data.windowId).toBe(1)
+    expect(tabsA.listTabs().some((t) => t.url === 'https://in-a.example/')).toBe(true)
+    expect(tabsB.listTabs().some((t) => t.url === 'https://in-a.example/')).toBe(false)
+
+    const dflt = await call(client, 'browser_new_tab', { url: 'https://in-focused.example/', waitUntil: 'none' })
+    expect(dflt.data.windowId).toBe(2) // 聚焦窗口 = 2
+    expect(tabsB.listTabs().some((t) => t.url === 'https://in-focused.example/')).toBe(true)
     await client.close()
   })
 })

@@ -59,12 +59,22 @@ export interface PageTracker {
  */
 export type TabKind = 'page' | 'internal' | 'inspector'
 
-interface TabRecord {
+export interface TabRecord {
   view: WebContentsView
   info: TabInfo
   kind: TabKind
   /** 内部页面 id(bow://settings 等);kind==='internal' 时非空 */
   internalId: InternalPageId | null
+}
+
+/**
+ * 标签/标签组 id 分配器。多窗口下由 `WindowManager` 提供**进程级**计数器,
+ * 保证 tabId 全局唯一(MCP 的 `tabId` 参数因此不会在窗口间撞号);groupId 同样全局唯一,
+ * 免得插件从 `ctx.tabs.list()` 里看到两个窗口的同号组。
+ */
+export interface TabIdAllocator {
+  allocTabId(): number
+  allocGroupId(): number
 }
 
 /** `https://host/path` → `https://host`;非 http(s)(含 `devtools://`)或者解析不出来 → null */
@@ -81,7 +91,6 @@ export class TabManager extends EventEmitter {
   readonly window: BrowserWindow
   private views = new Map<number, TabRecord>()
   private activeId: number | null = null
-  private nextId = 1
   private chromeHeight = 0
   private closedStack: TabInfo[] = [] // 供 Ctrl+Shift+T 恢复(简单实现最近关闭)
   private pageTracker: PageTracker | null = null
@@ -93,9 +102,11 @@ export class TabManager extends EventEmitter {
    * 状态只在内存,重启不恢复;记账规则见 `@shared/groups`,树操作见 `@shared/split`。
    */
   private groups: TabGroup[] = []
-  private nextGroupId = 1
 
-  constructor(window: BrowserWindow) {
+  constructor(
+    window: BrowserWindow,
+    private readonly ids: TabIdAllocator
+  ) {
     super()
     this.window = window
   }
@@ -225,7 +236,7 @@ export class TabManager extends EventEmitter {
     const internalId = url ? parseInternalUrl(url) : null
     // create() 只造 page / internal;第三种(inspector)有自己的入口,见 createInspectorTab()
     const kind: TabKind = internalId ? 'internal' : 'page'
-    const id = this.nextId++
+    const id = this.ids.allocTabId()
     const view = new WebContentsView({
       webPreferences: {
         // 内部页面(如设置)需要 window.browserAPI;普通网页标签坚决不给 preload
@@ -307,7 +318,7 @@ export class TabManager extends EventEmitter {
    */
   createInspectorTab(frontend: string, title?: string, activate = true): TabInfo {
     const allowedOrigin = originOf(frontend)
-    const id = this.nextId++
+    const id = this.ids.allocTabId()
     const view = new WebContentsView({
       webPreferences: {
         contextIsolation: true,
@@ -679,7 +690,7 @@ export class TabManager extends EventEmitter {
 
   /** 新标签 → 新组,插在活动组后面(新标签**绝不**拆已有的组) */
   private insertNewGroup(tabId: number): TabGroup {
-    const group = newTabGroup(this.nextGroupId++, tabId)
+    const group = newTabGroup(this.ids.allocGroupId(), tabId)
     const at = insertIndexAfterGroup(this.groups, this.activeGroup()?.id ?? null)
     this.groups = [...this.groups.slice(0, at), group, ...this.groups.slice(at)]
     return group
@@ -770,7 +781,7 @@ export class TabManager extends EventEmitter {
       logError('套用布局失败:窗格数与形状不一致', count)
       return this.listGroups()
     }
-    const group: TabGroup = { id: this.nextGroupId++, tree, focus: ids[0] }
+    const group: TabGroup = { id: this.ids.allocGroupId(), tree, focus: ids[0] }
     const at = insertIndexAfterGroup(this.groups, this.activeGroup()?.id ?? null)
     this.groups = [...this.groups.slice(0, at), group, ...this.groups.slice(at)]
     for (const id of ids) {
@@ -791,7 +802,7 @@ export class TabManager extends EventEmitter {
     if (!active) return this.listGroups()
     const count = paneCount(active.tree)
     if (count < 2) return this.listGroups()
-    const ids = Array.from({ length: count - 1 }, () => this.nextGroupId++)
+    const ids = Array.from({ length: count - 1 }, () => this.ids.allocGroupId())
     this.groups = ungroup(this.groups, active.id, ids)
     this.layout()
     this.publishGroups()

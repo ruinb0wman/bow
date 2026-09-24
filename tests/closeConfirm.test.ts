@@ -58,7 +58,7 @@ function setup(tabCount: number, opts: { internal?: number } = {}) {
   const internalCount = opts.internal ?? 0
   for (let i = 0; i < tabCount - internalCount; i++) tabs.create(`https://example.com/${i}`)
   for (let i = 0; i < internalCount; i++) tabs.create('bow://settings', true, true)
-  installCloseConfirm(win as never, tabs as never, overlay as never)
+  installCloseConfirm({ window: win, tabs, overlay } as never)
   return { win, tabs, overlay }
 }
 
@@ -113,5 +113,15 @@ describe('关闭窗口确认', () => {
     attemptClose(win)
     expect(attemptClose(win)).toBe(false)
     expect(overlay.shown).toHaveLength(1) // 不重复弹
+  })
+
+  it('多窗口:确认态按窗口隔离 —— 关掉 A 不会让 B 跳过确认', () => {
+    const a = setup(2)
+    const b = setup(2)
+    attemptClose(a.win)
+    confirmWindowClose(a.win as never)
+    // B 窗口没确认过,必须仍然被拦下
+    expect(attemptClose(b.win)).toBe(true)
+    expect(b.overlay.currentId).toBe(CLOSE_CONFIRM_OVERLAY_ID)
   })
 })

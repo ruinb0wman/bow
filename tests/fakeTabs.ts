@@ -46,6 +46,14 @@ export class FakeTabs {
     return this.recs.get(id) ?? null
   }
 
+  /** 与真实实现一致:由 webContents 反查标签 id(多窗口 byWebContents 路由用) */
+  findTabIdByWebContents(wc: unknown): number | null {
+    for (const [id, rec] of this.recs) {
+      if (rec.view.webContents === wc) return id
+    }
+    return null
+  }
+
   getActiveView(): Rec | null {
     return this.activeId == null ? null : (this.recs.get(this.activeId) ?? null)
   }

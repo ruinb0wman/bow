@@ -29,6 +29,7 @@ const mcpHttpPlugin = (await import('../src/plugins/mcp-http/main')).default
 const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')
 const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/sdk/client/streamableHttp.js')
 const { FakeTabs } = await import('./fakeTabs')
+const { fakeWindows } = await import('./fakeWindows')
 
 const kernels: Array<{ mcpHttp: { stop(o?: unknown): Promise<unknown> } }> = []
 afterEach(async () => {
@@ -65,7 +66,7 @@ describe('MCP HTTP 服务插件:内核接线', () => {
     expect(kernel.mcpHttp.status().running).toBe(false) // 依赖未注入:还没起
 
     const tabs = new FakeTabs()
-    kernel.attachMcpHttpDeps({ tabs: tabs as never, kernel })
+    kernel.attachMcpHttpDeps({ windows: fakeWindows(tabs) as never, kernel })
     kernel.notifyMcpHttpReady()
 
     await waitFor(() => kernel.mcpHttp.status().running)
@@ -79,7 +80,7 @@ describe('MCP HTTP 服务插件:内核接线', () => {
     const kernel = await bootKernel()
     const tabs = new FakeTabs()
     tabs.create('https://probe.example/', true)
-    kernel.attachMcpHttpDeps({ tabs: tabs as never, kernel })
+    kernel.attachMcpHttpDeps({ windows: fakeWindows(tabs) as never, kernel })
     kernel.notifyMcpHttpReady()
     await waitFor(() => kernel.mcpHttp.status().running)
 
@@ -100,7 +101,7 @@ describe('MCP HTTP 服务插件:内核接线', () => {
     const kernel = await bootKernel()
     const tabs = new FakeTabs()
     tabs.create('https://probe.example/', true)
-    kernel.attachMcpHttpDeps({ tabs: tabs as never, kernel })
+    kernel.attachMcpHttpDeps({ windows: fakeWindows(tabs) as never, kernel })
     kernel.notifyMcpHttpReady()
     await waitFor(() => kernel.mcpHttp.status().running)
 
@@ -127,7 +128,7 @@ describe('MCP HTTP 服务插件:内核接线', () => {
   it('停用插件即关闭端点(内核回收路径生效)', async () => {
     const kernel = await bootKernel()
     const tabs = new FakeTabs()
-    kernel.attachMcpHttpDeps({ tabs: tabs as never, kernel })
+    kernel.attachMcpHttpDeps({ windows: fakeWindows(tabs) as never, kernel })
     kernel.notifyMcpHttpReady()
     await waitFor(() => kernel.mcpHttp.status().running)
 
@@ -138,7 +139,7 @@ describe('MCP HTTP 服务插件:内核接线', () => {
   it('插件被停用时,重新激活会再次拉起端点', async () => {
     const kernel = await bootKernel()
     const tabs = new FakeTabs()
-    kernel.attachMcpHttpDeps({ tabs: tabs as never, kernel })
+    kernel.attachMcpHttpDeps({ windows: fakeWindows(tabs) as never, kernel })
     kernel.notifyMcpHttpReady()
     await waitFor(() => kernel.mcpHttp.status().running)
 
@@ -155,7 +156,7 @@ describe('MCP HTTP 服务插件:与强制模式的优先级', () => {
   it('环境变量先起时归 env,随后插件的启动请求是幂等的', async () => {
     const kernel = await bootKernel()
     const tabs = new FakeTabs()
-    kernel.attachMcpHttpDeps({ tabs: tabs as never, kernel })
+    kernel.attachMcpHttpDeps({ windows: fakeWindows(tabs) as never, kernel })
 
     // 模拟 index.ts:MCP_HTTP=1 先强制启动,再唤醒插件
     const forced = await kernel.mcpHttp.start({ port: 0, source: 'env' })
@@ -171,7 +172,7 @@ describe('MCP HTTP 服务插件:与强制模式的优先级', () => {
   it('停用插件不会关掉环境变量强制开启的端点', async () => {
     const kernel = await bootKernel()
     const tabs = new FakeTabs()
-    kernel.attachMcpHttpDeps({ tabs: tabs as never, kernel })
+    kernel.attachMcpHttpDeps({ windows: fakeWindows(tabs) as never, kernel })
     await kernel.mcpHttp.start({ port: 0, source: 'env' })
     kernel.notifyMcpHttpReady()
     await waitFor(() => kernel.mcpHttp.status().running)

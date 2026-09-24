@@ -54,10 +54,8 @@ interface HotkeyReg {
 }
 
 export interface PluginUiHost {
-  /** 当前浮层 id(可能为 null) */
-  overlayId(): string | null
-  /** 关闭当前浮层 */
-  closeOverlay(): void
+  /** 关闭**所有窗口**里属于该插件的浮层(插件停用时调用);每窗口一套 overlay */
+  closePluginOverlays(pluginId: string): void
 }
 
 const EMPTY_TABS: PluginTabApi = { list: () => [], getActive: () => null }
@@ -212,8 +210,7 @@ export class PluginKernel {
   }
 
   private maybeCloseOverlay(pluginId: string): void {
-    const current = this.uiHost?.overlayId()
-    if (current && current.startsWith(`plugin:${pluginId}:`)) this.uiHost?.closeOverlay()
+    this.uiHost?.closePluginOverlays(pluginId)
   }
 
   // ---------- 渲染层调用面 ----------
@@ -465,7 +462,8 @@ class PluginContextImpl implements PluginContext {
     activeTabId: () => this.kernel.pages.activeTabId(),
     focus: (tabId) => this.kernel.pages.focus(tabId),
     execute: (tabId, code, opts) => this.kernel.pages.execute(tabId, code, opts),
-    openDevToolsTab: (frontendUrl, title, activate) => this.kernel.pages.openDevToolsTab(frontendUrl, title, activate)
+    openDevToolsTab: (frontendUrl, title, activate, windowId) =>
+      this.kernel.pages.openDevToolsTab(frontendUrl, title, activate, windowId)
   }
 
   readonly tabs: PluginTabApi = {

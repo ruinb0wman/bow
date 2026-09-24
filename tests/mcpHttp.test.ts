@@ -26,6 +26,7 @@ const { MCP_INSTRUCTIONS } = await import('../src/main/mcp')
 const { textContent } = await import('../src/main/plugins/mcpResult')
 const { FakeKernel } = await import('./fakeKernel')
 const { FakeTabs } = await import('./fakeTabs')
+const { fakeWindows } = await import('./fakeWindows')
 
 const handles: Array<{ close(): Promise<void> }> = []
 afterEach(async () => {
@@ -35,7 +36,10 @@ afterEach(async () => {
 async function setup(options: { token?: string } = {}) {
   const tabs = new FakeTabs()
   const kernel = new FakeKernel()
-  const handle = await startMcpHttpServer({ tabs: tabs as never, kernel: kernel as never }, { port: 0, ...options })
+  const handle = await startMcpHttpServer(
+    { windows: fakeWindows(tabs) as never, kernel: kernel as never },
+    { port: 0, ...options }
+  )
   handles.push(handle)
   return { handle, tabs, kernel, url: new URL(handle.url) }
 }

@@ -14,7 +14,7 @@
 
 ## 0. 一句话定位
 
-Electron 单窗口多标签浏览器(`productName: bow`),**内置 MCP 服务器**把自己的
+Electron 多窗口多标签浏览器(`productName: bow`),**内置 MCP 服务器**把自己的
 页面操作能力暴露给 AI 工具;浏览器自身的每个功能(书签/历史/CORS/广告拦截/元素全屏/MCP HTTP)
 都以**仓库内编译期插件**的形式实现,插件可运行时启停、能力自动回收。
 
@@ -33,6 +33,7 @@ src/
     ua.ts                        applyBrowserIdentity():显示名/ userData 路径 / UA 签名,一次调用;
                                  APP_DESKTOP_NAME 导出桌面集成标识(与 .desktop 文件名同源)
     singleInstance.ts            单实例锁(stdio 模式例外)
+    windows.ts                   WindowManager:多窗口注册表 + 进程级 tabId/groupId 分配器 + byWebContents/byTabId/focused/allTabs/broadcast
     rendererEntry.ts             五个渲染入口解析(dev=ELECTRON_RENDERER_URL,prod=file)
     openArgs.ts                  启动参数 → 打开目标(裸路径/URL;classifyArg 的判定顺序对 Windows 盘符路径敏感,
                                  second-instance 复用同一套规则)
@@ -41,7 +42,7 @@ src/
     tabShortcuts.ts              标签/分屏/历史快捷键(Ctrl+T/W/L/R/,/数字/Shift+T/Shift+E + Ctrl+←/→ + Ctrl+Shift+方向/Alt+Shift+方向)全局拦截(终端页里 Ctrl+L/Ctrl+R/Ctrl+←/→ 放行给 shell;分屏键在终端页也由主进程接管)
     tabManager.ts                TabManager:每标签一个 WebContentsView + 内部页面标签 + 标签组/嵌套分屏 + 布局
     overlay.ts                   OverlayManager:常驻透明顶层视图,按 placement 布局
-    closeConfirm.ts              关闭窗口确认:多标签时拦下 close 事件,改用应用内确认框
+    closeConfirm.ts              关闭窗口确认:多标签时拦下 close 事件,改用应用内确认框(确认态按窗口隔离)
     actions.ts                   注入式页面操作原语(snapshot/click/type/scroll/pressKey/screenshot)+ waitForLoad
     pageScripts.ts               注入脚本字符串的唯一来源(SNAPSHOT/CLICK/TYPE/SCROLL_FN;actions.ts 与设备检查插件共用,
                                  无 electron 依赖所以纯 node 单测也能 import)
@@ -121,28 +122,33 @@ docs/             本文件 + opencode-session-header.md
   app.setDesktopName(APP_DESKTOP_NAME)  ← Linux:Wayland app_id / X11 WM_CLASS,必须早于 ready
   collectOpenTargets(process.argv, …)     命令行带来的文件 / URL(stdio 模式恒为空)
   acquireSingletonLock()          ← 必须早于 ready(stdio 模式不抢锁)
-  app.on('second-instance')       聚焦已有窗口 + 把 argv 里的目标开成新标签(tabs 未就绪时只聚焦)
+  app.on('second-instance')       重复启动 = **开一个新窗口**(不再是只聚焦旧窗口)+ 把 argv 里的目标开进新窗口
 
 whenReady():
   1. applyBrowserIdentity()       显示名→bow / userData 钉回 mcp-browser / UA 全局签名
                                   必须在任何 getPath('userData') 之前
   2. initStores()                 核心 settings.json
   3. setupDevTools()              注册 web-contents-created 监听 —— 必须早于任何窗口/视图创建,
-  4. setupTabShortcuts(...)       否则已存在的 webContents 收不到快捷键
+  4. setupTabShortcuts(getWindows, getKernel)  否则已存在的 webContents 收不到快捷键
   5. new PluginKernel()
      reserveMcpToolNames(CORE_MCP_TOOL_NAMES)   插件重名将在激活时抛错
      registerAll(BUILTIN_PLUGINS)               读 plugins.json 的 disabled
      installHooks()                             NetHookHost.install() —— 必须先于窗口创建
      await activateEnabled()                    ← 此刻还没有窗口、没有 TabManager、没有标签
-  6. app.on('web-contents-created')  外链处理:http(s) 与 file: 走新标签,其余 shell.openExternal
-  7. createWindow() → TabManager → OverlayManager
-     installCloseConfirm(mainWindow, tabs, overlay)   拦 close:≥2 个标签时先弹应用内确认框
+  6. app.on('web-contents-created')  外链处理:http(s) 与 file: 走**来源窗口**的新标签,其余 shell.openExternal
+  7. new WindowManager()          ← 进程级窗口注册表 + 全局 tabId/groupId 分配器
+     createWindowContext(targets)
+       createWindow() → TabManager(win, windows.ids) → OverlayManager
+       windows.register(win, tabs, overlay) → wireWindowContext(ctx, targets)
+         installCloseConfirm(ctx)   拦 close:≥2 个标签时先弹应用内确认框(确认态**按窗口**隔离)
+         wireWindowIpc(ctx)         tab-updated / tab:list-changed / groups:changed / chrome:page-focus
   8. kernel.setTabProvider / setPageApi / setBroadcaster / setUiHost   注入运行时依赖
-  9. tabs.on(...) → kernel.emitEvent('tab:navigated' | 'tab:created' | 'tab:closed' | 'tab:activated')
- 10. chrome did-finish-load 且没有标签 → 先开命令行目标(initialTargets),否则开设置里的主页
- 11. registerIpc(tabs, mainWindow, overlay, kernel)
- 12. startMcpServer() (仅 stdio)
-     kernel.attachMcpHttpDeps({tabs, kernel})
+     (tabProvider/pageApi 经 WindowManager 解析:getActive = **聚焦窗口**的活动标签,execute(tabId) 跨窗口)
+  9. tabs.on(...) → kernel.emitEvent(...)    每个窗口一份(在 wireWindowContext 里)
+ 10. chrome did-finish-load 且没有标签 → 先开该窗口的 targets,否则开设置里的主页
+ 11. registerIpc(windows, kernel)   ← 全局 ipcMain.handle **只注册一次**;handler 用 event.sender 反查窗口
+ 12. startMcpServer({windows, kernel}) (仅 stdio)
+     kernel.attachMcpHttpDeps({windows, kernel})
      IS_MCP_HTTP → kernel.mcpHttp.start({source:'env'})         强制模式先占位
      !IS_MCP_STDIO → kernel.notifyMcpHttpReady()                再唤醒插件
 ```
@@ -163,11 +169,18 @@ whenReady():
 Electron 的合成顺序:`contentView` 的子视图按加入顺序从底到顶;**页面(WebContentsView)永远绘制在 chrome UI 之上**,
 所以任何要浮在页面上的 UI 都必须交给 Overlay。
 
+**多窗口**:一个窗口 = 一个 `WindowContext`(`{ id, window, tabs, overlay }`),由 `src/main/windows.ts` 的
+`WindowManager` 登记。每个窗口有**自己的** chrome webContents、TabManager(标签集/标签组)与 OverlayManager;
+窗口之间不共享标签。`WindowManager` 同时提供:进程级 `tabId`/`groupId` 分配器(全局唯一)、
+`byWebContents`(IPC/快捷键反查窗口)、`byTabId`(MCP/插件反查窗口)、`focused()`(聚焦窗口:优先级 = `markActive` 显式指定 → OS 焦点 → 最近聚焦 → 最后创建)、
+`allTabs()`(汇总,每条补 `windowId`)、`broadcast()`(向所有窗口广播插件事件)。
+重复启动 bow 时 `second-instance` 调用 `createWindowContext()` 再开一个窗口。
+
 | 视图 | 创建处 | 说明 |
 | --- | --- | --- |
 | chrome 窗口 webContents | `index.ts` 的 `createWindow()` | `frame:false`;承载 `index.html`(标签栏+工具栏+地址栏) |
 | 每标签一个 `WebContentsView` | `TabManager.spawn()`(`create()` / `splitFocused()` / `applyLayout()` 共用) | 普通标签**不给 preload**(`sandbox:true`);bounds 全部由活动组的 `computeLayout()` 给出(见下) |
-| Overlay `WebContentsView` | `OverlayManager.ensureView()` | 透明(`#00000000`)、单例、按需创建;`raise()` = 重新 `addChildView` 置顶 |
+| Overlay `WebContentsView` | `OverlayManager.ensureView()` | 透明(`#00000000`)、**每窗口**单例、按需创建;`raise()` = 重新 `addChildView` 置顶 |
 | 内部页面标签 | `TabManager.create(internalId)` | 唯一的例外:普通标签视图 + **注入应用 preload** |
 
 布局引擎:
@@ -343,8 +356,8 @@ interface PluginUiContribution {
 | `content.inject` | `(spec) => void` | 移除规则并 `removeInsertedCSS` 所有已注入 key |
 | `content.refresh` | `(tabId?) => void` | 只重跑 CSS(不重跑 JS),用于规则变更后的即时反馈 |
 | `pages.activeTabId/focus/execute` | `execute(tabId, code, {timeoutMs=10000})` | 不回收(内核持有) |
-| `pages.openDevToolsTab` | `(frontendUrl, title?, activate?) => number` | 不回收(内核持有)。把 CDP 前端接进标签页(设备检查插件用)。参数是**已拼好的前端地址**:可能是 `@shared/devtools` 拼的 bow 自带那份,也可能是设备指定的 `https://…`(见 `device-inspect/shared.effectiveStrategy`);标签只允许 `devtools://` 或与入口同源的导航 |
-| `tabs.list/getActive` | `() => TabInfo[] / TabInfo \| null` | 只读;数据源是 `TabManager` |
+| `pages.openDevToolsTab` | `(frontendUrl, title?, activate?, windowId?) => number` | 不回收(内核持有)。把 CDP 前端接进标签页(设备检查插件用);`windowId` 缺省=聚焦窗口。参数是**已拼好的前端地址**:可能是 `@shared/devtools` 拼的 bow 自带那份,也可能是设备指定的 `https://…`(见 `device-inspect/shared.effectiveStrategy`);标签只允许 `devtools://` 或与入口同源的导航 |
+| `tabs.list/getActive` | `() => TabInfo[] / TabInfo \| null` | 只读;`list` 数据源是 `WindowManager.allTabs()`(**跨窗口**,每条带 `windowId`),`getActive` 是**聚焦窗口**的 `TabManager` |
 | `service.onMcpHttpReady` | `(cb) => void` | 订阅 `MCP_HTTP_READY_EVENT` |
 | `service.mcpHttp.start/stop/restart/status` | 见 §6.5 | 内核持有监听;`stop()` 固定以 `source:'plugin'` 调用 |
 | `service.activity.snapshot/onChange` | 见 §6.6 | `onChange` 的取消订阅进 disposer |
@@ -558,6 +571,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | 服务器实例 | **一个长连接实例** | **每个 HTTP 请求新建**(无状态) |
 | 插件工具注册 | `kernel.mcp.attach(register)` 缓冲句柄,停用时可热移除 | 每个请求按 `kernel.mcp.listSpecs()` 快照重新注册 |
 | 单实例锁 | 不参与(客户端子进程必须能独立启动) | 参与 |
+| 多窗口 | 实例自建一个窗口 | 一个进程内的所有窗口共享同一端点;`tabId` 全局唯一,列表带 `windowId` |
 | 日志 | 写 `<userData>/browser.log`(`--disable-logging` 关掉 Chromium stdout) | 写文件 |
 | 对外 | `npm run mcp:install` 写进 pi 配置 | `http://127.0.0.1:8765/mcp`,可带 Bearer |
 
@@ -582,12 +596,12 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `browser_back` / `browser_forward` | tabId, waitUntil, timeoutMs | waitUntil `'load'` | 同一循环注册,`maybe-navigation` |
 | `browser_stop` | tabId | — | `{ok,tabId}`,无等待语义 |
 | `browser_reload` | tabId, waitUntil, timeoutMs | waitUntil `'load'` | `maybe-navigation` |
-| `browser_new_tab` | url, activate, waitUntil, timeoutMs | activate `true`;waitUntil `'load'` | 无 url 时立即返回;带 url 时 `loadedUrl` 才是真实地址 |
+| `browser_new_tab` | url, activate, windowId, waitUntil, timeoutMs | activate `true`;waitUntil `'load'`;windowId 缺省=聚焦窗口 | 无 url 时立即返回;带 url 时 `loadedUrl` 才是真实地址 |
 | `browser_close_tab` | **tabId** | — | `{ok,closed}` |
-| `browser_switch_tab` | **tabId** | — | `{ok,activate:true,tabId}` |
-| `browser_list_tabs` | (空) | — | `{ok,tabs:[{id,url,title,loading,active,crashed,internal}]}` |
+| `browser_switch_tab` | **tabId** | — | `{ok,activate:true,tabId,windowId}`;把目标窗口设为**后续操作的默认窗口**(`WindowManager.markActive`;同时 `window.focus()`,但 Wayland 下可能被拒) |
+| `browser_list_tabs` | (空) | — | `{ok,focusedWindowId,tabs:[{id,windowId,url,title,loading,active,crashed,internal}]}` |
 | `browser_screenshot` | tabId, fullPage | fullPage falsy | **image content**(`image/png`);失败才是 text |
-| `browser_get_info` | tabId | — | `{ok,info:TabInfo}` |
+| `browser_get_info` | tabId | — | `{ok,info:TabInfo}`(info 带 `windowId`) |
 
 插件工具 25 个:`browser_add_bookmark` `browser_list_bookmarks`(书签)、
 `adblock_stats` `adblock_list_rules` `adblock_add_rule` `adblock_remove_rule` `adblock_set_enabled`
@@ -610,10 +624,11 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 ### 6.3 返回体与错误约定
 
 - `{ok:false, …}` → `mcpResult.textContent()` 同时置 `isError: true`,调用方无需解析 JSON。
-- `target(tabId?)` 是页面类工具的**统一取目标**入口,三类失败文案:
-  `标签 N 不存在` / `标签 N 是浏览器内部页面,不支持页面操作` / `没有活动标签`。
-  省略 tabId 且活动标签是内部页面时,退到最近浏览的普通标签;一个都没有则**新建 `about:blank`**
-  (此时返回的 tabId 不是调用方预期的,以返回值为准)。
+- `target(tabId?)` 是页面类工具的**统一取目标**入口,四类失败文案:
+  `标签 N 不存在` / `标签 N 是浏览器内部页面,不支持页面操作` / `没有可用窗口` / `没有活动标签`。
+  `tabId` **全局唯一**(`WindowManager.byTabId` 跨窗口解析);省略 tabId 时作用于**聚焦窗口**
+  (`WindowManager.focused()`),活动标签是内部页面时退到该窗口最近浏览的普通标签;
+  一个都没有则在该窗口**新建 `about:blank`**(此时返回的 tabId 不是调用方预期的,以返回值为准)。
 - `createdTab` 只在省略 tabId 且需要另开标签时为 true。
 - 脚本里把失败放在 `result.error`(click/type/scroll 的注入函数这么做)会有 `ok:true` 的表象,
   由 `actions.ts` 的 `lift()` 统一提升为顶层失败。
@@ -834,6 +849,13 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 ## 9. IPC 通道表
 
 `invoke`(渲染层 → 主进程,`ipcMain.handle`):
+
+> **多窗口**:`ipcMain.handle` 是进程级的,`registerIpc(windows, kernel)` **只调一次**;
+> 每个 handler 用 `windows.byWebContents(event.sender)` 反查窗口,再操作那个窗口的 `tabs`/`overlay`
+> (chrome、overlay、内部页标签都能认出来)。窗口级事件(tab-updated / tab:list-changed /
+> groups:changed / chrome:page-focus)由每窗口调一次的 `wireWindowIpc(ctx)` 接线。
+> `window:minimize/maximize/close` 作用在**发起调用的窗口**;`ui:overlay` 把浮层开在**发起窗口**。
+> 全局设置/布局变更经 `windows.broadcast()` 发给所有窗口。
 
 | 通道 | 参数 | 返回 |
 | --- | --- | --- |

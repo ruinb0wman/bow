@@ -8,6 +8,7 @@
  */
 
 import { BrowserWindow, WebContentsView } from 'electron'
+import type { WebContents } from 'electron'
 import { join } from 'node:path'
 import type { OverlayContent, OverlayContentId, OverlayPlacement, OverlayShowMessage, SuggestPayload } from '@shared/types'
 import { rendererEntry } from './rendererEntry'
@@ -129,6 +130,11 @@ export class OverlayManager {
     if (this.view == null) return
     const wc = this.view.webContents
     if (!wc.isDestroyed()) wc.send(channel, ...args)
+  }
+
+  /** 这个 webContents 是不是本窗口的 overlay 视图(多窗口路由:`WindowManager.byWebContents` 用) */
+  hasWebContents(wc: WebContents): boolean {
+    return this.view != null && this.view.webContents === wc
   }
 
   private ensureView(): void {
