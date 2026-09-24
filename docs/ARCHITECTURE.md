@@ -510,6 +510,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `terminal` | — | ui | `getSettings` `setSettings` `listCandidates` `attach` `write` `resize` `detach` | — | — | — | — | — | on `tab:closed`(按 tabId 回收 shell);emit `data` `exit` `settings-changed` `session-closed` | `terminal.json`(字体/字号/滚动缓冲 + shell 配置列表) |
 | `logseq` | — | ui | `getState` `pickGraph` `setGraph` `rebuildIndex` `getSettings` `setSettings` `toggleFavorite` `readJournal` `readPage` `listJournals` `listPages` `backlinks` `listTemplates` `savePage` `attach` `setView` `openInNewPane` | — | — | — | — | — | on `tab:closed`(按 tabId 丢视图状态);emit `graph-changed` `settings-changed` `favorites-changed` | `logseq.json`(图目录 + 最近图 + 正文字号 + 每个图的收藏) |
 | `downloads` | — | ui, mcp | `list` `pause` `resume` `cancel` `retry` `remove` `clear` `openFile` `showInFolder` `getSettings` `setSettings` `pickDirectory` `revealDir` | `browser_list_downloads` `browser_download` | — | — | — | — | emit `changed` | `downloads.json`(记录)+ `downloads-settings.json`(目录 / 询问 / 保留条数) |
+| `quark` | — | ui | `listFiles` `pushAria2` `getSettings` `setSettings` `testAria2` | —(不贡献 MCP 工具) | — | —(按需 `pages.execute`,不注入常驻脚本) | — | — | — | `quark.json`(UA / Cookie 域名白名单 / aria2 RPC) |
 
 **渲染层侧**(`registry.ts` / 各插件 `ui.ts`)
 
@@ -526,6 +527,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `terminal` | — | `TerminalButton` | —(终端是**内部页面**不是浮层:`bow://terminal`) | `TerminalSettings` |
 | `logseq` | — | `LogseqButton` | —(笔记也是**内部页面**:`bow://logseq`) | `LogseqSettings` |
 | `downloads` | — | `DownloadsButton` | `plugin:downloads:panel`(full,`DownloadsPanel`) | `DownloadsSettings` |
+| `quark` | — | `QuarkButton`(仅夸克个人网盘页可点) | `plugin:quark:panel`(full,`QuarkPanel`) | `QuarkSettings` |
 
 ⚠️ 终端插件的 `ui/TerminalView.vue` 与笔记插件的 `ui/JournalView.vue` **不在**注册表里 ——
 它们分别是 `bow://terminal` / `bow://logseq` 页面的主体,由 `renderer/src/<entry>/main.ts` 直接引用。
@@ -955,6 +957,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `npm run test:mcp` | 真机冒烟:自己拉起 MCP 模式浏览器跑关键流程 |
 | `npm run test:mcp:http` | 连已常驻的 HTTP 浏览器 |
 | `npm run test:e2e:device` | 设备检查插件的**假手机** E2E:真 Electron + 真 MCP + 真 TCP/WS,只有 adb 与设备端是假的(不需要真机,也不需要显示环境) |
+| `npm run test:e2e:quark` | 夸克网盘插件的**离线** E2E:用 `--host-resolver-rules` 把 `pan/drive-pc.quark.cn` 指到本机一个 HTTPS 假服务器(自签证书 + `--ignore-certificate-errors`),再起一个假 aria2 JSON-RPC 服务器,于是「读页面 → 取直链 → 推 aria2」整条链路在真 Electron 里跑一遍,并断言**两端真正收到了什么**(接口的 UA/登录态/无 `Origin`;aria2 header 的 UA/Referer 与 Cookie 白名单边界)。页面用 MCP 核心工具打开,插件 IPC 用 `--remote-debugging-port` 在 chrome 页面 target 上调 `plugins.invoke`。不需要夸克账号,只需要 openssl |
 | `npm run mcp` / `mcp:http` | 经 `open-bow.mjs` 以 stdio / HTTP 模式启动 |
 | `npm run mcp:install [-- …]` | 把 MCP 配置 + skill 写进 pi(幂等、可回滚、非 JSON 直接中止) |
 
@@ -972,6 +975,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `ensure-electron.mjs` | postinstall:确保 electron 二进制就位(走镜像) |
 | `mcp-smoke.mjs` | 真机冒烟(405 行) |
 | `e2e-device-inspect.mjs` + `fixtures/fake-phone-{,adb,device}.mjs` | 设备检查插件的假手机 E2E:`fake-phone-adb.mjs` 仿 adb 输出并在 `forward` 时拉起 `fake-phone-device.mjs`(HTTP `/json` + WS CDP,并把收到的每条命令写进 `cdp-log.jsonl`),驱动脚本用 MCP 客户端跑 11 个 `device_*` 工具,并用 bow 自己的 `--remote-debugging-port` 往手机 DevTools 前端 target 发 `Ctrl+Shift+→` 验分屏 |
+| `e2e-quark-headers.mjs` | 夸克插件的离线 E2E(自签 HTTPS 假夸克服务器 + 假 aria2 JSON-RPC 服务器 + 隔离 `--user-data-dir`)。它**自己 spawn Electron**(不经 `open-bow.mjs`),因为 `host-resolver-rules` 的值里含空格,而 `BOW_ELECTRON_ARGS` 是按空格切分的 |
 | `cors-test-server.mjs` / `cors-probe.html` | CORS 插件的人工验证环境 |
 | `fetch-northbound.mjs` | 外网连通性探测 |
 
@@ -1280,6 +1284,37 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 30. 计数口径是 `tabs.listTabs().length`(含 `bow://settings` 与 DevTools 前端标签),
     与「普通网页标签数」不是一个口径 —— 改判据时先想清楚哪一个是想要的。
     Bow 侧规避:改用与 bow 同侧的原生 adb(设置里填 Windows `platform-tools\adb.exe` 路径)。
+31. **`session.downloadURL()` 的下载请求对 `webRequest` 不可见,页面发起的下载才可见**。
+    这是 2026-09-24 用独立 spike 脚本在 Electron 44.3.0 / Chromium 152 上实测的(HTTPS 自签 echo server):
+    同一个下载,`downloadURL` 路径在 `onBeforeSendHeaders` 里 **0 命中**,而「在页面里点一个 `<a download>`」
+    路径**每一跳都命中**(`resourceType=mainFrame`)。
+    推论:**想给下载请求加请求头(伪装 UA 之类),必须让下载由页面发起**;
+    代价是必须有一个活着的、已登录的页面标签。夸克插件最终把直链交给 **aria2** 而不是 bow 下载器,
+    就是因为「自定义头 + 跨域 Cookie」这两件事在浏览器下载栈里都不可靠(见 §5.8 的 `quark` 行)。
+32. **显式 `Cookie` 头在重定向跳上会被 Chromium 丢弃**(`downloadURL` / `net.request` / `net.fetch` 三者一致),
+    **只有 cookie 域罐里的 cookie 能跨跳存活**。所以「带登录态下载跨域 CDN」的正确做法是:
+    尽量让域罐管(域名匹配时自动逐跳带上),只有域罐覆盖不到的域名才用显式头 —— 而那时**必须配域名白名单**,
+    否则等于把会话发给任意主机(LinkSwift 的 `document.cookie` 就有这个毛病)。
+33. **`net.fetch` 带 `Origin` 头必定 `net::ERR_FAILED`**。`Origin` 是 fetch 规范的 forbidden header,
+    Chromium 直接拒发(而不是静默丢弃);`Referer` / `Cookie` / 自定义头都正常。
+    实测细节:同一组头,`net.fetch` 全头失败、去掉 `Origin` 成功、只留 `Origin` 失败;
+    而 `net.request` 带全头成功 —— 所以「主进程里发 HTTP 用 `net.fetch` 还是 `net.request`」不是口味问题。
+    ⚠️ 用 `http://127.0.0.1` 当靶子测请求头会得到**误导性结论**:Chromium 会因 HTTPS→HTTP 降级
+    把 `Referer` 判为 `invalid referrer` 并直接取消请求(`ERR_BLOCKED_BY_CLIENT`),看起来像「Electron 丢了 Referer」。
+    测这类行为必须用 HTTPS 靶子(自签 + `--ignore-certificate-errors`)。
+34. **`<a download>` 的 `download` 属性是「让导航变成下载」的唯一可靠手段**:实测它对**所有** Content-Type
+    都强制下载(含跨源的 `video/mp4` / `application/pdf` / `image/png` / `text/plain`),
+    而 `location.href = url` 在这些类型上会变成导航/播放。
+    它还顺带决定了 `item.getFilename()`(不必依赖服务器回 `Content-Disposition`)。
+35. **`net.request` / `net.fetch` 的 `redirect: 'manual'` 不可用**:抛 `Redirect was cancelled`,
+    读不到 `Location`;`redirect: 'follow'` 后 `net.fetch` 的 `response.url` 是空串。
+    ⇒ 主进程里**无法自己解重定向链**;要拿最终地址只能依赖浏览器导航侧的行为。
+36. **插件拿不到标签页的 `webContents`**:`tabId` 是 `TabManager` 自己的计数器(`ids.allocTabId()`),
+    **不等于** `webContents.id`,而 `PluginContext` 也没有暴露 wc。所以「用某个标签页的页面上下文发起下载/请求」
+    这件事只能走 `ctx.pages.execute`(主世界执行 JS),不能自己拿 wc 调 `webContents.downloadURL`。
+37. **测这类功能必须用隔离的 `--user-data-dir`**:只设 `BOW_USER_DATA_DIR` 不会隔离单实例锁
+    (见 `src/main/ua.ts` 的 `hasExplicitUserData()` 只用于跳过旧路径钉定)。E2E 脚本都传
+    `--user-data-dir=$TMP/…` 才能与用户正在跑的 bow 并存。
 
 ---
 

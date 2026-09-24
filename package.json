@@ -63,7 +63,8 @@
     "test": "vitest run",
     "test:mcp": "node scripts/mcp-smoke.mjs",
     "test:mcp:http": "node scripts/mcp-smoke.mjs --http",
-    "test:e2e:device": "node scripts/e2e-device-inspect.mjs"
+    "test:e2e:device": "node scripts/e2e-device-inspect.mjs",
+    "test:e2e:quark": "node scripts/e2e-quark-headers.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

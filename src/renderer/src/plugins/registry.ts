@@ -16,6 +16,7 @@ import deviceInspectUi from '@plugins/device-inspect/ui'
 import terminalUi from '@plugins/terminal/ui'
 import logseqUi from '@plugins/logseq/ui'
 import downloadsUi from '@plugins/downloads/ui'
+import quarkUi from '@plugins/quark/ui'
 
 export const PLUGIN_UI: PluginUiContribution[] = [
   bookmarksUi,
@@ -28,7 +29,8 @@ export const PLUGIN_UI: PluginUiContribution[] = [
   deviceInspectUi,
   terminalUi,
   logseqUi,
-  downloadsUi
+  downloadsUi,
+  quarkUi
 ]
 
 /**

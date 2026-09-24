@@ -12,6 +12,7 @@ import deviceInspect from '@plugins/device-inspect/main'
 import terminal from '@plugins/terminal/main'
 import logseq from '@plugins/logseq/main'
 import downloads from '@plugins/downloads/main'
+import quark from '@plugins/quark/main'
 
 export const BUILTIN_PLUGINS: PluginMain[] = [
   history,
@@ -28,5 +29,7 @@ export const BUILTIN_PLUGINS: PluginMain[] = [
   // 同上(只贡献 UI,带着 bow://logseq 内部页面;同样不参与网络钩子与建议源顺序)
   logseq,
   // 同上(只贡献 UI 与 MCP 工具;它接管 defaultSession 的 will-download,与网络钩子链无关)
-  downloads
+  downloads,
+  // 同上(只贡献 UI:在夸克个人网盘页上取直链并推给 aria2;不注册网络钩子,也不贡献 MCP 工具)
+  quark
 ]

@@ -27,6 +27,7 @@ npm run mcp:http   # 构建后以 HTTP MCP 模式常驻(强制模式;普通启�
 npm run test:mcp   # 真机冒烟测试(自己拉起浏览器)
 npm run test:mcp:http  # 真机冒烟测试(连已常驻的 HTTP 浏览器)
 npm run test:e2e:device  # 设备检查的假手机 E2E(真 Electron + 真 MCP,不需要真机/显示环境)
+npm run test:e2e:quark   # 夸克网盘插件的离线 E2E(假夸克服务器 + 假 aria2 RPC,不需要夸克账号,需要 openssl)
 node scripts/open-bow.mjs http --dry-run   # 只看 HTTP 模式将注入的环境变量与端点
 npm run mcp:install -- --help   # 把浏览器 MCP 写进 pi 的配置(幂等、可回滚)
 node scripts/open-bow.mjs -- a.html https://x.com   # 启动并打开(文件管理器/终端用的就是这个形态)
@@ -374,6 +375,8 @@ npm run test:mcp:http
 | `browser_list_downloads {id?, state?, limit?}` | 下载记录(进行中的在前),含状态、进度百分比、速度、保存路径与文件是否还在磁盘上(由「下载」插件提供) |
 | `browser_download {url, saveDir?, filename?, wait?, timeoutMs?}` | 从 URL 下载文件(不需要页面上的点击,也不弹保存对话框);默认保存到 bow 的下载目录并自动重名,`wait: true` 等到下载结束才返回(由「下载」插件提供) |
 
+> 夸克网盘插件**不贡献 MCP 工具** —— 它只在夸克个人网盘页的工具栏按钮里提供一个面板(见下文)。
+
 典型 AI 工作流:`browser_new_tab`/`browser_navigate`(已等到加载完成)→ `browser_wait` 等目标元素渲染出来 → `browser_snapshot` 找到结果链接的选择器 → `browser_click` → `browser_screenshot` 确认 → `browser_type`/`browser_click` 填表。
 
 ## MCP 行为约定
@@ -632,7 +635,7 @@ npm run test:mcp:http
 
 ## 插件体系
 
-书签、历史、CORS 放行、元素全屏、MCP HTTP 服务、默认浏览器、设备检查、终端、笔记、下载都是内置插件;广告/追踪拦截是参考插件。插件是**仓库内编译期模块**(无动态代码执行),
+书签、历史、CORS 放行、元素全屏、MCP HTTP 服务、默认浏览器、设备检查、终端、笔记、下载、夸克网盘都是内置插件;广告/追踪拦截是参考插件。插件是**仓库内编译期模块**(无动态代码执行),
 可在「设置页 → 插件管理」里运行时启停(无需重启),状态持久化到 `plugins.json`;停用时内核自动回收其 IPC、
 建议源、MCP 工具、网络钩子与已注入 CSS。
 
@@ -684,6 +687,37 @@ MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生
   面板也会标注「服务器不支持续传,已从头开始」 —— 这一条不预判,只在真发生时出现;
 - **重启浏览器后,上次没下完的记录会显示「已中断」**,只能「重新下载」(跨会话续传要记录更多握手信息,
   这一版刻意不做);删除记录**不会**删磁盘上的文件。
+
+### 夸克网盘插件
+
+在 `pan.quark.cn` 的个人网盘页,工具栏会出现一个云朵按钮(其他页面上置灰)。点开面板:
+列出**当前目录**的文件、勾选后一键**推送到 aria2**。插件不贡献 MCP 工具 —— 它只有界面。
+
+**它怎么拿到直链**:冒充夸克官方 PC 客户端(专用 User-Agent)调它自己的
+`drive-pc.quark.cn/1/clouddrive/file/download` 接口,响应里的 `download_url` 就是 CDN 直链;
+下载时还必须带同一个 UA。登录态直接复用 bow 的 cookie 域罐(所以**要先在 bow 里登录夸克**),
+插件不接触你的密码,也不保存任何凭据。
+
+**推送怎么落地**:把直链与三个请求头(UA / Referer / Cookie)交给
+**aria2 的 JSON-RPC `aria2.addUri`**(设置页可配域名 / 端口 / 路径 / 令牌 / 保存目录)。
+为什么不是 bow 自己的下载器:aria2 是独立进程,拿不到浏览器的 cookie 域罐,
+而夸克直链离开这套请求头就下不动 —— 干脆把「拿链接」与「下载」分开,下载交给专业的那个。
+
+几条要知道的限制与排障:
+
+- **必须有一个活着的、已登录的夸克标签页**:直链要从该页的 React 状态里读;
+- **分享页(`/s/xxx`)不支持**,只做个人网盘页;
+- 面板只列出**页面当前已加载**的那一页文件(夸克自己滚动加载更多之后,点「刷新」即可);
+- 取不到直链时先在面板里看错误文案:`31001` = 需要登录,`23018` = 游客可获取大小超限;
+  仍然不行就打开面板的「诊断」区,把原始响应体一并带上;
+- **UA 是整套方案的命门**,而且是可改的设置项:夸克升级客户端导致失效时,到「设置 → 夸克网盘」
+  把新版客户端的 UA 贴进去即可,不用等插件更新;
+- **Cookie 只发给白名单域名**(默认 `quark.cn` / `uc.cn`,留空 = 不传)。
+  aria2 会跟着重定向跳跑,而直链有时落在别的域名上;空白名单最安全但大文件很可能 403 ——
+  面板「诊断」区会显示真实域名,把它加进白名单即可;
+- 设置页的「测试连接」会调 `aria2.getVersion`,先确认 aria2 开着 RPC(`--enable-rpc`)再推。
+
+⚠️ 这类工具处于「个人自用 vs 服务条款」的灰色地带,且会用到你已登录的账号;请自行判断是否使用。
 
 ### 浏览历史插件
 
@@ -866,6 +900,30 @@ npm run test:e2e:device   # 真 Electron + 真 MCP + 真 TCP/WS,只有 adb 与�
 
 临时文件在 `$TMPDIR/bow-e2e`(`BOW_E2E_DIR` 可改);每次运行用独立 userData 与调试端口,不会碰你正在跑的 bow。
 真机上的差异(触摸注入是否需要 `Emulation.setTouchEmulationEnabled`、捏合缩放下的坐标口径)仍需真机验证。
+
+## 夸克网盘插件的离线 E2E
+
+```bash
+npm run build && npm run test:e2e:quark   # 需要 openssl;不需要夸克账号,也不需要显示环境
+```
+
+它把 `pan.quark.cn` / `drive-pc.quark.cn` 两个域名用 Chromium 的
+`--host-resolver-rules` 指到本机一个 HTTPS 假服务器(自签证书 + `--ignore-certificate-errors`),
+再起一个假的 aria2 JSON-RPC 服务器,假页面里伪造一条 React fiber 链供插件读取。
+页面用 MCP 的核心工具(`browser_navigate`)打开;插件不再贡献 MCP 工具,所以插件 IPC 改用
+bow 自己的 `--remote-debugging-port` 在 chrome 页面的 target 上 `Runtime.evaluate` 调
+`window.browserAPI.plugins.invoke(...)`(与 `e2e-device-inspect.mjs` 读 `getGroups()` 同一手法):
+
+```
+假夸克页(React fiber) → quark 插件 listFiles → 假 /file/download 接口
+  → 插件用 JSON-RPC aria2.addUri 推给假 aria2
+```
+
+断言里最关键的是**两端真正收到了什么**:取直链接口上的伪装 UA、cookie 域罐登录态、
+以及**没有** `Origin`(带它 `net.fetch` 必 `ERR_FAILED`);交给 aria2 的 `header` 数组里的
+UA / Referer,以及**白名单边界** —— 直链在 `quark.cn` 下才带 Cookie,落在第三方 CDN 上绝不带。
+这些全是真 Electron 行为(真 cookie 域罐、真 HTTPS、真 `net.fetch`),单测(假 electron)永远发现不了,
+所以单独用一个脚本钉住。
 
 ## 无需显示环境的部分
 
