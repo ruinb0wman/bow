@@ -65,11 +65,29 @@ function collectEntries(node, prefix = '') {
   return out
 }
 
+/** 当前平台 dir 目标的目录名(优先检查,避免 dist 里同时存在多平台产物时看错平台) */
+function platformDirs() {
+  switch (process.platform) {
+    case 'win32':
+      return ['win-unpacked', 'win-arm64-unpacked']
+    case 'linux':
+      return ['linux-unpacked', 'linux-arm64-unpacked']
+    case 'darwin':
+      return ['mac', 'mac-arm64', 'mac-universal']
+    default:
+      return []
+  }
+}
+
 function findAsar(argPath) {
   if (argPath) return argPath
   const distDir = join(root, 'dist')
   if (!existsSync(distDir)) return null
-  for (const name of readdirSync(distDir)) {
+  const names = readdirSync(distDir)
+  const preferred = platformDirs().filter((n) => names.includes(n))
+  // 先看当前平台目录,再按字母序退回其余目录(顺序确定,保证可复现)
+  const ordered = [...preferred, ...names.filter((n) => !preferred.includes(n)).sort()]
+  for (const name of ordered) {
     const candidate = join(distDir, name, 'resources', 'app.asar')
     if (existsSync(candidate)) return candidate
   }
@@ -78,7 +96,7 @@ function findAsar(argPath) {
 
 const asarPath = findAsar(process.argv[2])
 if (!asarPath) {
-  console.error('✗ 找不到 app.asar。先在 Windows 侧跑 `npm run dist`,或用参数指定路径。')
+  console.error('✗ 找不到 app.asar。先在仓库里跑 `npm run dist`,或用参数指定路径。')
   process.exit(1)
 }
 if (!existsSync(asarPath)) {
@@ -120,7 +138,7 @@ if (packedDevDeps.length) console.log(`⚠ 疑似打进开发依赖(仅提示,�
 if (failures.length) {
   console.error('\n✗ 产物自检失败:')
   for (const f of failures) console.error(`  · ${f}`)
-  console.error('\n这类问题会让 bow.exe 双击后一闪即退(主进程 MODULE_NOT_FOUND)。')
+  console.error('\n这类问题会让 bow 双击后一闪即退(主进程 MODULE_NOT_FOUND)。')
   console.error('检查 package.json 的 build.files 是否漏了 out/**,以及依赖是否声明在 dependencies 而非 devDependencies。')
   process.exit(1)
 }

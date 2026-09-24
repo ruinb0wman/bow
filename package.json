@@ -5,6 +5,7 @@
   "main": "./out/main/index.js",
   "author": "ruinb0w",
   "license": "MIT",
+  "desktopName": "com.ruinb0w.bow",
   "build": {
     "appId": "com.ruinb0w.bow",
     "productName": "bow",
@@ -21,6 +22,29 @@
     "npmRebuild": false,
     "win": {
       "target": "dir"
+    },
+    "linux": {
+      "target": [
+        "dir",
+        "AppImage"
+      ],
+      "executableName": "bow",
+      "syncDesktopName": true,
+      "category": "Network;WebBrowser;",
+      "synopsis": "AI 可操纵的简易浏览器(多标签 + MCP)",
+      "mimeTypes": [
+        "x-scheme-handler/http",
+        "x-scheme-handler/https",
+        "text/html",
+        "application/xhtml+xml"
+      ],
+      "desktop": {
+        "entry": {
+          "Name": "bow",
+          "Comment": "AI 可操纵的简易浏览器(多标签 + MCP)",
+          "StartupWMClass": "com.ruinb0w.bow"
+        }
+      }
     },
     "electronDownload": {
       "mirror": "https://npmmirror.com/mirrors/electron/"

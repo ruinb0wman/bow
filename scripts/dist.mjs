@@ -27,8 +27,27 @@ const argv = process.argv.slice(2)
 const dryRun = argv.includes('--dry-run')
 const noBuild = argv.includes('--no-build')
 const passthrough = argv.filter((a) => !a.startsWith('--dry-run') && a !== '--no-build' && a !== '--')
-/** 默认只打 Windows dir 目标;传了参数就完全交给调用方 */
-const ebArgs = passthrough.length ? passthrough : ['--win']
+/** 默认按当前平台打包(win→--win / mac→--mac / linux→--linux);传了参数就完全交给调用方 */
+const DEFAULT_TARGET = { win32: '--win', darwin: '--mac', linux: '--linux' }[process.platform] ?? '--win'
+const ebArgs = passthrough.length ? passthrough : [DEFAULT_TARGET]
+
+/** 从 electron-builder 参数里判断目标平台(没写就按当前平台) */
+function targetPlatform(args) {
+  for (const a of args) {
+    if (a === '--win' || a.startsWith('--win=')) return 'win32'
+    if (a === '--linux' || a.startsWith('--linux=')) return 'linux'
+    if (a === '--mac' || a.startsWith('--mac=')) return 'darwin'
+  }
+  return process.platform
+}
+
+/** 各平台 dir 目标的应用目录名与可执行文件名(与 electron-builder 约定一致) */
+function unpackedInfo(platform) {
+  if (platform === 'win32') return { dir: 'win-unpacked', exe: 'bow.exe' }
+  if (platform === 'linux') return { dir: 'linux-unpacked', exe: 'bow' }
+  if (platform === 'darwin') return { dir: process.arch === 'arm64' ? 'mac-arm64' : 'mac', exe: 'bow.app' }
+  return { dir: 'win-unpacked', exe: 'bow.exe' }
+}
 
 /** 与 scripts/ensure-electron.mjs 同源:显式 env > .npmrc 的 electron_mirror > npmmirror 默认值 */
 function resolveElectronMirror() {
@@ -105,8 +124,11 @@ const electronBuilderBin = requireBin(
 console.log('Electron 镜像:        ' + env.ELECTRON_MIRROR)
 console.log('builder 工具链镜像:   ' + env.ELECTRON_BUILDER_BINARIES_MIRROR)
 console.log('electron-builder 参数:' + ' ' + ebArgs.join(' '))
-if (process.platform !== 'win32') {
-  console.log('\n⚠ 当前不是 Windows:打 Windows 包通常需要 wine(改写 exe 图标/版本信息),建议在 Windows 侧执行。')
+const target = targetPlatform(ebArgs)
+// 只在「非 Windows 上显式打 Windows 包」时提醒:wine 用于改写 exe 图标 / 版本信息
+const buildingWin = ebArgs.some((a) => a === '--win' || a.startsWith('--win='))
+if (process.platform !== 'win32' && buildingWin) {
+  console.log('\n⚠ 在非 Windows 上打 Windows 包通常需要 wine(改写 exe 图标/版本信息),建议在 Windows 侧执行。')
 }
 
 try {
@@ -114,12 +136,17 @@ try {
     await run(process.execPath, [electronViteBin, 'build'], '编译(main / preload / renderer → out/)')
   }
   await run(process.execPath, [electronBuilderBin, ...ebArgs], '打包')
-  await run(process.execPath, [join(root, 'scripts', 'verify-dist.mjs')], '产物自检(应用文件 + 运行时依赖)')
-  const outDir = join(root, 'dist', 'win-unpacked')
+  // 显式把本次目标平台的 app.asar 交给自检:dist/ 里可能同时躺着多平台产物,
+  // 自动扫描会看错平台(dir 目标没产出时再退回自动扫描)
+  const unpacked = unpackedInfo(target)
+  const expectedAsar = join(root, 'dist', unpacked.dir, 'resources', 'app.asar')
+  const verifyArgs = existsSync(expectedAsar) ? [expectedAsar] : []
+  await run(process.execPath, [join(root, 'scripts', 'verify-dist.mjs'), ...verifyArgs], '产物自检(应用文件 + 运行时依赖)')
+  const outDir = join(root, 'dist', unpacked.dir)
   console.log(
     dryRun
       ? '\n(dry-run,未真正执行)'
-      : `\n✅ 完成。产物:${outDir}${process.platform === 'win32' ? '\\bow.exe' : '/bow.exe'}`
+      : `\n✅ 完成。产物:${outDir}/${unpacked.exe}${target === 'linux' ? '(另有 dist/ 下的 *.AppImage)' : ''}`
   )
 } catch (e) {
   console.error(`\n✗ ${e instanceof Error ? e.message : e}`)

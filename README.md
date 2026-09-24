@@ -7,7 +7,7 @@
 - Electron(≥ 33,WebContentsView 每标签一实例)+ TypeScript
 - Vue 3 + Vite(electron-vite 组织 main / preload / renderer 三端)
 - `@modelcontextprotocol/sdk`(stdio transport)
-- xterm.js + `node-pty`(内置「终端」插件:`bow://terminal` 内部页面连本机 shell;node-pty 是本仓库**唯一的原生模块**,见「打包成 bow.exe」一节)
+- xterm.js + `node-pty`(内置「终端」插件:`bow://terminal` 内部页面连本机 shell;node-pty 是本仓库**唯一的原生模块**,见「打包成桌面应用」一节)
 - 笔记插件**零新增依赖**:Logseq 文件格式的解析 / 序列化 / 行内 markdown 都是仓库内的纯 TypeScript(`src/plugins/logseq/`),
   所以「点一下就地编辑」能把光标映射回原始 markdown 的偏移,`[[页面]]` 也是可点击的组件而不是一段 HTML
 
@@ -21,7 +21,7 @@
 npm install
 npm run dev        # 开发(HMR)
 npm run build      # 只编译 main / preload / renderer 到 out/(不产出可双击的应用)
-npm run dist       # 编译 + 打包成 dist/win-unpacked/bow.exe(需在 Windows 侧跑,见下文)
+npm run dist       # 编译 + 打包当前平台(Windows → dist/win-unpacked/bow.exe;Linux → dist/linux-unpacked/bow + dist/*.AppImage,见下文)
 npm run mcp        # 构建后以 stdio MCP 模式启动(供 AI 工具以子进程方式拉起)
 npm run mcp:http   # 构建后以 HTTP MCP 模式常驻(强制模式;普通启动也默认开启,见下文)
 npm run test:mcp   # 真机冒烟测试(自己拉起浏览器)
@@ -34,26 +34,52 @@ npm test           # 单元测试
 npm run typecheck  # 类型检查
 ```
 
-## 打包成 bow.exe
+## 打包成桌面应用(Windows / Linux)
 
 `npm run build`(`electron-vite build`)**只是编译** —— 它把主进程 / preload / 渲染层编译到 `out/`,
-产物仍需要 `node_modules` 里的 electron 才能跑。产出可双击的应用要用 electron-builder:
+产物仍需要 `node_modules` 里的 electron 才能跑。产出可分发的应用要用 electron-builder;
+`npm run dist` 会**按当前平台**选目标(Windows → `--win`,Linux → `--linux`,macOS → `--mac`),
+所以 Windows 侧和 Linux 侧跑同一条命令即可:
 
 ```powershell
-# 必须在 Windows 侧执行(从 Linux/WSL 打 Windows 包需要 wine,用于改写 exe 图标与版本信息)
+# Windows(从 Linux/WSL 打 Windows 包需要 wine,用于改写 exe 图标与版本信息)
 npm run dist
 ```
 
-产物:`dist/win-unpacked/bow.exe`,自带 Electron 运行时,不依赖仓库与 `node_modules`。
-`dist/` 已在 `.gitignore` 里。
+```bash
+# Linux:产出解包目录 + AppImage
+npm run dist
+```
+
+| 平台 | 产物 | 说明 |
+| --- | --- | --- |
+| Windows | `dist/win-unpacked/bow.exe` | 双击即用 |
+| Linux | `dist/linux-unpacked/bow` | 解包目录,`./bow` 直接跑 |
+| Linux | `dist/bow-<版本>.AppImage` | 单文件可执行:`chmod +x` 后双击 / `./bow-*.AppImage` |
+
+两者都自带 Electron 运行时,不依赖仓库与 `node_modules`。`dist/` 已在 `.gitignore` 里。
+
+Linux 的打包配置在 `package.json` 的 `build.linux`:`executableName: "bow"`(否则可执行文件会跟着包名
+叫 `mcp-browser`)、`target: ["dir", "AppImage"]`、以及 `desktopName` + `syncDesktopName: true`
+(生成的 `.desktop` 基名 `com.ruinb0w.bow.desktop`,与运行时 `app.setDesktopName()` 的 app_id / WM_CLASS 逐字一致)。
+
+只想打其中一种 / 换别的目标:
+
+```bash
+node scripts/dist.mjs -- --linux AppImage   # 只要 AppImage
+node scripts/dist.mjs -- --linux deb        # 需要 fpm / dpkg
+node scripts/dist.mjs -- --linux tar.gz
+node scripts/dist.mjs --no-build            # 跳过前面的 electron-vite build
+node scripts/dist.mjs --dry-run             # 只打印将执行什么
+```
 
 关于数据目录:**打包版与开发版共用同一份 userData**。`main/ua.ts` 的 `applyBrowserIdentity()`
 会把 userData 钉到旧目录名 `mcp-browser`(不跟随 productName),所以书签、历史、插件开关都不会丢。
 
-### 两个容易踩的坑
+### 几个容易踩的坑
 
-1. **镜像**。electron-builder 除了 Electron 发行包,还要下 nsis / winCodeSign 工具链,
-   后者默认走 GitHub、国内经常拿不下来。`scripts/dist.mjs` 会自动注入
+1. **镜像**。electron-builder 除了 Electron 发行包,还要下打包工具链(Windows 是 nsis / winCodeSign,
+   Linux 的 AppImage 是 appimage / 7zip),默认走 GitHub、国内经常拿不下来。`scripts/dist.mjs` 会自动注入
    `ELECTRON_MIRROR` 与 `ELECTRON_BUILDER_BINARIES_MIRROR`(读 `.npmrc` 的 `electron_mirror`,
    否则回落到 npmmirror),所以 `npm run dist` 在 PowerShell / cmd / Git Bash 下都能用 ——
    **不要**自己写成 `ELECTRON_MIRROR=... electron-builder`,Windows 的 cmd 不认内联赋值。
@@ -63,13 +89,17 @@ npm run dist
    electron-builder 会把**生产依赖闭包**自动打进去(`devDependencies` 不会);
    `npm run dist` 最后一步的 `scripts/verify-dist.mjs` 会从 bundle 里扫出实际的外部 require
    再逐个核对,不齐就直接失败。
-3. **原生模块**。`node-pty`(终端插件用)是 N-API 二进制,npm 包里自带 `prebuilds/win32-x64/…`,
+3. **原生模块**。`node-pty`(终端插件用)是 N-API 二进制,npm 包自带 `prebuilds/win32-x64/…` 与 `prebuilds/darwin-*/…`,
    **不需要** `@electron/rebuild` 也不需要 VS 工具链;但它必须在 asar 里**解包**才能加载 ——
    `package.json` 的 `build.asarUnpack` 已配 `**/node_modules/node-pty/**`,产物里会落在
    `resources/app.asar.unpacked/…`。改这行配置时请跑一次打包 + 开一个终端验证。
+   **Linux 例外**:node-pty 的 `prebuilds/` 不含 linux,`bun install` / `npm install` 时它会落到
+   `node-gyp rebuild`(需要 `make`/`g++`/`python3`),编出来的 `build/Release/pty.node` 会被一起打进产物。
+   机器上没有编译工具链时,打包仍会成功,但终端页会显示「终端后端不可用(node-pty 加载失败)」——
+   浏览器其它功能不受影响。
 
 ```bash
-node scripts/verify-dist.mjs            # 单独重跑产物自检(自动找 dist/<平台>-unpacked/resources/app.asar)
+node scripts/verify-dist.mjs            # 单独重跑产物自检(自动找当前平台 dist/<平台>-unpacked/resources/app.asar)
 node scripts/dist.mjs -- --win portable # 试别的 target
 ```
 

@@ -949,7 +949,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | --- | --- |
 | `npm run dev` | electron-vite dev(HMR) |
 | `npm run build` | 只编译到 `out/`,**不产出可双击的应用** |
-| `npm run dist` | `scripts/dist.mjs`:编译 + 注入镜像 + electron-builder + `verify-dist.mjs` 自检(**必须在 Windows 侧跑**) |
+| `npm run dist` | `scripts/dist.mjs`:按当前平台选目标(win→`--win` / linux→`--linux` / mac→`--mac`)+ 编译 + 注入镜像 + electron-builder + `verify-dist.mjs` 自检;Windows 产 `dist/win-unpacked/bow.exe`,Linux 产 `dist/linux-unpacked/bow` + `dist/*.AppImage` |
 | `npm run typecheck` | `tsc --noEmit` 跑 `tsconfig.node.json` + `tsconfig.web.json` |
 | `npm test` | vitest(`tests/**/*.test.ts`,node 环境,alias `@shared`/`@plugins`) |
 | `npm run test:mcp` | 真机冒烟:自己拉起 MCP 模式浏览器跑关键流程 |
@@ -967,8 +967,8 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | --- | --- |
 | `open-bow.mjs` | 跨平台拼环境变量再 spawn electron(解决 Windows 无内联赋值);支持 `--dry-run`;首个参数精确为 `stdio`/`http` 才算模式,其余参数原序透传为「打开目标」 |
 | `install-pi-mcp.mjs` | 写 `~/.pi/agent/mcp.json`(或 `--project`),支持 `--http` `--direct-core` `--direct-all` `--tool-prefix` `--no-skill` `--remove` `--dry-run`;`directTools` 核心 5 个 = `browser_navigate` `browser_snapshot` `browser_wait` `browser_click` `browser_eval` |
-| `dist.mjs` | 打包(含镜像注入) |
-| `verify-dist.mjs` + `lib/externalRequires.mjs` | 从 bundle 扫出运行时外部依赖(`require` / `from` / **动态 `import()`**),逐个核对是否进了 `app.asar`(缺一个就 `bow.exe` 一闪即退);终端插件的 node-pty 就是靠动态 import 惰性加载的,漏扫这一形式等于自检有盲区 |
+| `dist.mjs` | 打包(按当前平台选 `--win`/`--linux`/`--mac`,含镜像注入;显式传参则完全交给调用方,并把本次目标的 `app.asar` 交给自检) |
+| `verify-dist.mjs` + `lib/externalRequires.mjs` | 从 bundle 扫出运行时外部依赖(`require` / `from` / **动态 `import()`**),逐个核对是否进了 `app.asar`(缺一个就 `bow` 一闪即退);终端插件的 node-pty 就是靠动态 import 惰性加载的,漏扫这一形式等于自检有盲区;自动扫描时优先当前平台的 `*-unpacked` 目录 |
 | `ensure-electron.mjs` | postinstall:确保 electron 二进制就位(走镜像) |
 | `mcp-smoke.mjs` | 真机冒烟(405 行) |
 | `e2e-device-inspect.mjs` + `fixtures/fake-phone-{,adb,device}.mjs` | 设备检查插件的假手机 E2E:`fake-phone-adb.mjs` 仿 adb 输出并在 `forward` 时拉起 `fake-phone-device.mjs`(HTTP `/json` + WS CDP,并把收到的每条命令写进 `cdp-log.jsonl`),驱动脚本用 MCP 客户端跑 11 个 `device_*` 工具,并用 bow 自己的 `--remote-debugging-port` 往手机 DevTools 前端 target 发 `Ctrl+Shift+→` 验分屏 |
@@ -1142,7 +1142,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 
 **开发层**
 
-7. `npm run build` 不等于产出可用的 exe;发布要 `npm run dist`(Windows 侧)。
+7. `npm run build` 不等于产出可用的应用;发布要 `npm run dist`(按当前平台打包,见 §11)。
 8. 外部化依赖必须进 `app.asar` 的 `node_modules`,否则双击一闪即退;`verify-dist.mjs` 是守门人。
 9. Windows 上不要用内联环境变量赋值,统一 `open-bow.mjs`。
 10. stdio 实例不参与单实例锁 → 开新会话前先关掉旧的 stdio 实例。

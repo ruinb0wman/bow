@@ -30,10 +30,13 @@ function isDev(): boolean {
 }
 
 function deps(): RegistrationDeps {
+  const dev = isDev()
   return {
     platform: process.platform,
-    isPackaged: !isDev(),
-    execPath: process.execPath,
+    isPackaged: !dev,
+    // AppImage 运行时把 process.execPath 指向临时挂载点(/tmp/.mount_xxx/bow),
+    // 注册默认浏览器必须用 .AppImage 本体 —— 运行时会把本体路径放进 APPIMAGE。
+    execPath: !dev && process.platform === 'linux' && process.env.APPIMAGE ? process.env.APPIMAGE : process.execPath,
     repoRoot: process.cwd()
   }
 }
