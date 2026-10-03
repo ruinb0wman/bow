@@ -13,6 +13,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { describe, expect, it, vi } from 'vitest'
 import type { TabInfo } from '../src/shared/types'
+import type { WindowRegistry } from '../src/main/windows'
 import type { FakeWc } from './fakeWc'
 import { FakeKernel } from './fakeKernel'
 import { FakeTabs } from './fakeTabs'
@@ -526,72 +527,147 @@ describe('MCP 服务器:目标标签边界', () => {
   })
 })
 
-describe('MCP 服务器:多窗口寻址', () => {
-  /** 两窗口注册表:window 1 = tabsA,window 2 = tabsB(聚焦窗口 = 2) */
-  function twoWindows(tabsA: FakeTabs, tabsB: FakeTabs) {
+describe('MCP 服务器:多窗口寻址与 agent 专属窗口', () => {
+  /**
+   * 两窗口假注册表:
+   * - window 1 = 用户窗口(tabsA,role 'user'),**且是聚焦窗口** —— 改动前省略 tabId 会落在这里(要防的回归);
+   * - window 2 = MCP 专属窗口(tabsB,role 'agent'),`preexistingAgent: false` 表示尚未创建。
+   */
+  function multiWindows(opts: { preexistingAgent?: boolean } = {}) {
     // 真实 WindowManager 用进程级分配器保证 tabId 全局唯一;FakeTabs 各自从 1 开始,
-    // 这里把第二个窗口的 id 区间错开,模拟全局唯一。
-    tabsB.nextId = 100
-    const a = fakeWindows(tabsA, { id: 1 })
-    const b = fakeWindows(tabsB, { id: 2 })
-    let activeId = 2 // 初始聚焦窗口 = 2
-    return {
-      byId: (id: number) => (id === 1 ? a.focused() : id === 2 ? b.focused() : null),
-      byTabId: (id: number) => a.byTabId(id) ?? b.byTabId(id),
-      focused: () => (activeId === 1 ? a.focused() : b.focused()),
-      markActive: (ctx: { id: number }) => {
-        activeId = ctx.id
+    // 这里把 agent 窗口的 id 区间错开,模拟全局唯一。
+    const userTabs = new FakeTabs()
+    const agentTabs = new FakeTabs()
+    agentTabs.nextId = 100
+    const user = fakeWindows(userTabs, { id: 1, role: 'user' })
+    let agent: WindowRegistry | null =
+      opts.preexistingAgent === false ? null : fakeWindows(agentTabs, { id: 2, role: 'agent' })
+    let createdTimes = 0
+    const registry: WindowRegistry = {
+      byId: (id) => (id === 1 ? user.byId(id) : agent?.byId(id) ?? null),
+      byTabId: (id) => user.byTabId(id) ?? agent?.byTabId(id) ?? null,
+      focused: () => user.focused(),
+      markActive: () => {},
+      allTabs: () => [...user.allTabs(), ...(agent?.allTabs() ?? [])],
+      agentWindow: () => agent?.agentWindow() ?? null,
+      createAgentWindow: () => {
+        createdTimes++
+        agent ??= fakeWindows(agentTabs, { id: 2, role: 'agent' })
+        return agent.agentWindow()
       },
-      allTabs: () => [...a.allTabs(), ...b.allTabs()]
+      markAgentActive: () => {}
     }
+    return { registry, userTabs, agentTabs, createdTimes: () => createdTimes }
   }
 
-  it('list_tabs 带 windowId 与 focusedWindowId;tabId 跨窗口解析', async () => {
+  async function connect(registry: WindowRegistry): Promise<Client> {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
-    const tabsA = new FakeTabs()
-    const tabsB = new FakeTabs()
-    await startMcpServer({ windows: twoWindows(tabsA, tabsB) as never, kernel: new FakeKernel() as never }, serverTransport)
+    await startMcpServer({ windows: registry, kernel: new FakeKernel() as never }, serverTransport)
     const client = new Client({ name: 'mcp-browser-test', version: '0.0.0' })
     await client.connect(clientTransport)
+    return client
+  }
 
-    tabsA.create('https://a.example/')
-    const inA = tabsA.listTabs()[0]
-    const inB = tabsB.create('https://b.example/')
-    const list = await call(client, 'browser_list_tabs')
-    expect(list.isError).toBe(false)
-    expect(list.data.focusedWindowId).toBe(2)
-    expect(list.data.tabs.map((t: TabInfo) => t.windowId)).toEqual([1, 2])
+  it('省略 tabId 时只作用于 agent 窗口,不碰用户窗口(隔离核心)', async () => {
+    const { registry, userTabs, agentTabs } = multiWindows()
+    const client = await connect(registry)
+    userTabs.create('https://mine.example/')
 
-    // 按 tabId 操作后台窗口里的标签(不依赖聚焦窗口)
-    const info = await call(client, 'browser_get_info', { tabId: inB.id })
-    expect(info.data.info.windowId).toBe(2)
-    const switched = await call(client, 'browser_switch_tab', { tabId: inB.id })
-    expect(switched.data.windowId).toBe(2)
-
-    // switch_tab 应把「默认窗口」改成目标窗口(markActive),不依赖 OS 焦点是否真的转移
-    const switchedA = await call(client, 'browser_switch_tab', { tabId: inA.id })
-    expect(switchedA.data.windowId).toBe(1)
-    const afterSwitch = await call(client, 'browser_list_tabs')
-    expect(afterSwitch.data.focusedWindowId).toBe(1)
+    const nav = await call(client, 'browser_navigate', { url: 'https://agent.example/', waitUntil: 'none' })
+    expect(nav.isError).toBe(false)
+    expect(nav.data.tabId).toBeGreaterThanOrEqual(100)
+    expect(agentTabs.listTabs().some((t) => t.url === 'https://agent.example/')).toBe(true)
+    expect(userTabs.listTabs().map((t) => t.url)).toEqual(['https://mine.example/'])
     await client.close()
   })
 
-  it('browser_new_tab 可用 windowId 指定窗口,缺省落聚焦窗口', async () => {
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
-    const tabsA = new FakeTabs()
-    const tabsB = new FakeTabs()
-    await startMcpServer({ windows: twoWindows(tabsA, tabsB) as never, kernel: new FakeKernel() as never }, serverTransport)
-    const client = new Client({ name: 'mcp-browser-test', version: '0.0.0' })
-    await client.connect(clientTransport)
+  it('没有 agent 窗口时按需创建一个,之后复用(不重复开窗)', async () => {
+    const { registry, userTabs, agentTabs, createdTimes } = multiWindows({ preexistingAgent: false })
+    const client = await connect(registry)
+    userTabs.create('https://mine.example/')
 
-    const explicit = await call(client, 'browser_new_tab', { url: 'https://in-a.example/', windowId: 1, waitUntil: 'none' })
+    const first = await call(client, 'browser_new_tab', { url: 'https://one.example/', waitUntil: 'none' })
+    expect(first.data.windowId).toBe(2)
+    expect(createdTimes()).toBe(1)
+
+    const second = await call(client, 'browser_new_tab', { url: 'https://two.example/', waitUntil: 'none' })
+    expect(second.data.windowId).toBe(2)
+    expect(createdTimes()).toBe(1) // 复用已有 agent 窗口
+    expect(userTabs.listTabs().map((t) => t.url)).toEqual(['https://mine.example/'])
+    expect(agentTabs.listTabs().map((t) => t.url).sort()).toEqual(['https://one.example/', 'https://two.example/'])
+    await client.close()
+  })
+
+  it('list_tabs 带 focusedWindowId / mcpWindowId / windowRole,且自身不创建窗口', async () => {
+    const { registry, userTabs, createdTimes } = multiWindows({ preexistingAgent: false })
+    const client = await connect(registry)
+    userTabs.create('https://mine.example/')
+
+    const list = await call(client, 'browser_list_tabs')
+    expect(list.isError).toBe(false)
+    expect(list.data.focusedWindowId).toBe(1) // 用户窗口:仅参考信息
+    expect(list.data.mcpWindowId).toBe(null) // 还没创建
+    expect(createdTimes()).toBe(0) // 只是列一下,不应当建窗口
+    expect(list.data.tabs.map((t: TabInfo) => [t.windowId, t.windowRole])).toEqual([[1, 'user']])
+    await client.close()
+  })
+
+  it('显式 tabId 仍可操作用户窗口里的标签(软隔离)', async () => {
+    const { registry, userTabs } = multiWindows()
+    const client = await connect(registry)
+    const mine = userTabs.create('https://mine.example/')
+
+    const info = await call(client, 'browser_get_info', { tabId: mine.id })
+    expect(info.isError).toBe(false)
+    expect(info.data.info.windowId).toBe(1)
+    await client.close()
+  })
+
+  it('tabId 全局唯一:list_tabs 同时列出两个窗口的标签', async () => {
+    const { registry, userTabs, agentTabs } = multiWindows()
+    const client = await connect(registry)
+    const mine = userTabs.create('https://a.example/')
+    const its = agentTabs.create('https://b.example/')
+
+    const list = await call(client, 'browser_list_tabs')
+    expect(list.data.tabs.map((t: TabInfo) => [t.id, t.windowId, t.windowRole])).toEqual([
+      [mine.id, 1, 'user'],
+      [its.id, 2, 'agent']
+    ])
+    expect(list.data.mcpWindowId).toBe(2)
+    await client.close()
+  })
+
+  it('browser_new_tab 缺省落 agent 窗口,显式 windowId 落指定窗口', async () => {
+    const { registry, userTabs, agentTabs } = multiWindows()
+    const client = await connect(registry)
+
+    const explicit = await call(client, 'browser_new_tab', { url: 'https://in-user.example/', windowId: 1, waitUntil: 'none' })
     expect(explicit.data.windowId).toBe(1)
-    expect(tabsA.listTabs().some((t) => t.url === 'https://in-a.example/')).toBe(true)
-    expect(tabsB.listTabs().some((t) => t.url === 'https://in-a.example/')).toBe(false)
+    expect(userTabs.listTabs().some((t) => t.url === 'https://in-user.example/')).toBe(true)
 
-    const dflt = await call(client, 'browser_new_tab', { url: 'https://in-focused.example/', waitUntil: 'none' })
-    expect(dflt.data.windowId).toBe(2) // 聚焦窗口 = 2
-    expect(tabsB.listTabs().some((t) => t.url === 'https://in-focused.example/')).toBe(true)
+    const dflt = await call(client, 'browser_new_tab', { url: 'https://in-agent.example/', waitUntil: 'none' })
+    expect(dflt.data.windowId).toBe(2)
+    expect(agentTabs.listTabs().some((t) => t.url === 'https://in-agent.example/')).toBe(true)
+    expect(userTabs.listTabs().some((t) => t.url === 'https://in-agent.example/')).toBe(false)
+    await client.close()
+  })
+
+  it('switch_tab 指向用户窗口只激活标签,不把用户窗口设成 MCP 默认窗口', async () => {
+    const { registry, userTabs, agentTabs } = multiWindows()
+    const client = await connect(registry)
+    const mine = userTabs.create('https://mine.example/')
+    const agentTab = agentTabs.create('https://agent.example/')
+
+    const switchedMine = await call(client, 'browser_switch_tab', { tabId: mine.id })
+    expect(switchedMine.data.windowRole).toBe('user')
+    expect(switchedMine.data.mcpWindowId).toBe(2) // 默认窗口仍是 agent 窗口
+    const afterSwitch = await call(client, 'browser_list_tabs')
+    expect(afterSwitch.data.mcpWindowId).toBe(2)
+
+    const switchedAgent = await call(client, 'browser_switch_tab', { tabId: agentTab.id })
+    expect(switchedAgent.data.windowRole).toBe('agent')
+    expect(switchedAgent.data.mcpWindowId).toBe(2)
     await client.close()
   })
 })

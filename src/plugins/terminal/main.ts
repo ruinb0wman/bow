@@ -15,10 +15,14 @@
 
 import { app } from 'electron'
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import type { PluginContext, PluginMain, PluginStorage } from '../../main/plugins/types'
+import { BOW_SIGNAL_VERSION, OscSignalParser } from '@shared/agentState'
+import type { AgentSignal } from '@shared/agentState'
+import { installPiBridge, piBridgeStatus, uninstallPiBridge } from './piBridge'
+import type { PiBridgeEnv, PiBridgeIo } from './piBridge'
 import {
   MAX_SESSIONS,
   TERMINAL_EVENTS,
@@ -31,7 +35,8 @@ import {
   platformProfiles,
   pushReplay,
   renderSettingsOf,
-  replayText
+  replayText,
+  withBowTerminalEnv
 } from './shared'
 import type {
   ReplayBuffer,
@@ -46,6 +51,11 @@ const FLUSH_MS = 8
 
 type PtyModule = typeof import('node-pty')
 
+/** 插件依赖注入缝(只有单测用):替换 node-pty 的加载,好让用例能喂假 pty 输出 */
+export interface TerminalPluginDeps {
+  loadPty?: () => Promise<PtyModule>
+}
+
 interface Session {
   tabId: number
   profileId: string
@@ -57,6 +67,12 @@ interface Session {
   /** 已产出但还没发出去的输出(合批) */
   pending: string[]
   flushTimer: NodeJS.Timeout | null
+  /** 代理状态信号的流式解析器(见 `@shared/agentState`);回放缓冲里存的是**剥干净**的文本 */
+  parser: OscSignalParser
+  /** 上一次报出去的代理状态去重键;null = 还没报过 */
+  agentKey: string | null
+  /** 见过桥接信号(`1337;bow`)之后,pi 内建的 `9;4` 降级信号就不再采信 */
+  sawBridge: boolean
 }
 
 /**
@@ -87,7 +103,27 @@ function toPositiveInt(value: unknown, fallback: number, min: number, max: numbe
   return Math.min(max, Math.max(min, Math.round(n)))
 }
 
-function createTerminalPlugin(): PluginMain {
+/**
+ * 「一键接入 pi 状态桥」的真 fs 适配(纯逻辑在 `./piBridge`,I/O 从这里注入)。
+ * `readFile` 失败返回 null(而不是抛),因为上层先 `exists` 再读,读不到只可能是权限/编码问题。
+ */
+function realPiBridgeIo(): PiBridgeIo {
+  return {
+    exists: (path) => existsSync(path),
+    readFile: (path) => {
+      try {
+        return readFileSync(path, 'utf-8')
+      } catch {
+        return null
+      }
+    },
+    writeFile: (path, content) => writeFileSync(path, content, 'utf-8'),
+    mkdirp: (path) => void mkdirSync(path, { recursive: true }),
+    remove: (path) => rmSync(path)
+  }
+}
+
+function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
   /** 每个插件实例一份状态;activate 里初始化,deactivate 里清空 */
   let store: PluginStorage<TerminalSettings> | null = null
   let defaults: TerminalSettings | null = null
@@ -103,7 +139,9 @@ function createTerminalPlugin(): PluginMain {
     if (ptyModule) return ptyModule
     if (ptyError) throw new Error(ptyError)
     try {
-      const mod = (await import('node-pty')) as unknown as PtyModule & { default?: PtyModule }
+      const mod: PtyModule & { default?: PtyModule } = deps.loadPty
+        ? await deps.loadPty()
+        : ((await import('node-pty')) as unknown as PtyModule & { default?: PtyModule })
       const resolved = typeof mod.spawn === 'function' ? mod : mod.default
       if (!resolved || typeof resolved.spawn !== 'function') throw new Error('node-pty 导出形状不符合预期')
       ptyModule = resolved
@@ -134,11 +172,32 @@ function createTerminalPlugin(): PluginMain {
     session.flushTimer = setTimeout(() => flush(session), FLUSH_MS)
   }
 
+  // ---------- 编码代理状态(终端里的 pi 等,见 @shared/agentState)----------
+
+  /**
+   * 把一个状态报给主进程(`service.agent`,由 `main/agentNotify.ts` 落地成角标 + 底部居中通知)。
+   * 去重按「完整状态键」:同一状态重复喊(心跳 / 重复输出)不该惊动标签栏与通知栈。
+   */
+  function reportAgent(session: Session, signal: AgentSignal): void {
+    const key = [signal.state, signal.done ? 1 : 0, signal.agent ?? '', signal.title ?? '', signal.text ?? ''].join('|')
+    if (key === session.agentKey) return
+    session.agentKey = key
+    context?.service.agent.report({ ...signal, tabId: session.tabId })
+  }
+
+  /** 会话结束 / 标签关闭:清掉角标(`idle` 不带 `done` → 不弹「已完成」通知) */
+  function clearAgent(session: Session): void {
+    if (session.agentKey === null) return
+    session.agentKey = null
+    context?.service.agent.report({ v: BOW_SIGNAL_VERSION, state: 'idle', tabId: session.tabId })
+  }
+
   function killSession(tabId: number, reason: string): void {
     const session = sessions.get(tabId)
     if (!session) return
     sessions.delete(tabId)
     if (session.flushTimer) clearTimeout(session.flushTimer)
+    clearAgent(session)
     try {
       killTree(session.proc.pid)
       session.proc.kill()
@@ -208,7 +267,9 @@ function createTerminalPlugin(): PluginMain {
         cols,
         rows,
         cwd: spec.cwd,
-        env: cleanEnv(process.env)
+        // wsl.exe 的 profile 还要把 BOW_TERMINAL 列进 WSLENV —— 否则 Windows 侧的变量进不了发行版,
+        // 终端里的 pi 扩展会认不出「自己在 bow 里」(见 withBowTerminalEnv 的注释与实测表)
+        env: withBowTerminalEnv(cleanEnv(process.env), spec.file)
       })
       const session: Session = {
         tabId,
@@ -219,16 +280,33 @@ function createTerminalPlugin(): PluginMain {
         cols,
         rows,
         pending: [],
-        flushTimer: null
+        flushTimer: null,
+        parser: new OscSignalParser(),
+        agentKey: null,
+        sawBridge: false
       }
       sessions.set(tabId, session)
       proc.onData((data) => {
-        session.replay = pushReplay(session.replay, data)
-        enqueue(session, data)
+        // 剥掉代理写的控制序列:文本走原路(回放 + 合批下发),信号只用来算状态
+        const parsed = session.parser.feed(data)
+        if (parsed.text) {
+          session.replay = pushReplay(session.replay, parsed.text)
+          enqueue(session, parsed.text)
+        }
+        for (const signal of parsed.signals) {
+          session.sawBridge = true
+          reportAgent(session, signal)
+        }
+        // 降级路径(没装桥接扩展):pi 内建的 `9;4` 只区分「在跑 / 不在跑」,所以**不报 done**
+        // (压缩结束也会发一次 clear,报 done 会变成假「已完成」通知)
+        if (!session.sawBridge && parsed.progress) {
+          reportAgent(session, { v: BOW_SIGNAL_VERSION, state: parsed.progress === 'active' ? 'working' : 'idle' })
+        }
       })
       proc.onExit(({ exitCode }) => {
         flush(session)
         if (sessions.get(tabId) === session) sessions.delete(tabId)
+        clearAgent(session)
         context?.ipc.emit(TERMINAL_EVENTS.exit, { tabId, code: exitCode })
         context?.log('shell 退出', tabId, profile.name, 'code=', exitCode)
       })
@@ -325,6 +403,24 @@ function createTerminalPlugin(): PluginMain {
         return next
       })
       ctx.ipc.handle('listCandidates', () => candidates())
+
+      // ---------- pi 状态桥的一键接入(设置页 → 终端)----------
+      // 源取自应用根目录下的 `integrations/pi/bow-agent-state.ts`(必须进 build.files,
+      // 否则打包版里 sourceAvailable 为 false —— 设置页会把这句话显示出来,不静默失败)。
+      const bridgeIo = realPiBridgeIo()
+      const bridgeEnv = (): PiBridgeEnv => ({
+        home: homedir(),
+        appPath: app.getAppPath(),
+        env: process.env,
+        // 只有 Windows 上才存在「bow 在 Windows、pi 在 WSL2」这种两个系统的情况(见 piBridge.wslHint)
+        platform: process.platform
+      })
+      const asForce = (opts: unknown): boolean => !!(opts as { force?: boolean } | undefined)?.force
+      ctx.ipc.handle('piBridgeStatus', () => piBridgeStatus(bridgeIo, bridgeEnv()))
+      ctx.ipc.handle('piBridgeInstall', (opts: unknown) => installPiBridge(bridgeIo, bridgeEnv(), { force: asForce(opts) }))
+      ctx.ipc.handle('piBridgeUninstall', (opts: unknown) =>
+        uninstallPiBridge(bridgeIo, bridgeEnv(), { force: asForce(opts) })
+      )
       ctx.ipc.handle('attach', (input: { tabId?: unknown; cols?: unknown; rows?: unknown }) => attach(input ?? {}))
       ctx.ipc.handle('write', (tabId: unknown, data: unknown) => write(tabId, data))
       ctx.ipc.handle('resize', (tabId: unknown, cols: unknown, rows: unknown) => resize(tabId, cols, rows))
@@ -363,4 +459,5 @@ function createTerminalPlugin(): PluginMain {
   }
 }
 
+export { createTerminalPlugin }
 export default createTerminalPlugin()

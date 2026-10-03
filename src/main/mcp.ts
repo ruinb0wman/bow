@@ -69,11 +69,15 @@ export const MCP_INSTRUCTIONS = `这是一个真实的多标签浏览器窗口(�
 返回体约定
 - 所有工具都返回 JSON。先看 ok 字段;ok=false 表示失败(协议层已同时标记 isError),不要当成成功继续往下走。
 - 参数名必须精确:未知参数会被拒绝,报错里会列出本工具接受的参数名,不要凭记忆猜参数。
-- 页面类工具默认作用于「活动标签」。若活动标签是浏览器内部页面(bow://settings,即 browser_list_tabs 里 internal: true),
+- 页面类工具默认作用于「活动标签」——即下面说的 MCP 专属窗口的活动标签。若活动标签是浏览器内部页面(bow://settings,即 browser_list_tabs 里 internal: true),
   会退到最近浏览过的页面标签;一个都没有时会自动新建 about:blank 标签——此时返回的 tabId 并不是你预期的那个,一切以返回值为准。
-- bow 可同时开多个窗口(重复启动会开新窗口)。**tabId 全局唯一**,browser_list_tabs 每条都带 windowId,响应顶层还带 focusedWindowId;
-  省略 tabId 时作用于**当前聚焦窗口**的活动标签。browser_new_tab 可用 windowId 指定在哪个窗口新建;
-  browser_switch_tab 会把目标标签所属的窗口设为**后续操作的默认窗口**(并尝试提到前台;Wayland 下窗口管理器可能拒绝焦点请求)。
+- bow 可同时开多个窗口(重复启动会开新窗口)。**tabId 全局唯一**,browser_list_tabs 每条都带 windowId 与 windowRole,
+  响应顶层还带 focusedWindowId(用户正在看哪个窗口,仅参考)与 **mcpWindowId**(你省略 tabId 时实际会作用的窗口)。
+  bow 为 MCP 客户端维护一个**专属窗口**(windowRole: "agent",标题带「· Agent」后缀、相对用户窗口偏移):
+  省略 tabId 时只会作用于它,没有就自动创建一个 —— **绝不会动用户正在用的窗口**,两者标签互不影响。
+  要操作用户窗口里的标签(列表里 windowRole: "user")必须在该次调用里显式传 tabId(属于明确请求);
+  browser_new_tab 可用 windowId 指定在哪个窗口新建;browser_switch_tab 只在 agent 窗口之间切换你的默认窗口,
+  指向用户窗口时只激活那个标签、**不**改默认窗口、也不抢焦点。
 
 推荐工作流
 1. browser_navigate / browser_search / browser_new_tab / browser_reload 默认已等到页面加载完成(waitUntil: 'load');
@@ -127,8 +131,8 @@ export const MCP_INSTRUCTIONS = `这是一个真实的多标签浏览器窗口(�
 - 手机页面的点击/输入坐标用**视口 CSS 像素**(不乘 devicePixelRatio);页面处于捏合缩放或软键盘顶起时
   注入位置可能整体偏移 —— 操作后用 device_eval 读一个计数器/值确认,不要假定点中了。
 - browser_screenshot 默认只截当前视口;fullPage: true 截整页(输出分辨率 = 文档 CSS 尺寸 × devicePixelRatio,与普通截图一致)。整页截图需要临时附加调试器,该标签开着 DevTools 会失败;页面过高(设备像素超过 16000)会明确报错,改用 browser_scroll 分段。无 GPU 的环境可能返回黑帧,不要反复重试。
-- browser_navigate / browser_search 传 tabId 时作用于指定标签(指向内部页面标签会被拒绝);省略则作用于活动标签。
-- 插件被停用后,它贡献的工具(如 adblock_*)会从工具列表消失,这不是故障;可在 bow://settings 的「插件管理」重新启用。
+- browser_navigate / browser_search 传 tabId 时作用于指定标签(指向内部页面标签会被拒绝);省略则作用于 **MCP 专属窗口**的活动标签。
+- 插件被停用后,它贡献的工具(如 browser_add_bookmark)会从工具列表消失,这不是故障;可在 bow://settings 的「插件管理」重新启用。
 - browser_press_key 的 Ctrl+T / Ctrl+W 直接操作标签页,不等同于网页内的按键。`
 
 /** 构建一个注册好全部核心工具的 MCP 服务器(插件工具由调用方按传输方式接入) */
@@ -158,9 +162,13 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
       (args: any, extra: any) => mcpActivity.wrapTool(name, () => handler(args, extra))
     )
 
-  // 当前操作目标视图:可指定 tabId(全局唯一,经 WindowManager 跨窗口解析),默认取**聚焦窗口**
-  // 的活动标签(活动标签是内部页面时退到最近浏览的页面标签);
+  // 当前操作目标视图:可指定 tabId(全局唯一,经 WindowManager 跨窗口解析),默认取 MCP 的**专属窗口**
+  // (agent 窗口,没有就按需创建),绝不回退到用户正在用的窗口;
   // 内部页面标签(如 bow://settings)持有应用 preload,一律不作为页面工具的操作目标。
+  //
+  // 软隔离:显式传 tabId 时允许任何窗口(包括用户的),所以「帮我看看这个页面」这类请求仍然可行。
+  const agentCtx = (): WindowContext | null => windows.agentWindow() ?? windows.createAgentWindow()
+
   const target = (
     tabId?: number
   ): { view: TabRecord | null; ctx: WindowContext | null; fail: string | null } => {
@@ -172,8 +180,8 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
       }
       return { view: hit.record, ctx: hit.ctx, fail: null }
     }
-    const ctx = windows.focused()
-    if (!ctx) return { view: null, ctx: null, fail: '没有可用窗口' }
+    const ctx = agentCtx()
+    if (!ctx) return { view: null, ctx: null, fail: '无法创建 MCP 专属窗口' }
     let hit = ctx.tabs.getActiveBrowsingView()
     if (!hit) {
       // 只有内部页面标签(或没有任何标签):新建空白标签作为操作目标
@@ -223,9 +231,9 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
         const res = await loadFor(id, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS, url)
         return textContent({ ok: res.ok, url, tabId: id, createdTab: false, ...loadFields(res) })
       }
-      // 未指定:作用于**聚焦窗口**;活动标签是设置等内部页面时另开新标签(内部页面不可被导航走)
-      const ctx = windows.focused()
-      if (!ctx) return textContent({ ok: false, error: '没有可用窗口' })
+      // 未指定:作用于 MCP 专属窗口;活动标签是设置等内部页面时另开新标签(内部页面不可被导航走)
+      const ctx = agentCtx()
+      if (!ctx) return textContent({ ok: false, error: '无法创建 MCP 专属窗口' })
       const activeBefore = ctx.tabs.getActiveView()
       const tab = ctx.tabs.openUrl(url)
       const createdTab = tab.id !== activeBefore?.info.id
@@ -260,8 +268,8 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
         const res = await loadFor(id, timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS, url)
         return textContent({ ok: res.ok, engine: engineId, url, tabId: id, createdTab: false, ...loadFields(res) })
       }
-      const ctx = windows.focused()
-      if (!ctx) return textContent({ ok: false, error: '没有可用窗口' })
+      const ctx = agentCtx()
+      if (!ctx) return textContent({ ok: false, error: '无法创建 MCP 专属窗口' })
       const activeBefore = ctx.tabs.getActiveView()
       const tab = ctx.tabs.openUrl(url)
       const createdTab = tab.id !== activeBefore?.info.id
@@ -499,14 +507,14 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
     {
       url: z.string().optional(),
       activate: z.boolean().default(true),
-      windowId: z.number().optional().describe('在哪个窗口新建标签;省略则用聚焦窗口'),
+      windowId: z.number().optional().describe('在哪个窗口新建标签;省略则用 MCP 专属窗口'),
       waitUntil: WaitUntilSchema.default('load').describe("'load' 等到页面加载完成(默认);'none' 立即返回"),
       timeoutMs: z.number().int().positive().optional()
     },
     async ({ url, activate, windowId, waitUntil, timeoutMs }) => {
       if (url && !isHttpUrl(url)) return textContent({ ok: false, error: 'new_tab 仅接受 http/https 地址' })
-      const ctx = (windowId != null ? windows.byId(windowId) : null) ?? windows.focused()
-      if (!ctx) return textContent({ ok: false, error: '没有可用窗口' })
+      const ctx = (windowId != null ? windows.byId(windowId) : null) ?? agentCtx()
+      if (!ctx) return textContent({ ok: false, error: '无法创建 MCP 专属窗口' })
       const t = ctx.tabs.create(url ?? 'about:blank', activate)
       // 新建标签的 info.url 要等 did-navigate 才更新,这里先回显请求地址,完成后的真实地址在 loadedUrl
       const requested = url ?? 'about:blank'
@@ -527,22 +535,41 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
     const hit = windows.byTabId(tabId)
     if (!hit) return textContent({ ok: false, error: `标签 ${tabId} 不存在` })
     hit.ctx.tabs.activate(tabId)
-    // 切后台窗口的标签 = 把那个窗口设为后续操作的默认窗口。
+    // 只在 agent 窗口之间切换「后续省略 tabId 时的默认目标」。
     // 为什么不能只靠 window.focus():Wayland 下窗口管理器可能拒绝焦点请求,
-    // 那样后续省略 tabId 的调用会仍打在旧窗口上 —— markActive 让 switch_tab 的语义确定。
-    if (!hit.ctx.window.isDestroyed()) hit.ctx.window.focus()
-    windows.markActive(hit.ctx)
-    return textContent({ ok: true, activate: true, tabId, windowId: hit.ctx.id })
+    // 那样后续省略 tabId 的调用会仍打在旧窗口上 —— markAgentActive 让 switch_tab 的语义确定。
+    //
+    // 目标标签属于用户自己的窗口时:只激活标签(这是显式请求),**不**把它设成默认窗口、也不 window.focus()。
+    // 否则 agent 一次 switch 就会长期劫持用户的窗口,后续所有省略 tabId 的调用都打进去(隔离失效)。
+    // 要反复操作你窗口里的标签,请在每次调用里显式传 tabId。
+    if (hit.ctx.role === 'agent') {
+      if (!hit.ctx.window.isDestroyed()) hit.ctx.window.focus()
+      windows.markAgentActive(hit.ctx)
+    } else {
+      log('browser_switch_tab 指向用户窗口:只激活标签,不改 MCP 默认窗口', tabId, hit.ctx.id)
+    }
+    return textContent({
+      ok: true,
+      activate: true,
+      tabId,
+      windowId: hit.ctx.id,
+      windowRole: hit.ctx.role,
+      mcpWindowId: windows.agentWindow()?.id ?? null
+    })
   })
 
   tool('browser_list_tabs', {}, async () => {
     const list = windows.allTabs()
     return textContent({
       ok: true,
+      // 用户的聚焦窗口:仅作参考(用户正在看哪个)。MCP 省略 tabId 时**不**作用于它。
       focusedWindowId: windows.focused()?.id ?? null,
+      // MCP 后续省略 tabId 时实际会作用的窗口(没有 agent 窗口时为 null,页面工具会按需创建一个)
+      mcpWindowId: windows.agentWindow()?.id ?? null,
       tabs: list.map((t) => ({
         id: t.id,
         windowId: t.windowId,
+        windowRole: t.windowId != null ? windows.byId(t.windowId)?.role ?? null : null,
         url: t.url,
         title: t.title,
         loading: t.loading,

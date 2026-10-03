@@ -68,6 +68,12 @@ export type TabHotkey =
    * 代价与 `Ctrl+←/→` 同类:网页里的编辑器(Jupyter、网页版 vim 等)拿不到这个组合。
    */
   | { action: 'downloads' }
+  /**
+   * `Ctrl/Cmd+F`:页内查找(高亮 + 计数)。**终端页让给 shell** ——
+   * `Ctrl+F` 在 readline / shell 里是 forward-char(按字符前进),必须放行(见 `releasesToTerminal`)。
+   * DevTools 前端(自带查找)由 `tabShortcuts.ts` 单独放行,不在本函数的判据里。
+   */
+  | { action: 'find' }
 
 /** 方向键 code/key → 方向(`matchTabHotkey` 的历史导航与 `matchSplitHotkey` 共用) */
 const ARROW_DIRS: Record<string, PaneDir> = {
@@ -82,7 +88,7 @@ const ARROW_DIRS: Record<string, PaneDir> = {
  * Ctrl/Cmd+W(关闭)、Ctrl/Cmd+1..9(切换,9=最后一个标签)、Ctrl/Cmd+,(打开设置)、
  * Ctrl/Cmd+L(聚焦地址栏,页面内也生效)、Ctrl/Cmd+Shift+L(聚焦地址栏,**终端里也不例外**)、
  * Ctrl/Cmd+Shift+E(在聚焦窗格开终端)、Ctrl/Cmd+R(刷新聚焦窗格)、`Ctrl/Cmd+J`(下载面板)、
- * Ctrl+←/→(历史后退/前进,**只认 Ctrl**)。
+ * Ctrl/Cmd+F(页内查找)、Ctrl+←/→(历史后退/前进,**只认 Ctrl**)。
  * 与 isDevToolsHotkey 同风格:忽略自动重复与输入法组合;alt 修饰不参与。
  */
 export function matchTabHotkey(input: KeyInputLike): TabHotkey | null {
@@ -114,6 +120,8 @@ export function matchTabHotkey(input: KeyInputLike): TabHotkey | null {
   if (key === 'l' || input.code === 'KeyL') return { action: 'focus-address' }
   if (key === 'r' || input.code === 'KeyR') return { action: 'reload' }
   if (key === 'j' || input.code === 'KeyJ') return { action: 'downloads' }
+  // Ctrl/Cmd+F = 页内查找。Ctrl+Shift+F 走上面的 shift 分支并在那里 return null(没有核心绑定,留给页面/插件)。
+  if (key === 'f' || input.code === 'KeyF') return { action: 'find' }
   if (key === ',' || input.code === 'Comma') return { action: 'settings' }
   // 数字优先物理按键行的 code(Digit1..9):AZERTY 等非 QWERTY 布局下 key 可能是符号
   const codeMatch = /^Digit([1-9])$/.exec(input.code ?? '')
@@ -128,6 +136,7 @@ export function matchTabHotkey(input: KeyInputLike): TabHotkey | null {
  * - `Ctrl+L` = 清屏 —— shell 的高频键,且没有替代品;
  * - `Ctrl+R` = 反向历史搜索(reverse-i-search)—— 同样是 shell 高频键,没有替代品;
  * - `Ctrl+J` = accept-line(等价回车)—— 2026-09-22 加下载面板时放行;不放的话 shell 里回车会失灵;
+ * - `Ctrl+F` = forward-char(按字符前进)—— `Ctrl+F` 是页内查找,不能把 shell 的前进键抢走;
  * - `Ctrl+←/→` = 按词移动(readline 的 backward/forward-word)—— 2026-09-21 用户拍板放行
  *   (终端页本来也没有可回退的浏览历史,让给 shell 零损失);
  * - (曾是 `Ctrl+W` = 删除前一个词)**2026-09-19 用户拍板改为归浏览器**:终端里也要能用 `Ctrl+W` 关掉
@@ -143,7 +152,8 @@ export function releasesToTerminal(hotkey: TabHotkey): boolean {
     hotkey.action === 'reload' ||
     hotkey.action === 'downloads' ||
     hotkey.action === 'back' ||
-    hotkey.action === 'forward'
+    hotkey.action === 'forward' ||
+    hotkey.action === 'find'
   )
 }
 

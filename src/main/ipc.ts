@@ -8,9 +8,11 @@ import { nextLayoutName, nextLayoutPresetId, normalizeLayoutPresets, paneCount, 
 import type { LayoutPreset, PaneDir } from '@shared/split'
 import type { PluginKernel } from './plugins/kernel'
 import type { WindowContext, WindowManager } from './windows'
+import type { AgentNotify } from './agentNotify'
 import { getLayoutsStore, getSettingsStore } from './stores'
 import { CLOSE_CONFIRM_OVERLAY_ID, confirmWindowClose } from './closeConfirm'
 import { focusAddressBar } from './tabShortcuts'
+import { handleFindEvent } from './findBar'
 import { log } from './logger'
 
 /** 向某个窗口的 chrome 发消息(窗口/它的 webContents 已销毁则忽略) */
@@ -50,7 +52,7 @@ export function wireWindowIpc(ctx: WindowContext): void {
   })
 }
 
-export function registerIpc(windows: WindowManager, kernel: PluginKernel): void {
+export function registerIpc(windows: WindowManager, kernel: PluginKernel, agentNotify: AgentNotify): void {
   /** 由 IPC 来源的 webContents 反查窗口(chrome / overlay / 内部页都能认出来) */
   const ctxOf = (e: IpcMainInvokeEvent): WindowContext | null => windows.byWebContents(e.sender)
   /** 同时通知所有窗口的 chrome、overlay 与内部页面标签(设置变更/插件事件是全局的) */
@@ -79,8 +81,6 @@ export function registerIpc(windows: WindowManager, kernel: PluginKernel): void 
     if (ctx) focusAddressBar(ctx.tabs)
     return true
   })
-  // 激活最近浏览的普通页面标签(设置页的「屏蔽元素」等需要回到真实页面执行)
-  ipcMain.handle('tab:activate-last-browsing', (e) => ctxOf(e)?.tabs.activateLastBrowsing() ?? null)
   // 内部页面认领自己所属的标签:终端页据此把 node-pty 会话绑到 tabId(而不是「最后激活的标签」)
   ipcMain.handle('tab:self', (e) => ctxOf(e)?.tabs.findTabIdByWebContents(e.sender) ?? null)
 
@@ -225,7 +225,11 @@ export function registerIpc(windows: WindowManager, kernel: PluginKernel): void 
   // 通用顶层浮层开关(chrome 侧下发内容描述;overlay 页面按 id 渲染注册表组件)。
   // 多窗口:浮层开在**发起请求的那个窗口**(每个窗口一套 OverlayManager)。
   ipcMain.handle('ui:overlay', (e, content: OverlayContent | null) => {
-    ctxOf(e)?.overlay.show(content)
+    const ctx = ctxOf(e)
+    if (!ctx) return false
+    ctx.overlay.show(content)
+    // 浮层刚置顶,会把通知盖住(below-chrome 的建议下拉是全宽带)—— 把通知再抬一次
+    ctx.toasts.raise()
     return true
   })
   // overlay → chrome / 插件:
@@ -239,6 +243,12 @@ export function registerIpc(windows: WindowManager, kernel: PluginKernel): void 
     // ⚠️ 必须在下面的通用 close-request 之前 —— 否则 chrome 收不到关闭事件,面板开关状态会变脏。
     if (ev.id === 'suggest' || ev.id === 'split-menu') {
       sendToChrome(ctx, 'overlay-event', ev)
+      return true
+    }
+    // 页内查找条:核心浮层,owner 是主进程自己(不开 IPC、不走 chrome)。
+    // 必须在下面通用的 close-request 之前 —— 关闭时主进程还要 stopFindInPage 清高亮。
+    if (ev.id === 'find') {
+      handleFindEvent(ctx, ev)
       return true
     }
     if (ev.event === 'close-request') {
@@ -282,6 +292,44 @@ export function registerIpc(windows: WindowManager, kernel: PluginKernel): void 
     log('chrome 高度上报', height)
     ctx.tabs.setChromeHeight(Math.max(0, Math.round(height)))
     ctx.overlay.layout()
+    ctx.toasts.layout()
+    return true
+  })
+
+  // ---------- 底部居中通知(toast 页面专用,见 main/toasts.ts)----------
+  // 通知栈的权威在主进程(`main/agentNotify.ts`),这里只做三件事:量高度、关一条、点进标签。
+  ipcMain.handle('toast:height', (e, height: number) => {
+    const ctx = ctxOf(e)
+    if (!ctx) return false
+    ctx.toasts.setHeight(Number(height))
+    return true
+  })
+  ipcMain.handle('toast:dismiss', (e, id: string) => {
+    if (!ctxOf(e)) return false
+    agentNotify.dismiss(id)
+    return true
+  })
+  /**
+   * 点通知卡片:进入对应标签。
+   * 三件事都要做 —— 切标签("对应 tab")、把窗口提到前台(通知可能在后台窗口)、
+   * 以及**补一次页面 focus**:`TabManager.activate()` 对已激活的标签会早退,不补的话
+   * 键盘焦点还留在通知视图上(看得见但打不进字)。
+   */
+  ipcMain.handle('toast:activate', (e, id: string) => {
+    const ctx = ctxOf(e)
+    const item = ctx?.toasts.getItem(id)
+    if (!ctx || !item) return false
+    agentNotify.dismiss(id)
+    const hit = windows.byTabId(item.tabId)
+    if (!hit) return false
+    windows.markActive(hit.ctx) // 多窗口:后续省略 windowId 的操作也落到这个窗口
+    hit.ctx.tabs.activate(item.tabId)
+    const view = hit.record.view.webContents
+    if (!view.isDestroyed()) view.focus()
+    if (hit.ctx.window.isMinimized()) hit.ctx.window.restore()
+    hit.ctx.window.show()
+    hit.ctx.window.focus()
+    log('通知已点开', item.tabId, item.kind)
     return true
   })
 

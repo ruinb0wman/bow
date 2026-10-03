@@ -8,7 +8,7 @@
  * 而这两个只服务手机这条路(点定位、聚焦 + 全选)。判定点 → 真事件、聚焦 → `Input.insertText`,
  * 这一套正是 chrome://inspect 的 screencast 在用的分工:脚本只负责量坐标/摆焦点,**真输入交给 CDP Input**。
  *
- * 约定与 `element-fullscreen/scripts.ts` 一致:函数声明式(`__bowDeviceXxx__`),调用方拼
+ * 约定:函数声明式(`__bowDeviceXxx__`),调用方拼
  * `(__bowDeviceXxx__)(...args)`;脚本内不用反引号与 `${}` 插值,整体 `String.raw` 保留反斜杠。
  */
 

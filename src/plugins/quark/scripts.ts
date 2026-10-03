@@ -8,7 +8,7 @@
  * 但列表组件的 props 里有结构化的 `{fid, file_name, size, file, ...}`,还顺带能读到 `selectedRowKeys`。
  * 详见 `.pi/plans/2026-09-24-quark-plugin/plan.md` §1.3。
  *
- * 约定(与 `element-fullscreen/scripts.ts` 一致):脚本内不用反引号与 `${` 插值;
+ * 约定:脚本内不用反引号与 `${` 插值;
  * 需要内联的参数一律走 `JSON.stringify`。
  */
 

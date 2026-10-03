@@ -24,6 +24,7 @@ import {
   pushReplay,
   renderSettingsOf,
   replayText,
+  withBowTerminalEnv,
   matchClipboardKey
 } from '../src/plugins/terminal/shared'
 import { installWindowsCtrlAltChordRepair } from '../src/plugins/terminal/ui/xtermCtrlAltChord'
@@ -131,7 +132,7 @@ describe('buildSpawnSpec', () => {
 })
 
 describe('cleanEnv', () => {
-  it('剔除 Electron 注入的变量,补 TERM / COLORTERM', () => {
+  it('剔除 Electron 注入的变量,补 TERM / COLORTERM / BOW_TERMINAL', () => {
     const env = cleanEnv({
       PATH: '/usr/bin',
       ELECTRON_RUN_AS_NODE: '1',
@@ -140,7 +141,50 @@ describe('cleanEnv', () => {
       TERM: 'dumb',
       EMPTY: undefined
     })
-    expect(env).toEqual({ PATH: '/usr/bin', TERM: 'xterm-256color', COLORTERM: 'truecolor' })
+    expect(env).toEqual({
+      PATH: '/usr/bin',
+      TERM: 'xterm-256color',
+      COLORTERM: 'truecolor',
+      // pi 桥接扩展的门禁(见 integrations/pi/bow-agent-state.ts)
+      BOW_TERMINAL: '1'
+    })
+  })
+})
+
+describe('withBowTerminalEnv:WSL profile 必须走 WSLENV', () => {
+  const base = { PATH: '/usr/bin', TERM: 'xterm-256color', BOW_TERMINAL: '1' }
+
+  it('wsl.exe(含全路径 / 大小写 / 无后缀)把标记列进 WSLENV', () => {
+    for (const shell of ['wsl.exe', 'WSL.EXE', 'wsl', 'C:\\Windows\\System32\\wsl.exe']) {
+      expect(withBowTerminalEnv(base, shell).WSLENV, shell).toBe('BOW_TERMINAL')
+    }
+  })
+
+  it('非 WSL 的 shell 原样返回(同一个对象引用,不引入任何新变量)', () => {
+    const env = withBowTerminalEnv(base, '/bin/zsh')
+    expect(env).toBe(base)
+    expect(env.WSLENV).toBeUndefined()
+    expect(withBowTerminalEnv(base, 'powershell.exe').WSLENV).toBeUndefined()
+    expect(withBowTerminalEnv(base, '/bin/bash').WSLENV).toBeUndefined()
+  })
+
+  it('用户已有的 WSLENV 原样保留(用 : 拼接、丢掉空段)', () => {
+    expect(withBowTerminalEnv({ ...base, WSLENV: 'PATH/l:PROXY/p' }, 'wsl.exe').WSLENV).toBe(
+      'PATH/l:PROXY/p:BOW_TERMINAL'
+    )
+    expect(withBowTerminalEnv({ ...base, WSLENV: 'FOO::BAR:' }, 'wsl.exe').WSLENV).toBe('FOO:BAR:BOW_TERMINAL')
+  })
+
+  it('已经列过就不重复加(带 flag 的形式也算)', () => {
+    expect(withBowTerminalEnv({ ...base, WSLENV: 'BOW_TERMINAL' }, 'wsl.exe').WSLENV).toBe('BOW_TERMINAL')
+    expect(withBowTerminalEnv({ ...base, WSLENV: 'BOW_TERMINAL/u' }, 'wsl.exe').WSLENV).toBe('BOW_TERMINAL/u')
+    expect(withBowTerminalEnv({ ...base, WSLENV: 'FOO:BOW_TERMINAL/w' }, 'wsl.exe').WSLENV).toBe('FOO:BOW_TERMINAL/w')
+  })
+
+  it('即使传进来的环境里没有这个标记,也会补上(自托底)', () => {
+    const env = withBowTerminalEnv({ PATH: '/usr/bin' }, 'wsl.exe')
+    expect(env.BOW_TERMINAL).toBe('1')
+    expect(env.WSLENV).toBe('BOW_TERMINAL')
   })
 })
 

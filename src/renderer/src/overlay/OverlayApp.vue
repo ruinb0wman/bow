@@ -10,6 +10,7 @@ import type { OverlayShowMessage } from '@shared/types'
 import SuggestPanel from '@renderer/components/SuggestPanel.vue'
 import SplitMenu from '@renderer/components/SplitMenu.vue'
 import CloseConfirmModal from '@renderer/components/CloseConfirmModal.vue'
+import FindBar from '@renderer/components/FindBar.vue'
 import { PLUGIN_UI } from '../plugins/registry'
 
 const api = window.browserAPI
@@ -17,7 +18,8 @@ const api = window.browserAPI
 const CORE: Record<string, Component> = {
   suggest: markRaw(SuggestPanel),
   'confirm-close': markRaw(CloseConfirmModal),
-  'split-menu': markRaw(SplitMenu)
+  'split-menu': markRaw(SplitMenu),
+  find: markRaw(FindBar)
 }
 
 const content = ref<OverlayShowMessage | null>(null)

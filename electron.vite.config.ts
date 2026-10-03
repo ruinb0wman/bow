@@ -31,7 +31,8 @@ export default defineConfig({
           overlay: resolve('src/renderer/overlay.html'),
           settings: resolve('src/renderer/settings.html'),
           terminal: resolve('src/renderer/terminal.html'),
-          logseq: resolve('src/renderer/logseq.html')
+          logseq: resolve('src/renderer/logseq.html'),
+          toast: resolve('src/renderer/toast.html')
         }
       }
     }

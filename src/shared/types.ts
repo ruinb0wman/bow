@@ -1,6 +1,7 @@
 /** 共享类型:main / preload / renderer 三端通用 */
 
 import type { LayoutPreset, PaneBox, Rect } from './split'
+import type { AgentBadge } from './agentState'
 
 export interface TabInfo {
   id: number
@@ -13,6 +14,12 @@ export interface TabInfo {
   canGoForward: boolean
   active: boolean
   crashed: boolean
+  /**
+   * 终端里的编码代理状态角标(`working` / `blocked` / `done`)。
+   * 唯一写者:`main/agentNotify.ts`(经 `TabManager.setAgentState`);终端插件只负责上报原始信号。
+   * 只经 `tab:updated` / `tab:list-changed` 流到 chrome —— MCP 的 `browser_list_tabs` 不暴露它。
+   */
+  agent?: AgentBadge
   /** 内部页面标签(如 bow://settings):只承载浏览器自有页面,不允许就地导航到普通站点 */
   internal?: boolean
   /** DevTools 前端标签(远程调试用,devtools://…):与内部页面一样不是「可浏览页面」,但不给 preload */
@@ -70,16 +77,22 @@ export interface HistorySettings {
 export type SuggestionKind = 'search' | 'history' | 'bookmark'
 
 // ---------- 通用 Overlay 浮层框架(复用契约) ----------
-/** 浮层布局位:full=全窗遮罩(modal);below-chrome=页面区条带(不遮工具栏/标签栏) */
-export type OverlayPlacement = 'full' | 'below-chrome'
+/**
+ * 浮层布局位:
+ * - `full` = 全窗遮罩(modal);
+ * - `below-chrome` = 页面区条带(不遮工具栏/标签栏,全宽带);
+ * - `page-top-right` = 页面区右上角的小矩形(页内查找条)。**bounds 恰好包住内容** ——
+ *   `WebContentsView` 没有点击穿透,铺满就会把页面点击吃掉,所以几何要精算(见 `@shared/find`)。
+ */
+export type OverlayPlacement = 'full' | 'below-chrome' | 'page-top-right'
 
 /**
  * 核心 Overlay 内容标识(渲染层组件注册表的 key)。
  * 约定:`suggest` = 地址栏建议下拉;`confirm-close` = 关闭窗口确认(多标签时);
- * `split-menu` = 分屏下拉面板(工具栏按钮触发);
+ * `split-menu` = 分屏下拉面板(工具栏按钮触发);`find` = 页内查找条(`Ctrl+F`);
  * 设置等浏览器自有页面已改为内部标签页(bow://settings),不再占用浮层。
  */
-export type CoreOverlayContentId = 'suggest' | 'confirm-close' | 'split-menu'
+export type CoreOverlayContentId = 'suggest' | 'confirm-close' | 'split-menu' | 'find'
 
 /** 插件浮层 id 约定:`plugin:<pluginId>:<panelId>` */
 export type PluginOverlayContentId = `plugin:${string}`
@@ -112,11 +125,34 @@ export interface SplitMenuPayload {
   layouts: LayoutPreset[]
 }
 
+/**
+ * 页内查找条的初始状态(`payload` 只带「打开时」的状态)。
+ * 查询结果 / 计数是**异步反向推**的,走独立的 `find:state` 通道(见 `FindStateMessage`)——
+ * 查一次就重发一遍整套 payload 会反复重排浮层、并在地敲字时抢走页面焦点。
+ */
+export interface FindPayload {
+  query: string
+  matchCase: boolean
+}
+
+/**
+ * 主进程 → overlay:查找结果下行(仅查找条订阅,见 `preload` 的 `onFindState`)。
+ * `refocus` = 「Ctrl+F 再次按下」:把输入框重新聚焦并全选(沿用当前查询,不清空)。
+ */
+export interface FindStateMessage {
+  requestId?: number
+  matches?: number
+  activeMatchOrdinal?: number
+  finalUpdate?: boolean
+  refocus?: boolean
+}
+
 /** 核心内容 id 的类型化 payload;插件浮层 payload 由插件自定义(unknown) */
 export interface OverlayContentMap {
   suggest: SuggestPayload
   'confirm-close': CloseConfirmPayload
   'split-menu': SplitMenuPayload
+  find: FindPayload
 }
 
 export type OverlayPayload<K extends OverlayContentId> = K extends keyof OverlayContentMap

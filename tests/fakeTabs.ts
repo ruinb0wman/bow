@@ -58,6 +58,11 @@ export class FakeTabs {
     return this.activeId == null ? null : (this.recs.get(this.activeId) ?? null)
   }
 
+  getActiveTabInfo(): TabInfo | null {
+    const rec = this.getActiveView()
+    return rec ? { ...rec.info } : null
+  }
+
   getActiveBrowsingView(): Rec | null {
     if (this.lastBrowsingId != null) {
       const hit = this.recs.get(this.lastBrowsingId)

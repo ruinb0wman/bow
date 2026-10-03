@@ -2,7 +2,7 @@
  * 夸克注入脚本用例。
  *
  * vitest 跑在 node 环境(无 jsdom),所以这里:
- * - 用 `new Function(...)` 验语法(与 adblock / element-fullscreen 的脚本测试同一手法);
+ * - 用 `new Function(...)` 验语法(与 passwords 的脚本测试同一手法);
  * - 把 `WALK_FN_SRC` **单独取出来**喂假 fiber 对象验行为 —— 这是本插件最容易随页面改版失效的一段,
  *   必须能在不打开夸克页面的情况下回归;
  * - 对 `EXTRACT_JS` 只做「不变式」文本断言(不写页面、失败必带 diagnostics)。

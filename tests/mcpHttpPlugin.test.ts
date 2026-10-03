@@ -2,7 +2,7 @@
  * MCP HTTP 服务插件测试。
  *
  * 插件不接触 Electron:只做「端口/令牌持久化 + 依赖就绪后的启停决策 + 状态上报」,
- * 所以这里用手写假上下文(与 elementFullscreenPlugin.test.ts 同风格)驱动,
+ * 所以这里用手写假上下文(与 passwordPlugin.test.ts 同风格)驱动,
  * 真正的监听语义由 mcpHttpHost.test.ts 与 mcpHttp.test.ts 覆盖。
  */
 

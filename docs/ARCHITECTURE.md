@@ -15,7 +15,7 @@
 ## 0. 一句话定位
 
 Electron 多窗口多标签浏览器(`productName: bow`),**内置 MCP 服务器**把自己的
-页面操作能力暴露给 AI 工具;浏览器自身的每个功能(书签/历史/CORS/广告拦截/元素全屏/MCP HTTP)
+页面操作能力暴露给 AI 工具;浏览器自身的每个功能(书签/历史/CORS/设备检查/终端/MCP HTTP)
 都以**仓库内编译期插件**的形式实现,插件可运行时启停、能力自动回收。
 
 - 三端:`main`(Node/Electron 全权限)、`renderer`(Vue 3,三个独立入口)、`shared`(同构纯逻辑)。
@@ -34,7 +34,7 @@ src/
                                  APP_DESKTOP_NAME 导出桌面集成标识(与 .desktop 文件名同源)
     singleInstance.ts            单实例锁(stdio 模式例外)
     windows.ts                   WindowManager:多窗口注册表 + 进程级 tabId/groupId 分配器 + byWebContents/byTabId/focused/allTabs/broadcast
-    rendererEntry.ts             五个渲染入口解析(dev=ELECTRON_RENDERER_URL,prod=file)
+    rendererEntry.ts             六个渲染入口解析(dev=ELECTRON_RENDERER_URL,prod=file)
     openArgs.ts                  启动参数 → 打开目标(裸路径/URL;classifyArg 的判定顺序对 Windows 盘符路径敏感,
                                  second-instance 复用同一套规则)
     navInput.ts                  地址栏输入的本地文件兜底(不 import electron,可单测)
@@ -42,6 +42,10 @@ src/
     tabShortcuts.ts              标签/分屏/历史快捷键(Ctrl+T/W/L/R/,/数字/Shift+T/Shift+E + Ctrl+←/→ + Ctrl+Shift+方向/Alt+Shift+方向)全局拦截(终端页里 Ctrl+L/Ctrl+R/Ctrl+←/→ 放行给 shell;分屏键在终端页也由主进程接管)
     tabManager.ts                TabManager:每标签一个 WebContentsView + 内部页面标签 + 标签组/嵌套分屏 + 布局
     overlay.ts                   OverlayManager:常驻透明顶层视图,按 placement 布局
+    toasts.ts                    ToastManager:每窗口一个「底部居中通知」顶层视图(透明、**按内容实测高度**精确定位;
+                                 `WebContentsView` 不能点击穿透,铺满窗口会吃掉页面点击,见 §3)
+    agentNotify.ts               AgentNotify:代理(终端里的 pi)状态信号 → 标签角标 + 通知栈 + 三种定时器
+                                 (纯归约在 @shared/agentState;信号从终端插件经 service.agent 进来)
     closeConfirm.ts              关闭窗口确认:多标签时拦下 close 事件,改用应用内确认框(确认态按窗口隔离)
     actions.ts                   注入式页面操作原语(snapshot/click/type/scroll/pressKey/screenshot)+ waitForLoad
     pageScripts.ts               注入脚本字符串的唯一来源(SNAPSHOT/CLICK/TYPE/SCROLL_FN;actions.ts 与设备检查插件共用,
@@ -66,6 +70,9 @@ src/
     ui.ts                       渲染层侧:slots / overlays / settingsSections
     ui/*.vue                    该插件的 UI 组件(终端插件的 `ui/TerminalView.vue` 例外:它是 bow://terminal
                                 页面的主体,由 renderer/src/terminal 直接挂载,不经渲染层注册表)
+    piBridge.ts                  终端插件的「pi 状态桥一键接入」纯逻辑(注入 fs;设置页的按钮走它,
+                                  还负责算「bow 在 Windows、pi 在 WSL2」时那条醒用户的拷贝命令 —— 见 `wslHint`)
+                                与仓库脚本 scripts/install-pi-agent-state.mjs 同规则)
     shared.ts | picker.ts | scripts.ts   同构纯逻辑或注入脚本字符串(便于单测)
     adb.ts | targets.ts | cdp.ts          设备检查插件的 I/O 层(spawn / 转发池 / CDP 客户端:含事件订阅与 Input.* 操作;新文件名须登记到 tsconfig.node.json 的 include)
     scripts.ts                            设备检查插件的注入脚本(点定位 / 聚焦全选;纯字符串)
@@ -80,6 +87,8 @@ src/
     settings.html + src/settings/       设置页(bow://settings 内部标签页)
     terminal.html + src/terminal/       终端页(bow://terminal 内部标签页;xterm 视图在终端插件的 ui/ 里)
     logseq.html + src/logseq/           笔记页(bow://logseq 内部标签页;编辑器视图在笔记插件的 ui/ 里)
+    toast.html + src/toast/             底部居中通知栈(不是内部标签页:由 ToastManager 持有的顶层视图加载,
+                                         只画 main/agentNotify.ts 下发的通知栈,并把量到的高度回传)
     src/plugins/registry.ts             PLUGIN_UI 注册表 + SLOT_PLUGIN_ORDER(渲染层唯一登记点)
     src/plugins/slots.ts                collectSlot 纯函数(插槽合并顺序,可单测)
     src/components/                     SuggestPanel(地址栏下拉)/ SplitMenu(分屏面板)/ CloseConfirmModal(关闭窗口确认)/ ModalShell(弹层壳 + Esc 栈顶)
@@ -101,8 +110,9 @@ src/
     bookmarkTree.ts 书签树 CRUD + 展平 + 一级目录迁移
     ua.ts           bowUserAgent() 纯函数
     devtools.ts     DevTools 前端 URL 构造(tabManager 与设备检查插件共用的唯一来源)
-    adblock.ts      广告规则模型/解析/索引/匹配/迁移(v3),~1400 行
-tests/            vitest 46 个测试文件(1001 个用例)+ 3 个测试替身(fakeTabs/fakeWc/fakeKernel)
+    agentState.ts   代理状态协议与纯归约:OSC 信号解析(1337;bow + pi 内建 9;4 降级)、角标映射、通知栈归约
+tests/            vitest 测试文件 + 3 个测试替身(fakeTabs/fakeWc/fakeKernel)
+integrations/pi/  给 pi 装的辅助文件(bow-agent-state.ts = 状态桥扩展,由 scripts/install-pi-agent-state.mjs 写入 ~/.pi/agent/extensions/)
 scripts/          构建与运维脚本(见 §11)
 docs/             本文件 + opencode-session-header.md
 .pi/skills/bow-browser/SKILL.md      给 AI 的能力索引(由 mcp:install 同步到 ~/.pi/agent/skills/)
@@ -169,30 +179,45 @@ whenReady():
 Electron 的合成顺序:`contentView` 的子视图按加入顺序从底到顶;**页面(WebContentsView)永远绘制在 chrome UI 之上**,
 所以任何要浮在页面上的 UI 都必须交给 Overlay。
 
-**多窗口**:一个窗口 = 一个 `WindowContext`(`{ id, window, tabs, overlay }`),由 `src/main/windows.ts` 的
+**多窗口**:一个窗口 = 一个 `WindowContext`(`{ id, role, window, tabs, overlay, toasts }`),由 `src/main/windows.ts` 的
 `WindowManager` 登记。每个窗口有**自己的** chrome webContents、TabManager(标签集/标签组)与 OverlayManager;
 窗口之间不共享标签。`WindowManager` 同时提供:进程级 `tabId`/`groupId` 分配器(全局唯一)、
-`byWebContents`(IPC/快捷键反查窗口)、`byTabId`(MCP/插件反查窗口)、`focused()`(聚焦窗口:优先级 = `markActive` 显式指定 → OS 焦点 → 最近聚焦 → 最后创建)、
+`byWebContents`(IPC/快捷键反查窗口;chrome、overlay、**通知视图**、任意标签视图都认)、`byTabId`(MCP/插件反查窗口)、`focused()`(聚焦窗口:优先级 = `markActive` 显式指定 → OS 焦点 → 最近聚焦 → 最后创建)、
 `allTabs()`(汇总,每条补 `windowId`)、`broadcast()`(向所有窗口广播插件事件)。
-重复启动 bow 时 `second-instance` 调用 `createWindowContext()` 再开一个窗口。
+
+`role` 是 `'user' | 'agent'` 二选一:`'agent'` 表示该窗口是 bow 为 MCP 客户端维护的**专属窗口**
+(标题 `Bow · Agent`、相对聚焦窗口级联偏移 32px、由 `index.ts` 的 `createWindowContext()` 统接线)。
+与之配套的三个方法:MCP 的默认目标不再走 `focused()`,而是 `agentWindow()`(显式指定的优先,否则最近登记的 agent 窗口,
+**不创建**)、`createAgentWindow(targets?)`(通过 `WindowManagerDeps.createWindow` 工厂建窗口并设为默认)、
+`markAgentActive(ctx)`(仅由 `browser_switch_tab` 在 agent 窗口间切换)。
+**与 `markActive` 分开的原因**:后者的指针会被真实 focus 事件清除(用户手动切窗口优先),
+而 MCP 的默认目标**不该被用户的鼠标点击改变**。
+重复启动 bow 时 `second-instance` 调用 `createWindowContext()` 再开一个 `'user'` 窗口;
+`MCP=stdio` 进程的首窗口标为 `'agent'`。
 
 | 视图 | 创建处 | 说明 |
 | --- | --- | --- |
 | chrome 窗口 webContents | `index.ts` 的 `createWindow()` | `frame:false`;承载 `index.html`(标签栏+工具栏+地址栏) |
 | 每标签一个 `WebContentsView` | `TabManager.spawn()`(`create()` / `splitFocused()` / `applyLayout()` 共用) | 普通标签**不给 preload**(`sandbox:true`);bounds 全部由活动组的 `computeLayout()` 给出(见下) |
 | Overlay `WebContentsView` | `OverlayManager.ensureView()` | 透明(`#00000000`)、**每窗口**单例、按需创建;`raise()` = 重新 `addChildView` 置顶 |
+| Toast `WebContentsView` | `ToastManager.ensureView()` | 透明、**每窗口**单例、按需创建;贴底部居中、**bounds 刚好包住通知卡片**(高度由 `toast.html` 实测后经 `toast:height` 上报,`layout()` 按它摆)。**不能铺满窗口**:`setIgnoreMouseEvents` 只属于 BaseWindow/BrowserWindow,`WebContentsView` 没有点击穿透,铺满就会把页面点击吃掉 |
 | 内部页面标签 | `TabManager.create(internalId)` | 唯一的例外:普通标签视图 + **注入应用 preload** |
 
 布局引擎:
 
 - chrome 的高度由渲染层实测后经 `ui:chrome-height` 上报 → `TabManager.setChromeHeight()` → `layout()`。
   `App.vue` 用 `ResizeObserver` + `window.resize` 双重触发,并在挂载后 300ms 补一次。
-- `OverlayManager.layout()` 的两种 placement:
+- `OverlayManager.layout()` 的三种 placement:
   - `full`:铺满窗口 `{0,0,w,h}`,聚焦接管(modal);
   - `below-chrome`:从 `bandTopOf()` 起到底部。`bandTopOf()` 取
     `min(chromeHeight, ceil(payload.rect.y + rect.height))`——即「绝不上盖工具栏,但尽量贴住地址栏底边」。
-    **假设工具栏是 chrome 的最后一行**;将来加书签栏这种整行,这里要回退成 `chromeHeight`。
+    **假设工具栏是 chrome 的最后一行**;将来加书签栏这种整行,这里要回退成 `chromeHeight`;
+  - `page-top-right`:页面区右上角的小矩形(页内查找条),bounds 由 `@shared/find` 的 `findBarRect()`
+    精算 —— `WebContentsView` **没有点击穿透**,铺满会把右半页的点击全吃掉(与底部居中通知同一类约束,见 §3 开头表)。
+    打开与关闭时都接管/归还键盘焦点(`content.id === 'find'` 与 `full` 同一处理)。
 - `raise()` 由 `tabs.on('tabs-changed')` 触发:新标签视图会盖住已开浮层,所以每次标签增删都要重新置顶。
+  **通知视图同理**(同一处一起抬),而且 `ui:overlay` 开浮层的分支里还要再抬一次
+  (`below-chrome` 的地址栏建议是**全宽带**,不重抬就会盖住底部居中通知)。
 - **标签组(标签栏的一项 = 一个组)**:一个组是一棵**二叉嵌套分屏树**(`shared/split.ts` 的 `LayoutNode`:
   叶子是标签,`split` 节点带 `axis`(row=左右 / column=上下)与 `ratio`)。`TabManager` 持有
   `groups: TabGroup[]`(纯记账在 `@shared/groups`,树操作在 `@shared/split`;单测见 `tests/groups.test.ts`、
@@ -214,7 +239,8 @@ Electron 的合成顺序:`contentView` 的子视图按加入顺序从底到顶;*
 | 方向 | 通道 | 用途 |
 | --- | --- | --- |
 | chrome → 主进程 → overlay | `ui:overlay` → `overlay:show` | 显示/更新/关闭浮层(`OverlayShowMessage`,含 `meta.bandTop`) |
-| overlay → 主进程 → chrome/插件 | `ui:overlay-event` | `ev.id === 'suggest'` / `'split-menu'` 转发 chrome(这两个核心浮层的 owner 都是 chrome);`ev.id === 'confirm-close'` 且 `event === 'confirm'` → `closeConfirm.confirmWindowClose()`;`ev.event === 'close-request'` 主进程直接关;其余 `kernel.routeOverlayEvent()` |
+| overlay → 主进程 → chrome/插件 | `ui:overlay-event` | `ev.id === 'suggest'` / `'split-menu'` 转发 chrome(这两个核心浮层的 owner 都是 chrome);`ev.id === 'find'` 由主进程 `main/findBar.ts` 处理(查找条 owner 是主进程);`ev.id === 'confirm-close'` 且 `event === 'confirm'` → `closeConfirm.confirmWindowClose()`;`ev.event === 'close-request'` 主进程直接关;其余 `kernel.routeOverlayEvent()` |
+| 主进程 → overlay(仅查找条) | `find:state` | 查找结果下行(`FindStateMessage`);**不走 `overlay:show`** —— 重发整套 payload 会反复重排浮层并抢走页面焦点。查找条被别的浮层替换后主进程不再推(判 `overlay.currentId === 'find'`) |
 
 `kernel.routeOverlayEvent()` 用正则 `/^plugin:([^:]+):/` 从浮层 id 里解析插件,调用其注册的
 `overlay-event(overlayId, event, args)` 方法。**浮层 id 的格式是有功能的约定**,不是命名风格。
@@ -297,7 +323,6 @@ opensInPane(id)         // openIn === 'pane' 的内部页面(终端 / 笔记):�
 | `getActiveView()` | 活动标签,**可能是内部页面** |
 | `getActiveBrowsingView()` | 活动标签优先,若是内部页面则退到最近浏览的普通标签 |
 | `getLastBrowsingView()` | 只认普通标签;记忆失效时回退为 **id 最大**的普通标签 |
-| `activateLastBrowsing()` | 激活最近浏览的普通标签(设置页里点「屏蔽元素」时先用它切回去) |
 | `openInternalInPane(page)` | `openIn:'pane'` 的页面(终端 / 笔记)**顶替聚焦窗格**打开;已是它 / 没有活动窗格 → `null`(不生效) |
 | `broadcastToInternal(ch, payload)` | 只发给内部页面标签(普通标签没有 preload,收不到) |
 
@@ -361,6 +386,7 @@ interface PluginUiContribution {
 | `service.onMcpHttpReady` | `(cb) => void` | 订阅 `MCP_HTTP_READY_EVENT` |
 | `service.mcpHttp.start/stop/restart/status` | 见 §6.5 | 内核持有监听;`stop()` 固定以 `source:'plugin'` 调用 |
 | `service.activity.snapshot/onChange` | 见 §6.6 | `onChange` 的取消订阅进 disposer |
+| `service.agent.report` | `(signal: AgentSignal & { tabId }) => void` | 不回收(内核持有)。把「终端里的编码代理」状态交给主进程:角标写进 `TabInfo.agent`(经 `TabManager.setAgentState`)、通知进底部居中视图。`tabId` 是**权威身份**(信号来自哪个 pty 会话),不采信负载里的值。实现:`kernel.setAgentReporter`(index.ts 注入)→ `main/agentNotify.ts`;协议与归约见 `@shared/agentState`。唯一调用方是终端插件(剥 OSC 后上报) |
 | `shortcuts.register` | `(HotkeySpec, handler) => void` | 从热键数组移除 |
 
 ⚠️ `PluginStorage` 只是 `JsonStore<T>` 的结构子集(`get` / `set(patch)` / `setRaw(value)`)。
@@ -382,12 +408,11 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 
 要点:
 
-- **activate 是异步的且按注册顺序串行**;`BUILTIN_PLUGINS` 的顺序(`history, bookmarks, cors, adblock,
-  element-fullscreen, mcp-http`)因此决定了网络钩子链与建议源的稳定次序,不是任意顺序。
+- **activate 是异步的且按注册顺序串行**;`BUILTIN_PLUGINS` 的顺序(`history, bookmarks, cors, mcp-http`)
+  因此决定了网络钩子链与建议源的稳定次序,不是任意顺序。
 - `dispose()` 逆序执行 disposer,再 `removeRoutes(id)` + `mcp.removeByPlugin(id)`。
 - 内核**不**为 `net` / `content` 调 `removeByPlugin`——它们的清理完全依赖 disposer。
-- `deactivate` 里插件只应处理**自有非内核资源**(如 adblock 落盘 `blockedCount`、
-  element-fullscreen 还原页面)。
+- `deactivate` 里插件只应处理**自有非内核资源**(如 downloads 落盘下载记录)。
 
 ### 5.4 七类扩展点与宿主
 
@@ -412,7 +437,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 - `pageUrl` 通过 `webContents.fromId(details.webContentsId).getURL()` 补齐 ——
   这是 `$third-party` / `$domain=` 的依据,**拿不到时按「不拦截」处理**。
 - ⚠️ 生态影响:`Electron 的 webRequest` 与 `chrome.webRequest`(扩展 API)互斥,
-  想在 bow 里跑 MV2 拦截型浏览器扩展的人需要先解决这个冲突(本项目自带 adblock 覆盖同类能力)。
+  想在 bow 里跑 MV2 拦截型浏览器扩展的人需要先解决这个冲突(本项目不再自带广告拦截插件 —— 它已于 2026-10-02 移除)。
 
 #### `content` 细节
 
@@ -420,7 +445,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
   无法与 chrome 窗口区分,所以采用 `TabManager.setPageTracker({ track })` 显式登记。
 - `runAt` 默认 `'dom-ready'`;`did-finish-load` 时只跑 `runAt:'did-finish-load'` 的规则。
 - `refresh(tabId?)`:重新按当前 URL 应用 **CSS**(先移除同 `(wc, pluginId, specId)` 的旧 key,再插入);
-  返回空串/undefined 表示本页不注入。adblock 靠它做「改规则立即生效」。
+  返回空串/undefined 表示本页不注入。当前无插件用它(它原来是广告拦截插件做「改规则立即生效」的通路)。
 - `matchUrl(url, matches, excludeMatches)`:任一 matches 命中且**没有** excludeMatches 命中;
   `<all_urls>` 等价于 `*://…`(见 `shared/pluginMatch.ts` 的 `compileUrlPattern`)。
 
@@ -502,8 +527,6 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `history` | ✓ | ui, suggest | `list` `count` `remove(ids[])` `clear` `getSettings` `setSettings` | — | — | — | priority 10 | — | on `tab:navigated` `search:performed`;emit `changed` | `history.json` `history-settings.json` |
 | `bookmarks` | ✓ | ui, suggest, mcp | `list` `add` `addFolder` `update` `remove` `move` `findByUrl` | `browser_add_bookmark` `browser_list_bookmarks` | — | — | priority 20 | — | emit `changed` | `bookmarks.json` |
 | `cors` | — | ui, net | `getSettings` `setSettings` | — | `onBeforeSendHeaders`(记预检 id)+ `onHeadersReceived`(注入 ACAO/ACAM/ACAH,预检覆盖 statusLine) | — | — | — | emit `changed` | `cors.json` |
-| `adblock` | — | ui, net, content, mcp | `getState` `listRules` `setEnabled` `resetCount` `addNetworkRule` `updateNetworkRule` `removeNetworkRule` `addCosmeticRule` `updateCosmeticRule` `removeCosmeticRule` `removeCosmeticFlag` `replaceUserRules` `importRules` `exportRules` `resetDefaults` `addSubscription` `removeSubscription` `setSubscriptionEnabled` `refreshSubscriptions` `pickElement` | `adblock_stats` `adblock_list_rules` `adblock_add_rule` `adblock_remove_rule` `adblock_set_enabled` `adblock_import_rules` `adblock_subscribe` `adblock_refresh_subscriptions` | `onBeforeRequest`(拦子资源,跳过 `mainFrame`) | `cosmetic`(动态 CSS, dom-ready)+ `mark`(打 `data-bow-adblock` 标记) | — | — | on `tab:navigated` `tab:closed` `tab:activated`;emit `changed` `pick-done` | `adblock.json`(compact) |
-| `element-fullscreen` | — | ui, shortcut, mcp | `getState` `pickAndFullscreen` `exitFullscreen` | `browser_fullscreen_element` `browser_exit_fullscreen` | — | — | — | `Ctrl/Cmd+Shift+F` | on `tab:navigated` `tab:closed` `tab:activated`;emit `fullscreen-changed` `pick-done` | 无(纯内存) |
 | `mcp-http` | ✓ | ui, service | `getState` `setSettings` `restart` `toggle` | — | — | — | — | — | on `mcp-http:ready`(经 `service.onMcpHttpReady`)+ `mcpActivity.onChange`;emit `changed` | `mcp-http.json` |
 | `default-browser` | — | ui | `status` `register` `unregister` `openSettings` | — | — | — | — | — | — | 无(状态现读系统:Linux 读 `mimeapps.list`;Windows 先按 UserChoice 主键→备用键→`Software\Classes` 默认值读“记录”,再用 PowerShell 调 shell 的 `AssocQueryString` 拿“**实际生效者**”,两者不一致时以实际为准并标注记录已失效) |
 | `device-inspect` | — | ui, mcp | `list` `open` `getSettings` `setSettings` `checkAdb` `connect` `pair` `cleanupForwards` `rawAdb` | `device_list_targets` `device_inspect` `device_snapshot` `device_tap` `device_type` `device_press_key` `device_scroll` `device_console` `device_eval` `device_screenshot` `device_connect` | — | — | — | — | — | `device-inspect.json`(adb 命令 / 前端策略 / 端口转发记录) |
@@ -511,6 +534,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `logseq` | — | ui | `getState` `pickGraph` `setGraph` `rebuildIndex` `getSettings` `setSettings` `toggleFavorite` `readJournal` `readPage` `listJournals` `listPages` `backlinks` `listTemplates` `savePage` `attach` `setView` `openInNewPane` | — | — | — | — | — | on `tab:closed`(按 tabId 丢视图状态);emit `graph-changed` `settings-changed` `favorites-changed` | `logseq.json`(图目录 + 最近图 + 正文字号 + 每个图的收藏) |
 | `downloads` | — | ui, mcp | `list` `pause` `resume` `cancel` `retry` `remove` `clear` `openFile` `showInFolder` `getSettings` `setSettings` `pickDirectory` `revealDir` | `browser_list_downloads` `browser_download` | — | — | — | — | emit `changed` | `downloads.json`(记录)+ `downloads-settings.json`(目录 / 询问 / 保留条数) |
 | `quark` | — | ui | `listFiles` `pushAria2` `getSettings` `setSettings` `testAria2` | —(不贡献 MCP 工具) | — | —(按需 `pages.execute`,不注入常驻脚本) | — | — | — | `quark.json`(UA / Cookie 域名白名单 / aria2 RPC) |
+| `passwords` | — | ui, shortcut | `status` `setup` `unlock` `lock` `list` `getEntry` `save` `remove` `copy` `readPageFields` `fillEntry` `beginFill` `changeMaster` `getSettings` `setSettings` `wipe` | —(刻意不贡献 MCP 工具:与 AI 隔离) | — | —(按需 `pages.execute` 注入探测 / 下拉 / 填入脚本,不注入常驻脚本) | — | `Ctrl/Cmd+Shift+P` | emit `state-changed` `settings-changed` `open-panel` | `passwords.json`(AES-256-GCM 密文)+ `passwords-settings.json`(自动锁定 / 剪贴板 / 子域匹配) |
 
 **渲染层侧**(`registry.ts` / 各插件 `ui.ts`)
 
@@ -519,8 +543,6 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `bookmarks` | `StarButton` | `BookmarksButton` | `plugin:bookmarks:panel`(full,`BookmarksModal`) | — |
 | `history` | — | — | — | `HistorySettings` |
 | `cors` | — | — | — | `CorsSettings` |
-| `adblock` | — | `BlockElementButton` | — | `AdblockSettings` |
-| `element-fullscreen` | — | `ElementFullscreenButton` | — | — |
 | `mcp-http` | — | `McpStatusBadge` | — | `McpHttpSettings` |
 | `default-browser` | — | — | — | `DefaultBrowserSettings` |
 | `device-inspect` | — | `DeviceInspectButton` | `plugin:device-inspect:panel`(full,`DeviceInspectPanel`) | —(adb 设置放在面板内的折叠区,不占设置页侧栏) |
@@ -528,12 +550,13 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `logseq` | — | `LogseqButton` | —(笔记也是**内部页面**:`bow://logseq`) | `LogseqSettings` |
 | `downloads` | — | `DownloadsButton` | `plugin:downloads:panel`(full,`DownloadsPanel`) | `DownloadsSettings` |
 | `quark` | — | `QuarkButton`(仅夸克个人网盘页可点) | `plugin:quark:panel`(full,`QuarkPanel`) | `QuarkSettings` |
+| `passwords` | — | `PasswordsButton` | `plugin:passwords:panel`(full,`PasswordsPanel`) | `PasswordsSettings` |
 
 ⚠️ 终端插件的 `ui/TerminalView.vue` 与笔记插件的 `ui/JournalView.vue` **不在**注册表里 ——
 它们分别是 `bow://terminal` / `bow://logseq` 页面的主体,由 `renderer/src/<entry>/main.ts` 直接引用。
 插槽/浮层注册表面向的是 chrome 与 overlay 两个宿主。
 
-`SLOT_PLUGIN_ORDER.toolbar = ['bookmarks','downloads','mcp-http','adblock','element-fullscreen','terminal','logseq']`;
+`SLOT_PLUGIN_ORDER.toolbar = ['bookmarks','downloads','mcp-http','terminal','logseq','passwords']`;
 `addressbar-trailing` 为空(保持注册顺序)。未列出的插件排在已列出者之后。
 
 **笔记插件(`bow://logseq`)的五条不变式**(它是唯一直接读写用户仓库外文件的插件,改它之前请务必看这几条,
@@ -551,10 +574,10 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 
 | 事件 | 发布者 | 订阅者 |
 | --- | --- | --- |
-| `tab:navigated` `{tabId,url,title}` | `TabManager` → `index.ts`(普通标签的主框架导航 + 内部页的逻辑 `bow://<id>` URL;`inspector` 不发) | history, adblock, element-fullscreen |
+| `tab:navigated` `{tabId,url,title}` | `TabManager` → `index.ts`(普通标签的主框架导航 + 内部页的逻辑 `bow://<id>` URL;`inspector` 不发) | history, passwords |
 | `tab:created` `{TabInfo}` | 同上 | (当前无) |
-| `tab:closed` `{TabInfo}` | 同上 | adblock, element-fullscreen |
-| `tab:activated` `{TabInfo}` | 同上 | adblock, element-fullscreen |
+| `tab:closed` `{TabInfo}` | 同上 | terminal, logseq, passwords |
+| `tab:activated` `{TabInfo}` | 同上 | (当前无) |
 | `search:performed` `{url,query,title?}` | `ipc.ts` 的 `nav:go` 分支 | history |
 | `mcp-http:ready` | `kernel.notifyMcpHttpReady()` | mcp-http |
 
@@ -598,28 +621,24 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `browser_back` / `browser_forward` | tabId, waitUntil, timeoutMs | waitUntil `'load'` | 同一循环注册,`maybe-navigation` |
 | `browser_stop` | tabId | — | `{ok,tabId}`,无等待语义 |
 | `browser_reload` | tabId, waitUntil, timeoutMs | waitUntil `'load'` | `maybe-navigation` |
-| `browser_new_tab` | url, activate, windowId, waitUntil, timeoutMs | activate `true`;waitUntil `'load'`;windowId 缺省=聚焦窗口 | 无 url 时立即返回;带 url 时 `loadedUrl` 才是真实地址 |
+| `browser_new_tab` | url, activate, windowId, waitUntil, timeoutMs | activate `true`;waitUntil `'load'`;windowId 缺省=**agent 窗口**(没有就创建) | 无 url 时立即返回;带 url 时 `loadedUrl` 才是真实地址 |
 | `browser_close_tab` | **tabId** | — | `{ok,closed}` |
-| `browser_switch_tab` | **tabId** | — | `{ok,activate:true,tabId,windowId}`;把目标窗口设为**后续操作的默认窗口**(`WindowManager.markActive`;同时 `window.focus()`,但 Wayland 下可能被拒) |
-| `browser_list_tabs` | (空) | — | `{ok,focusedWindowId,tabs:[{id,windowId,url,title,loading,active,crashed,internal}]}` |
+| `browser_switch_tab` | **tabId** | — | `{ok,activate:true,tabId,windowId,windowRole,mcpWindowId}`;目标是 agent 窗口才切换**后续默认窗口**(`WindowManager.markAgentActive`;同时 `window.focus()`,Wayland 下可能被拒);目标是用户窗口只激活标签,**不改默认窗口**也不抢焦点 |
+| `browser_list_tabs` | (空) | — | `{ok,focusedWindowId,mcpWindowId,tabs:[{id,windowId,windowRole,url,title,loading,active,crashed,internal}]}`;`focusedWindowId` 仅参考(用户在看哪个),`mcpWindowId` 才是省略 tabId 时的目标(未创建时 null);本工具**不创建**窗口 |
 | `browser_screenshot` | tabId, fullPage | fullPage falsy | **image content**(`image/png`);失败才是 text |
 | `browser_get_info` | tabId | — | `{ok,info:TabInfo}`(info 带 `windowId`) |
 
-插件工具 25 个:`browser_add_bookmark` `browser_list_bookmarks`(书签)、
-`adblock_stats` `adblock_list_rules` `adblock_add_rule` `adblock_remove_rule` `adblock_set_enabled`
-`adblock_import_rules` `adblock_subscribe` `adblock_refresh_subscriptions`(广告)、
-`browser_fullscreen_element` `browser_exit_fullscreen`(元素全屏)、
+插件工具 15 个:`browser_add_bookmark` `browser_list_bookmarks`(书签)、
 `device_list_targets` `device_inspect` `device_snapshot` `device_tap` `device_type` `device_press_key`
 `device_scroll` `device_console` `device_eval` `device_screenshot` `device_connect`(设备检查)、
 `browser_list_downloads` `browser_download`(下载)
-—— 共 25 个,合计 **44** 个工具。
+—— 共 15 个,合计 **34** 个工具。
 
 静态计数来源:`CORE_MCP_TOOL_NAMES`(19)+ `ctx.mcp.tool(...)` 的调用点
-(`bookmarks/main.ts:137,165`、`adblock/main.ts:711,730,752,799,821,835,853,874`、
-`element-fullscreen/main.ts:196,227`、
+(`bookmarks/main.ts:137,165`、
 `device-inspect/main.ts:451,493,510,531,554,574,612,642,666,698,731`、
 `downloads/main.ts:500,529`)。
-⚠️ 实际工具面**随插件启停变化**:停用 adblock 就少 8 个,停用 device-inspect 就少 11 个。
+⚠️ 实际工具面**随插件启停变化**:停用 device-inspect 就少 11 个,停用 downloads 就少 2 个。
 
 ⚠️ 插件工具的 schema **不做 strict 校验**(走 `kernel.mcp` 声明快照),未知参数会被静默丢弃。
 
@@ -627,9 +646,10 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 
 - `{ok:false, …}` → `mcpResult.textContent()` 同时置 `isError: true`,调用方无需解析 JSON。
 - `target(tabId?)` 是页面类工具的**统一取目标**入口,四类失败文案:
-  `标签 N 不存在` / `标签 N 是浏览器内部页面,不支持页面操作` / `没有可用窗口` / `没有活动标签`。
-  `tabId` **全局唯一**(`WindowManager.byTabId` 跨窗口解析);省略 tabId 时作用于**聚焦窗口**
-  (`WindowManager.focused()`),活动标签是内部页面时退到该窗口最近浏览的普通标签;
+  `标签 N 不存在` / `标签 N 是浏览器内部页面,不支持页面操作` / `无法创建 MCP 专属窗口` / `没有活动标签`。
+  `tabId` **全局唯一**(`WindowManager.byTabId` 跨窗口解析)且**可指向任何窗口**(软隔离:显式就是授权);
+  **省略 tabId 时作用于 MCP 专属窗口** —— `agentCtx() = windows.agentWindow() ?? windows.createAgentWindow()`,
+  **绝不回退到 `windows.focused()`(用户正在用的窗口)**;活动标签是内部页面时退到该 agent 窗口最近浏览的普通标签;
   一个都没有则在该窗口**新建 `about:blank`**(此时返回的 tabId 不是调用方预期的,以返回值为准)。
 - `createdTab` 只在省略 tabId 且需要另开标签时为 true。
 - 脚本里把失败放在 `result.error`(click/type/scroll 的注入函数这么做)会有 `ok:true` 的表象,
@@ -716,7 +736,7 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 
 | 命名空间 | 成员 |
 | --- | --- |
-| 标签 | `createTab(url?, activate?)` `closeTab(id)` `restoreTab()` `activateTab(id)` `listTabs()` `getActiveTab()` `activateLastBrowsingTab()` `getSelfTabId()` |
+| 标签 | `createTab(url?, activate?)` `closeTab(id)` `restoreTab()` `activateTab(id)` `listTabs()` `getActiveTab()` `getSelfTabId()` |
 | 导航 | `go(input)` `goUrl(url)` `back()` `forward()` `reload()` `stop()` |
 | 设置 | `getSettings()` `setSettings(patch)` |
 | 窗口 | `minimize()` `maximize()` `closeWindow()` `reportChromeHeight(h)` |
@@ -724,20 +744,22 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | 标签组 | `getGroups()` `groupsActivate(groupId)` `splitPane(dir)` `resizePane(dir)` `groupsUngroup()`(后两条键盘入口在主进程,IPC 是渲染层兜底与 E2E 入口) |
 | 分屏布局 | `getLayouts()` `saveLayout(name?)` `applyLayout(id)` `deleteLayout(id)`(只存结构;套用 = 在当前组后面新开一个标签组) |
 | 浮层 | `showOverlay(content\|null)` `onOverlayEvent(cb)` `onOverlayShow(cb)` `overlayEmit(id,event,args)` |
+| 通知 | `toasts.onShow(cb)` `toasts.reportHeight(h)` `toasts.activate(id)` `toasts.dismiss(id)`(仅 `toast.html` 用;`reportHeight` 是必需的 —— 视图 bounds 按它摆,见 §3) |
 | 插件 | `plugins.list()` `setEnabled(id,enabled)` `invoke(id,method,…args)` `overlayEvent(overlayId,event,args)` `suggest(input)` `onChanged(cb)` `onEvent(cb)` |
 | 订阅 | `onTabUpdated` `onTabsChanged` `onTabActivated` `onSettingsChanged` `onFocusAddressRequest` `onWindowBlur` `onGroupsChanged`(均返回取消订阅函数) |
 
 ⚠️ `browserAPI` 也暴露给内部页面标签(设置页)与 Overlay;普通网页标签**没有** preload。
 
-### 7.2 五个渲染入口
+### 7.2 六个渲染入口
 
 | 入口 | 文件 | 职责 |
 | --- | --- | --- |
 | index | `renderer/index.html` → `App.vue`(13KB) | 标签栏 / 工具栏 / 地址栏 / 插件插槽 / chrome 高度上报 |
 | overlay | `renderer/overlay.html` → `OverlayApp.vue` | 按内容 id 从注册表渲染组件,回传 `overlay-event` |
-| settings | `renderer/settings.html` → `SettingsPage.vue` | 左侧导航 + 右侧内容(常规 / 插件管理 / 插件分区) |
+| settings | `renderer/settings.html` → `SettingsPage.vue` | 左侧导航 + 右侧内容(常规 / 快捷键 / 插件管理 / 插件分区) |
 | terminal | `renderer/terminal.html` → `terminal/TerminalApp.vue` | `bow://terminal` 页面:xterm + node-pty 会话接线(视图组件在终端插件的 `ui/TerminalView.vue`) |
 | logseq | `renderer/logseq.html` → `logseq/LogseqApp.vue` | `bow://logseq` 页面:日志/页面编辑器(视图组件在笔记插件的 `ui/JournalView.vue`) |
+| toast | `renderer/toast.html` → `toast/ToastApp.vue` | 底部居中通知栈:只画主进程下发的栈,把量到的高度回传;**没有本地状态机**(该不该弹/何时消失只有 `main/agentNotify.ts` 一处实现) |
 
 `App.vue` 关键机制:
 
@@ -749,6 +771,10 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 - **标签栏按组渲染**:一项 = 一个组(`v-for="g in groups"`);多窗格组里**只有聚焦窗格**显示 `.tab-title`,
   其余窗格渲染 `.tab-pane-icon`(字母头像,点击切过去、中键关掉);`×` / 中键点项体 / `Ctrl+W` 都只关**聚焦那个窗格**。
   分隔条是 `v-for="d in activeGroupDividers"` 的 `.split-divider`,坐标直接吃主进程回传的 `dividers`(不重算)。
+  聚焦窗格的高亮边框同源:`.split-focus-bar` 由 `focusRingBars(paneRect, area)`(`shared/split.ts` 的纯函数)现算 ——
+  它**只产出有空间的边**,所以需要空间。中间那几条边由 4px 缝隙给;外圈四条边由 `geometryOf()` 给:
+  分屏组的 area 四周内缩 `SPLIT_INSET`(= `FOCUS_RING` = 2px,单窗格组不缩),于是四边都有条可画。
+  条画在窗格 rect 之外,与相邻窗格重叠的部分被对方的 `WebContentsView` 盖住,不需要任何裁剪层。
 - **分屏面板**:工具栏「分屏」按钮打开 `{id:'split-menu', placement:'below-chrome'}`;
   chrome 是面板的 owner —— 它把 `panes/focusedTabId/layouts` 打进 payload,面板只回传
   `focus` / `save` / `apply` / `delete` / `ungroup` / `cancel`(与 suggest 同构)。
@@ -767,7 +793,7 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
   投递前用 `webContents.isFocused()` 丢掉迟到的 focus 事件,否则 `Ctrl+T` 刚聚焦的面板会被立刻收回去);
   ② 任何失焦/关闭都 +1 代,在途的 `plugins:suggest` 响应按代丢弃(否则迟到的响应会把刚收掉的面板弹回来)。
   分屏面板**没有**跟着改:它的窗格行点击本身就是「聚焦那个窗格」,一刀切会破坏「连点两行切窗格」的用法。
-- **快捷键分工**:Ctrl+T/W/L/R/←/→/Shift+T/,/数字/Shift+E 由**主进程** `tabShortcuts.ts` 拦截(页面聚焦时渲染层收不到按键);
+- **快捷键分工**:Ctrl+T/W/L/R/F/←/→/Shift+T/,/数字/Shift+E 由**主进程** `tabShortcuts.ts` 拦截(页面聚焦时渲染层收不到按键);
   —— 放行给终端的看 `Ctrl+L`(清屏)/ `Ctrl+R`(反向历史搜索)/ `Ctrl+←/→`(readline 按词移动);放行与否看的是**按键来源的 webContents**(不是活动标签),
   否则焦点在地址栏而活动标签是终端时 `Ctrl+W` / `Ctrl+L` 会变成什么都没做的死键;
   `Ctrl+Shift+方向` / `Alt+Shift+方向` 同样在主进程,但只在聚焦的 webContents 属于**普通网页标签**、**终端页**或
@@ -778,28 +804,40 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
   地址栏 / 设置页里的这些组合保持原样(按词选择、前端自己的快捷键);DevTools 内部的 `Ctrl+Shift+方向` 按词选择
   也让位(已在 README 写明代价)。
   `Ctrl+R` 原先只接在 chrome 侧(渲染层 `App.vue`)、页面聚焦时是死键 —— 自 2026-09-21 起步进主进程,与其它 tab 热键同一条路。
+  `Ctrl+F`(页内查找)同样在主进程:除地址栏 / 浮层外**网页与内部页(设置 / 笔记)都接管**;
+  放行有两处 —— 终端页由 `releasesToTerminal` 放行给 shell 的 forward-char,
+  DevTools 前端则用两个判据挡掉(自带的 Electron Detach DevTools 窗口不在 `WindowManager` 里,
+  `byWebContents` 会回退到聚焦窗口,所以先用 `isDevToolsFrontendUrl(contents.getURL())` 挡;
+  远程调试前端标签的 URL 可能是 https 前端,再由 `TabInfo.inspector` 挡)。
+  查找条复用 Overlay 的 `page-top-right` placement,状态与 `findInPage` 调用在 `main/findBar.ts`。
   `Ctrl+←/→`(历史后退/前进)的接管范围比分屏键宽 —— 除终端页外**不分页面类型**一律接管(含地址栏、设置页、笔记页、DevTools 前端),
   只认 `control`(不认 `meta`)且经 `historyHotkeyEnabled(process.platform)` 在 macOS 上整体关掉
   (mac 的 `⌘+←/→` 是行首/行尾,`Ctrl+←/→` 归系统);代价与分屏键同类 —— 网页输入框里的「按词移动光标」让位。
   **笔记页(`bow://logseq`)刻意不在 `shouldTakeSplitHotkey` 的白名单里**:
   按键会正常送到页面,由页面自己调 `splitPane` / `resizePane` 这两个既有 IPC 完成分屏与调大小 ——
   于是核心零改动(终端页必须由主进程接管,是因为 xterm 会先把组合编成 CSI 序列送进 pty;笔记页没有这个问题)。
+- **代理状态角标**:`.tab-agent` 读的是 `TabInfo.agent`(`working`/`blocked`/`done`,组内优先级 blocked > working > done,
+  由 `groupAgent(g)` 现算)。链路:终端里的 pi 写 OSC → 终端插件剥序列后 `service.agent.report`
+  → `main/agentNotify.ts` → `TabManager.setAgentState` → `tab:updated` → 这里。
 - 标签关闭兜底:关掉最后一个标签时自动补一个 `about:blank`(与 `tabShortcuts.ts` 的 close 分支一致)。
 
-`OverlayApp.vue`:注册表 = 核心 `{suggest: SuggestPanel, 'split-menu': SplitMenu, 'confirm-close': CloseConfirmModal}` + 已启用插件的 `overlays`;
+`OverlayApp.vue`:注册表 = 核心 `{suggest: SuggestPanel, 'split-menu': SplitMenu, 'confirm-close': CloseConfirmModal, find: FindBar}` + 已启用插件的 `overlays`;
 组件契约 = `payload` prop + `band-top` prop + `overlay-event` emit。
 `ModalShell.vue` 用模块级 `MODAL_STACK` 保证只有栈顶弹层响应 Esc(必须是模块级 —— `<script setup>` 顶层每实例执行一次)。
 
 ### 7.3 设置页
 
 - 侧栏模型由 `shared/settingsNav.ts` 的 `buildSettingsNav()` 生成:
-  `[常规, 插件管理]` + 「enabled && hasSections」的插件(保持 `PLUGIN_UI` 顺序)。
+  `[常规, 快捷键, 插件管理]` + 「enabled && hasSections」的插件(保持 `PLUGIN_UI` 顺序)。
 - 分区 id 约定 `plugin:<pluginId>`(`settingsSectionId()`);插件被停用/失去分区时自动回落到「插件管理」。
 - 所有设置**即时保存**,没有保存/取消按钮。
 - **常规**只有搜索引擎与主页(主页留空视为放弃修改)。**分屏宽度预设已取消** —— 分屏改成嵌套树,
   分隔比例由 `Alt+Shift+方向` 现场调,可复用的东西变成「布局」(只存结构)在工具栏分屏面板里保存/套用/删除。
-- adblock 面板在设置页里点「屏蔽元素」会先 `activateLastBrowsingTab()`
-  (`AdblockSettings.vue:453`)切回真实页面再进入框选 —— 因为框选脚本需要 http(s) 页面。
+- **快捷键**分区(`ShortcutsHelp.vue`)是一份**纯分类参考清单**,数据全部来自 `shared/shortcutCatalog.ts`
+  (分组:标签 / 地址栏与导航 / 分屏与布局 / 视图与面板 / 终端 / 笔记 / 窗口)。它**不注册热键**,页面上没有搜索框、
+  没有折叠 —— 只按组列出 `<kbd>` 与说明;真正识别按键的仍是 `shared/shortcuts.ts` / `main/tabShortcuts.ts` /
+  插件热键。改键位时需同步该文件与 README 对应章节(`tests/shortcutCatalog.test.ts` 只钉结构与少量关键项,
+  不钉全部文案)。
 - **笔记**分区:图目录(选择 / 切换 / 最近图)、索引统计(文件/块/被引用页面/日志条数)与「重建索引」,
   以及从 `logseq/config.edn` **只读**读到的那一节(日志目录 / 页面目录 / 日期格式 / 默认模板 / `:hidden`)。
   刻意没有「默认模板」下拉框 —— 模板名属于 Logseq 自己的配置,这里只显示读到了什么。
@@ -837,13 +875,14 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `history.json` | 历史条目 | `[]` | history |
 | `history-settings.json` | `{maxEntries}` | `{maxEntries:500}`(范围 1–100000) | history |
 | `cors.json` | `{enabled, whitelist}` | 首次从 `settings.json` 的 `corsBypassEnabled/corsWhitelist` 迁移(幂等) | cors |
-| `adblock.json` | `AdblockConfig v3`(compact) | 经 `migrateConfig()` 生成,默认值仅占位 `{version:0}` | adblock |
 | `mcp-http.json` | `{port, token}` | `{port:8765, token:''}` | mcp-http |
 | `device-inspect.json` | `{version, adbCommand, strategy, forwards[]}` | `{version:2, adbCommand:'', strategy:'auto', forwards:[]}`;`strategy` 三选一(`auto`/`electron-bundled`/`device-suggested`,见 `shared.effectiveStrategy()`;旧名 `device-bundled` 会被归一成 `device-suggested`);v1 → v2 只把默认值换成 `auto`;`forwards` 是端口转发记录(adb 侧的转发登记在 adb server 里,靠它回收) | device-inspect |
 | `terminal.json` | `TerminalSettings` | `{version:1, defaultProfileId, fontFamily, fontSize:14, scrollback:5000, profiles[]}`;profiles 按平台给预设(powershell/pwsh/cmd/wsl/git-bash 或 $SHELL/bash/zsh);每次读写都过 `normalizeSettings()` 夹紧/去重/兜底 | terminal |
 | `logseq.json` | 笔记插件的图目录 + 最近图 | `{version:1, graphPath:'', recentGraphs:[]}` | logseq(图里的笔记内容本身属于用户的 Logseq 图,不在这里) |
 | `downloads.json` | 下载记录(数组整体替换;`DownloadRecord[]`,读盘时过 `sanitizeRecords()` + `reconcileOnStart()`) | `[]` | downloads |
 | `downloads-settings.json` | `{askWhereToSave, downloadDir, maxRecords}` | `{askWhereToSave:true, downloadDir:'', maxRecords:500}`(`downloadDir` 为空 = `app.getPath('downloads')`) | downloads |
+| `passwords.json` | 密码库密文(AES-256-GCM;盐 / KDF 参数 / iv / tag 为明文,**条目明文为零**) | `{version:1, kdf:null, verifier:null, data:null}`;加解密在 `passwords/vault.ts`(只用 node:crypto,`scrypt(N=2^15,r=8,p=1)` + 显式 `maxmem`),条目读出后过 `normalizeEntries()` | passwords |
+| `passwords-settings.json` | `{autoLockMinutes, clipboardClearSeconds, matchSubdomains}` | `{autoLockMinutes:5, clipboardClearSeconds:30, matchSubdomains:true}`;读写都过 `normalizeSettings()`(只接受设置页下拉里的合法值) | passwords |
 | `browser.log` | 日志(MCP 模式) | — | logger |
 
 ---
@@ -888,14 +927,17 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `settings:get` | — | `Settings` |
 | `settings:set` | patch | `Settings` |
 | `ui:overlay` | `OverlayContent \| null` | `true` |
-| `ui:overlay-event` | `OverlayEvent` | `true`(`confirm-close` 的 `confirm` 由 `closeConfirm.ts` 处理:置位后放行关闭;取消走通用 `close-request`) |
-| `ui:chrome-height` | height | `true` |
+| `ui:overlay-event` | `OverlayEvent` | `true`(`find` 由 `findBar.ts` 处理;`confirm-close` 的 `confirm` 由 `closeConfirm.ts` 处理:置位后放行关闭;取消走通用 `close-request`) |
+| `ui:chrome-height` | height | `true`(同时重排页面视图、overlay 条带与底部居中通知) |
 | `plugins:list` | — | `PluginInfo[]` |
 | `plugins:set-enabled` | id, enabled | `PluginInfo[]` |
 | `plugins:invoke` | id, method, args[] | `unknown` |
 | `plugins:overlay-event` | overlayId, event, args | `boolean` |
 | `plugins:suggest` | input | `{rows, suggestions}` |
 | `window:minimize` / `window:maximize` / `window:close` | — | `void`(≥2 标签时被 `closeConfirm.ts` 拦下,先弹确认框) |
+| `toast:height` | height | `true`(仅通知视图用:把量到的栈高度告诉主进程,`ToastManager` 按它设 bounds) |
+| `toast:dismiss` | id | `true`(× 按钮:从通知栈里摘掉并取消自动关闭) |
+| `toast:activate` | id | `true`(点卡片:摘掉通知 → `markActive` + `tabs.activate(tabId)` + 补一次页面 focus(已激活标签的 `activate()` 会早退)+ `show/focus` 窗口) |
 
 `send`(主进程 → 渲染层):
 
@@ -909,6 +951,8 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `plugins:changed` | `PluginInfo[]` | `kernel.setEnabled()` 经 broadcaster |
 | `plugin:event` | `{id, event, args}` | `ctx.ipc.emit()` 经 broadcaster。终端插件的 `data`/`exit`/`settings-changed`/`session-closed` 与笔记插件的 `graph-changed` 走的就是这条(内部页面按 `args.tabId` / `args.paths` 自过滤) |
 | `overlay:show` | `OverlayShowMessage \| null` | `OverlayManager.send()` |
+| `find:state` | `FindStateMessage` | `main/findBar.ts` 的 `pushState()`(仅查找条订阅;`currentId !== 'find'` 时不推) |
+| `toast:show` | `{ items: AgentToastItem[] }` | `ToastManager.send()`(空数组 = 清空并收起;首次加载完成会补发一次) |
 | `overlay-event` | `OverlayEvent` | `ipc.ts`(suggest 专用转发) |
 | `chrome:focus-address` | — | `tabShortcuts.ts` 的 `focusAddressBar()`(Ctrl+L / Ctrl+T 与 `chrome:request-focus-address` 共用) |
 | `chrome:page-focus` | — | `ipc.ts`(订阅 `TabManager` 的 `view-focused`;投递前用 `isFocused()` 丢掉迟到的 focus 事件) |
@@ -934,7 +978,10 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `MCP_SMOKE_URL` | `mcp-smoke.mjs` | 设置后走 HTTP 而非 stdio(默认 `http://127.0.0.1:8765/mcp`) |
 | `SMOKE_ALLOW_MUTATIONS` | `mcp-smoke.mjs` | HTTP 模式下必须为 `1` 才允许写操作 |
 | `SMOKE_LD_LIBRARY_PATH` `SMOKE_ELECTRON_ARGS` `SMOKE_SHOT_PATH` `SMOKE_FULL_PAGE_SHOT_PATH` | `mcp-smoke.mjs` | Linux 库路径 / 额外参数 / 截图输出路径 |
-| `BOW_E2E_DIR` | `scripts/e2e-device-inspect.mjs` 与其 fixtures | 假手机 E2E 的临时目录(默认 `$TMPDIR/bow-e2e`) |
+| `BOW_E2E_DIR` | `scripts/e2e-device-inspect.mjs`、`e2e-agent-status.mjs` 与其 fixtures | E2E 的临时目录(默认 `$TMPDIR/bow-e2e`) |
+| `BOW_E2E_BIN` | `scripts/e2e-agent-status.mjs` | 设了就改验**打包版**:指向 `dist/<平台>-unpacked/bow`(不带结尾的 `.` 参数)。用来确认「一键接入」的源码能从 `app.asar` 里读到 |
+| `BOW_TERMINAL` | 终端插件的 `cleanEnv`(写)| `=1`:告诉 pty 里的程序「你在 bow 的终端里」。目前唯一消费方是 pi 桥接扩展(`integrations/pi/bow-agent-state.ts`)—— 别的终端不会收到,所以那套 OSC 不会乱发。**WSL 例外**:`shell` 是 `wsl.exe` 的 profile 由 `withBowTerminalEnv()` 额外把它列进 `WSLENV` —— Windows 侧的环境变量默认**不会**进发行版,不列就是空的(实测三种组合的表在那个函数的注释里) |
+| `PI_CODING_AGENT_DIR` | `scripts/install-pi-agent-state.mjs` 与终端插件的 `piBridge.ts`(读)| pi 的 agent 目录(默认 `~/.pi/agent`);状态桥装到其 `extensions/` 下。设置页的一键接入与仓库脚本都认它(测试靠它把文件写进临时目录,不碰真实的 `~/.pi`)。**注**:设置页的一键接入用的是 **bow 进程自己的**家目录 —— bow 在 Windows、pi 在 WSL2 时两者不是同一个目录,所以 `piBridgeStatus` 会在 Windows 上额外带一个 `wsl` 字段 (`PiBridgeWslHint`: `from` / `to` / `command`),设置页把它连同命令一起显示成一段「请到 WSL2 里执行」的提醒(命令里的 `/mnt/<盘>/…` 由 `windowsPathToWsl()` 换算,不是盘符路径时就不给) |
 
 ⚠️ 绝不要在 shell 里写 `MCP_HTTP=1 electron .` 这种内联赋值(Windows 不认);
 统一走 `scripts/open-bow.mjs` 或 `npm run mcp:http`。
@@ -958,8 +1005,10 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `npm run test:mcp:http` | 连已常驻的 HTTP 浏览器 |
 | `npm run test:e2e:device` | 设备检查插件的**假手机** E2E:真 Electron + 真 MCP + 真 TCP/WS,只有 adb 与设备端是假的(不需要真机,也不需要显示环境) |
 | `npm run test:e2e:quark` | 夸克网盘插件的**离线** E2E:用 `--host-resolver-rules` 把 `pan/drive-pc.quark.cn` 指到本机一个 HTTPS 假服务器(自签证书 + `--ignore-certificate-errors`),再起一个假 aria2 JSON-RPC 服务器,于是「读页面 → 取直链 → 推 aria2」整条链路在真 Electron 里跑一遍,并断言**两端真正收到了什么**(接口的 UA/登录态/无 `Origin`;aria2 header 的 UA/Referer 与 Cookie 白名单边界)。页面用 MCP 核心工具打开,插件 IPC 用 `--remote-debugging-port` 在 chrome 页面 target 上调 `plugins.invoke`。不需要夸克账号,只需要 openssl |
+| `npm run test:e2e:agent` | 代理状态的 E2E:假 pi(只往 pty 打一条 `1337;bow` 信号)走真终端 → 断言标签栏角标、底部居中通知卡片的文本/高度、点卡片进入对应标签、点通知≠回答弹框、关标签后清理;后半段还验设置页「Pi 状态联动」的一键接入(写/删真实文件到临时 `PI_CODING_AGENT_DIR`);在 Linux 上另验「WSL2 提醒不出现」(`status.wsl` 不存在——那段提醒只在 Windows 上给,免得误导)。`BOW_E2E_BIN=dist/linux-unpacked/bow` 可改验打包版(确认源码能从 asar 里读到)。Linux 缺 `libasound.so.2` 时不需要 root:从镜像的 `extra.db` 查出 `alsa-lib` 的包名,下下来 `bsdtar -xf` 到**持久目录**(如 `~/.cache/bow-alsa` —— 放 `/tmp` 会被清掉),再 `LD_LIBRARY_PATH=<解包的 usr/lib>`(与 README 的 `SMOKE_LD_LIBRARY_PATH` 同一招) |
 | `npm run mcp` / `mcp:http` | 经 `open-bow.mjs` 以 stdio / HTTP 模式启动 |
 | `npm run mcp:install [-- …]` | 把 MCP 配置 + skill 写进 pi(幂等、可回滚、非 JSON 直接中止) |
+| `npm run pi:install-status [-- …]` | 把状态桥扩展写进 `~/.pi/agent/extensions/bow-agent-state.ts`(幂等;`--dry-run` / `--print` / `--uninstall` / `--force` / `--extension-dir`)。目标文件带 `managed by bow` 标记:没有该标记且存在时拒写(不覆盖别人的扩展) |
 
 > 桌面默认浏览器注册**不是脚本**,是内置插件 `default-browser`(设置页点一下;见 §5.8)。> 它把「写哪些文件 / 写哪些注册表项」放在 `src/plugins/default-browser/{linuxDesktop,windowsRegistry}.ts`
 > (纯逻辑,可在 Linux 上单测 Windows 分支),I/O 与平台分发在 `registration.ts`。
@@ -976,6 +1025,8 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `mcp-smoke.mjs` | 真机冒烟(405 行) |
 | `e2e-device-inspect.mjs` + `fixtures/fake-phone-{,adb,device}.mjs` | 设备检查插件的假手机 E2E:`fake-phone-adb.mjs` 仿 adb 输出并在 `forward` 时拉起 `fake-phone-device.mjs`(HTTP `/json` + WS CDP,并把收到的每条命令写进 `cdp-log.jsonl`),驱动脚本用 MCP 客户端跑 11 个 `device_*` 工具,并用 bow 自己的 `--remote-debugging-port` 往手机 DevTools 前端 target 发 `Ctrl+Shift+→` 验分屏 |
 | `e2e-quark-headers.mjs` | 夸克插件的离线 E2E(自签 HTTPS 假夸克服务器 + 假 aria2 JSON-RPC 服务器 + 隔离 `--user-data-dir`)。它**自己 spawn Electron**(不经 `open-bow.mjs`),因为 `host-resolver-rules` 的值里含空格,而 `BOW_ELECTRON_ARGS` 是按空格切分的 |
+| `install-pi-agent-state.mjs` | 写 pi 的状态桥扩展;源是仓库里的 `integrations/pi/bow-agent-state.ts`(单文件、无运行时依赖,jiti 直接跑)。未安装时的降级:只有「正在执行」角标(靠 pi 内建的 `terminal.showTerminalProgress`)。打包后的应用里**没有这个脚本**:设置页的一键接入走 `src/plugins/terminal/piBridge.ts`(同一套规则,不变式由 `tests/piBridgeExtension.test.ts` 钉住) |
+| `e2e-agent-status.mjs` | 代理状态 E2E:不装 MCP、不用真 pi,全程 CDP —— chrome target 开终端页、终端页 `window.__bowTerminal.send` 敲命令、toast target 读/点卡片、设置页 target 点一键接入的按钮 |
 | `cors-test-server.mjs` / `cors-probe.html` | CORS 插件的人工验证环境 |
 | `fetch-northbound.mjs` | 外网连通性探测 |
 
@@ -1005,8 +1056,10 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
   ⚠️ 给主进程加新的 `tabs.*` / `wc.*` 调用时**必须同步补假实现**,否则测试会红得莫名其妙。
 - `tests/mcpServer.test.ts`(861 行)用 `InMemoryTransport` + 真实 `McpServer`/`Client` 握手,
   覆盖 instructions 下发、工具面与 schema、`waitUntil` 语义、失败一律 `isError`、内部页面边界、插件工具错误传播。
-- **当前基线(2026-09-22 复测:下载插件后)**:`bun run test` → **46 个文件 / 1001 个用例全绿**,约 9s。
-  46 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
+- **当前基线(2026-10-02 复测:删除广告拦截插件)**:`bun run test` → **58 个文件 / 1189 个用例**,约 9s。
+  本机 Node 26 下 `mcpHttp.test.ts` 的「DNS rebinding 防护:非白名单 Host 被拒」一例失败 —— 是 client 端
+  `http.request` 现在会直接拒绝与连接地址不符的 `Host` 头(测试自己弹错,不是服务端没拒),与本类改动无关。
+  58 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
   `fakeWc.ts`、`fakeKernel.ts`。
 - ⚠️ **`.vue` 组件不在 `tsc` 的类型检查范围内**(`npm run typecheck` 只跑 `.ts`):组件里「导入了不存在的
   符号」这类错误只有 `npm run build`(rollup)才会报。改渲染层之后**必须跑一次 build** ——
@@ -1015,22 +1068,21 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | 测试文件 | 行数 | 用例 | 测试文件 | 行数 | 用例 |
 | --- | --- | --- | --- | --- | --- |
 | `mcpServer.test.ts` | 861 | 59 | `mcpHttpHost.test.ts` | 159 | 11 |
-| `adblock.test.ts` | 666 | 61 | `cors.test.ts` | 146 | 18 |
-| `mcpHttpPlugin.test.ts` | 388 | 18 | `pluginRegistry.test.ts` | 115 | 9 |
-| `mcpWait.test.ts` | 285 | 27 | `mcpActivity.test.ts` | 113 | 9 |
-| `suggest.test.ts` | 283 | 32 | `mcpHttpService.test.ts` | 184 | 7 |
-| `mcpHttp.test.ts` | 214 | 11 | `url.test.ts` | 105 | 11 |
-| `history.test.ts` | 218 | 23 | `singleInstance.test.ts` | 70 | 6 |
-| `shortcuts.test.ts` | 315 | 43 | `pluginUiSlots.test.ts` | 58 | 6 |
-| `bookmarkTree.test.ts` | 198 | 14 | `internalPages.test.ts` | 97 | 13 |
-| `pluginBoundaries.test.ts` | 47 | 3 | `elementFullscreenScript.test.ts` | 68 | 6 |
+| `cors.test.ts` | 146 | 18 | `mcpHttpPlugin.test.ts` | 388 | 18 |
+| `pluginRegistry.test.ts` | 115 | 9 | `mcpWait.test.ts` | 285 | 27 |
+| `mcpActivity.test.ts` | 113 | 9 | `suggest.test.ts` | 283 | 32 |
+| `mcpHttpService.test.ts` | 184 | 7 | `mcpHttp.test.ts` | 214 | 11 |
+| `url.test.ts` | 105 | 11 | `history.test.ts` | 218 | 23 |
+| `singleInstance.test.ts` | 70 | 6 | `shortcuts.test.ts` | 315 | 43 |
+| `pluginUiSlots.test.ts` | 58 | 6 | `bookmarkTree.test.ts` | 198 | 14 |
+| `internalPages.test.ts` | 97 | 13 | `pluginBoundaries.test.ts` | 47 | 3 |
 
-其余:`ua`(5)、`pluginMatch`(13)、`settingsNav`(4)、`modalStack`(3)、`bundleScan`(6)、
-`adblockPickerScript`(4)、`elementFullscreenPlugin`(3)、`localFile`(6)、`navInput`(9)、`openArgs`(14)、
-`defaultBrowser`(60)、`closeConfirm`(6)、`split`(53,嵌套分屏树 / 几何 / 原地换叶子 / 布局形状与归一化)、
+其余:`ua`(5)、`pluginMatch`(13)、`settingsNav`(4)、`shortcutCatalog`(6)、`modalStack`(3)、`bundleScan`(6)、
+`localFile`(6)、`navInput`(9)、`openArgs`(14)、
+`defaultBrowser`(60)、`closeConfirm`(6)、`split`(61,嵌套分屏树 / 几何 / 原地换叶子 / 布局形状与归一化 / 聚焦窗格边框条)、
 `groups`(26,树版组记账 + 原地换叶子)、`terminalShared`(39,纯逻辑:设置规范化 /
 平台预设 / spawn 参数 / 环境变量清洗 / 回放缓冲 / PATH 查找 / 参数文本 / 复制粘贴键位)、
-`downloadsShared`(33,下载记录的纯逻辑:设置归一 / 动作可用性 / 启动归一 / 裁剪排序 / 重名去重 / 格式化)。合计 **773**。
+`downloadsShared`(33,下载记录的纯逻辑:设置归一 / 动作可用性 / 启动归一 / 裁剪排序 / 重名去重 / 格式化)。合计 **713**。
 
 笔记插件(`bow://logseq`)另加 4 个文件 / 157 例,外加 `internalPages` 的 2 例:
 
@@ -1041,7 +1093,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `logseqGraph.test.ts` | 278 | 18 | 索引(mtime 增量 / `:hidden` 三种写法 / **文件名词干别名 `byStem` 只收页面**)、反链排序与「不算自己的反链」、搜索、**页面名别名解析**(`title::` 与文件名不同时两个名字都命中)、日期列表 |
 | `logseqPlugin.test.ts` | 537 | 33 | **真实临时目录**:原子写不留 `.tmp`、越界路径被拒、只写 `journals/`+`pages/`、mtime 冲突不覆盖、**`expectMissing` 拒绝静默覆盖**、**用文件名打开 `title::` 不同的页拿到磁盘内容**、模板只在第一次编辑落盘、视图状态按 tabId |
 
-**合计 1012**。
+**合计 1026**。
 
 设备检查插件的三个测试文件(它们不在上表里:代码量不大,但每一条都在钉外部格式):
 
@@ -1061,13 +1113,13 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | # | 说法(位置) | 实际(位置) | 影响 |
 | --- | --- | --- | --- |
 | 1 | README 「`Ctrl+D` 收藏当前页」;`StarButton.vue` tooltip 也写「收藏当前页 (Ctrl+D)」 | **全仓库没有任何 Ctrl+D 处理** | **已消除(2026-09-19)**:用户拍板不实现 Ctrl+D,两处说法都已删掉(README「手动使用快捷键」与星标 tooltip 现只写「收藏当前页」) |
-| 2 | README 「广告/追踪拦截是参考插件」 | `main/plugins/builtin.ts` 把 `adblock` 并入 `BUILTIN_PLUGINS`;`PluginRegistry.list()` 对所有插件硬编码 `builtin: true` | `PluginInfo.builtin` 无区分能力;措辞误导 |
+| 2 | README 「广告/追踪拦截是参考插件」 | ~~`main/plugins/builtin.ts` 把 `adblock` 并入 `BUILTIN_PLUGINS`;`PluginRegistry.list()` 对所有插件硬编码 `builtin: true`~~ | **已消除(2026-10-02)**:广告拦截插件整体删除,README 里这句措辞也一并删掉 |
 | 3 | README 「Electron(≥ 33,…)」 | `package.json` = `electron: ^44.3.0`;`contentHooks.ts` 注释明确以 Electron 44 行为(44 下 `getType()` 无法区分 WebContentsView)为前提 | 升级/兼容判断会看错 |
-| 4 | README 「tests/ vitest 单元测试(url 解析、内部页面、设置导航、书签树、历史、模糊建议、插件注册表/匹配/边界)」 | 实际 **31 个测试文件 / 493 个用例**(已实测),另有 `adblock` 61 例、`mcpServer` 59 例、`mcpWait` 27 例、`mcpHttp*`×3、`mcpActivity`、`bundleScan`、`singleInstance`、`ua`、`shortcuts`、`elementFullscreen*`×2、`modalStack` 等 | 低估了测试面 |
+| 4 | README 「tests/ vitest 单元测试(url 解析、内部页面、设置导航、书签树、历史、模糊建议、插件注册表/匹配/边界)」 | 实际 **31 个测试文件 / 493 个用例**(已实测),另有 `mcpServer` 59 例、`mcpWait` 27 例、`mcpHttp*`×3、`mcpActivity`、`bundleScan`、`singleInstance`、`ua`、`shortcuts`、`modalStack` 等 | 低估了测试面 |
 | 5 | README 扩展点表 6 行 | `PLUGIN_CAPABILITY_LABELS` 有 7 项,缺 `service`(后台服务;mcp-http 在用) | 新增服务型插件时找不到指引 |
 | 6 | README 「数据存储」清单 | 缺 `<userData>/mcp-http.json`(MCP HTTP 端口/令牌) | 排查端点问题时少一处线索 |
 | 7 | README 「手动使用快捷键」清单 | 缺 `Ctrl+数字`(1..8 切标签、9 取最后一个,`tabShortcuts.ts` + `switchIndexForDigit` 实现) | 少一条已实现能力 |
-| 8 | README 「架构速览」的 src 树 | 未列 `main/mcpActivity.ts`、`main/mcpHttp.ts`、`main/tabShortcuts.ts`、`main/plugins/mcpHttpHost.ts`、`main/plugins/mcpResult.ts`、`renderer/src/lib/`、`shared/adblock.ts` 等 | 定位成本 |
+| 8 | README 「架构速览」的 src 树 | 未列 `main/mcpActivity.ts`、`main/mcpHttp.ts`、`main/tabShortcuts.ts`、`main/plugins/mcpHttpHost.ts`、`main/plugins/mcpResult.ts`、`renderer/src/lib/` 等 | 定位成本 |
 | 9 | `FIX-PLAN.md`(仓库根) | 自述 P0/P1/P2 已全部实现,但仍留在根目录;里面的行号引用(如 `mcp.ts:133`)与当前 556 行的文件已不匹配;自述「288 passed」而当前实测为 **404 passed** | **历史文件容易被当成现状**,建议归档或加「已完成」抬头 |
 
 ### 文档未覆盖的重要行为(不是矛盾,是缺口)
@@ -1077,12 +1129,6 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 - **历史容量调整后立即裁剪**:`setSettings` 里 `trimHistory(store.get(), maxEntries)`,最旧优先。
 - **CORS 预检识别**:`onHeadersReceived` 读不到请求头,只能靠 `onBeforeSendHeaders` 记 `requestId`;
   集合超过 5000 直接清空(防泄漏)。
-- **adblock 的数量上限**:单条订阅最多 `MAX_RULES_PER_LIST = 100_000` 条规则;
-  单页最多注入 `MAX_COSMETIC_SELECTORS = 2000` 条隐藏选择器(超出部分不注入,`unhide` 例外仍生效);
-  规则列表分页 `RULE_PAGE_DEFAULT = 200` / `RULE_PAGE_LIMIT = 1000`;订阅拉取超时 `30_000ms`。
-- **element-fullscreen 的两条入口语义不同**:IPC `pickAndFullscreen` 只作用于**活动标签**,
-  活动标签是内部页会直接报「当前页面不支持」;MCP 工具则接受 `tabId`,省略时同样受限制、
-  报错会建议显式传 `tabId`。
 - **`browser_snapshot` 的选择器生成策略**:优先 `#id` → `data-testid/data-test/data-qa/name/aria-label/placeholder`
   属性 → 最多 4 层 `tag:nth-of-type(n)` 路径。选择器不稳定时改页面属性比调快照参数有效。
 - **整页截图的设备像素上限** `MAX_FULL_PAGE_DEVICE_PX = 16_000`,CSS 上限 = 16000 / dpr;
@@ -1096,7 +1142,11 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 
 1. 插件 `activate` 早于窗口/标签创建 → 需要 TabManager 的能力必须走 `onMcpHttpReady` 或惰性取 `ctx.tabs`/`ctx.pages`。
 2. `NetHookHost.install()` / `setupDevTools()` / `setupTabShortcuts()` 都**必须在创建任何窗口/视图之前**调用。
-3. 页面视图永远盖在 chrome 上 → 任何浮在页面上方的 UI 都必须走 OverlayManager,`tabs-changed` 时要 `raise()`。
+3. 页面视图永远盖在 chrome 上 → 任何浮在页面上方的 UI 都必须走 OverlayManager / ToastManager,
+   `tabs-changed` 时要 `raise()`(开浮层之后也要再抬一次通知:`below-chrome` 的建议下拉是全宽带)。
+   **`WebContentsView` 没有点击穿透**(`setIgnoreMouseEvents` 只属于 BaseWindow/BrowserWindow,
+   见 electron.d.ts)→ 底部居中通知视图的 bounds 必须**刚好包住卡片**(高度由渲染层实测回传),
+   别想用「铺满窗口 + CSS `pointer-events:none`」:落在视图矩形里的点击会被它吃掉。
 4. 浮层 id 必须满足 `plugin:<pluginId>:<panelId>`,否则 `routeOverlayEvent` 路由不到插件。
    **核心浮层**(`suggest` / `split-menu` / `confirm-close`)反过来必须自己在 `ipc.ts` 开分支:
    `suggest` 与 `split-menu` 的事件要转发给 chrome(它们的 owner 是 chrome),
@@ -1127,6 +1177,9 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
    附带一条:渲染层 `el.focus()` **不是**真的聚焦 —— 需要键盘焦点时走 `chrome:request-focus-address`(经主进程)。
 10. **小数缩放下的 ±1 px 是正常的**:显示器 125% 时 `getContentSize()` 是 DIP 整数,
    Chromium 把 view 的 DIP 边界舍入到物理像素后,渲染层的 `innerWidth` 可能比 `rect.width` 大/小 1。
+11. **别在块注释里写 `**/` 这类通配符**:`integrations/**/*` 里的 `*/` 会提前终止 `/* … */`,
+    表现是构建/测试报一个莫名其妙的语法错(esbuild 直接 `Unexpected "*"`)。要么写「`integrations` 目录」,
+    要么把星号拆开。
    几何正确性的判据应该是 **DIP 层面铺满无缝隙/不重叠**(`dividers` 与 `panes` 互相印证),
    而不是逼页面自己报回完全相同的数字。
 11. **分屏调大小的方向 = 分隔条移动的方向,不是窗格扩张的方向**(2026-09-19 修正)。第一版按「扩张」写

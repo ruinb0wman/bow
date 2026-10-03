@@ -1,6 +1,6 @@
 # MCP Browser — AI 可操纵的简易 Electron 浏览器
 
-多标签页浏览器:地址栏搜索(输历史/书签实时模糊建议)、浏览历史、书签(文件夹分组)、下载管理(工具栏面板:记录 / 暂停恢复 / 重新下载 / 取消)、设置页(内部标签页 `bow://settings`)、终端(内部标签页 `bow://terminal`,连本机 shell)、笔记(内部标签页 `bow://logseq`,直接读写你已有的 Logseq 文件图);内置 **MCP 服务器(stdio)**,AI 编码工具(pi / Claude Code / Cursor 等)可以实时操纵这个浏览器:导航、搜索、点击、输入、滚动、切换标签、截图、读取页面快照、下载文件。
+多标签页浏览器:地址栏搜索(输历史/书签实时模糊建议)、浏览历史、书签(文件夹分组)、下载管理(工具栏面板:记录 / 暂停恢复 / 重新下载 / 取消)、页内查找(`Ctrl+F`:高亮 + `n/m` 计数 + 上下一个)、设置页(内部标签页 `bow://settings`)、终端(内部标签页 `bow://terminal`,连本机 shell,并会把终端里 pi 的执行 / 等待确认 / 完成状态显示成**标签角标**与**底部居中通知**)、笔记(内部标签页 `bow://logseq`,直接读写你已有的 Logseq 文件图);内置 **MCP 服务器(stdio)**,AI 编码工具(pi / Claude Code / Cursor 等)可以实时操纵这个浏览器:导航、搜索、点击、输入、滚动、切换标签、截图、读取页面快照、下载文件。
 
 ## 技术栈
 
@@ -27,7 +27,9 @@ npm run mcp:http   # 构建后以 HTTP MCP 模式常驻(强制模式;普通启�
 npm run test:mcp   # 真机冒烟测试(自己拉起浏览器)
 npm run test:mcp:http  # 真机冒烟测试(连已常驻的 HTTP 浏览器)
 npm run test:e2e:device  # 设备检查的假手机 E2E(真 Electron + 真 MCP,不需要真机/显示环境)
+npm run test:e2e:agent   # 代理状态 E2E(假 pi 往 pty 打 OSC → 角标 / 底部居中通知 / 点击进标签)
 npm run test:e2e:quark   # 夸克网盘插件的离线 E2E(假夸克服务器 + 假 aria2 RPC,不需要夸克账号,需要 openssl)
+npm run pi:install-status   # 把状态桥扩展装进 pi(~/.pi/agent/extensions/),终端里的 pi 才有完整状态联动
 node scripts/open-bow.mjs http --dry-run   # 只看 HTTP 模式将注入的环境变量与端点
 npm run mcp:install -- --help   # 把浏览器 MCP 写进 pi 的配置(幂等、可回滚)
 node scripts/open-bow.mjs -- a.html https://x.com   # 启动并打开(文件管理器/终端用的就是这个形态)
@@ -111,9 +113,13 @@ node scripts/dist.mjs -- --win portable # 试别的 target
 全部窗口关闭后才退出应用。**例外是 `MCP=stdio`** —— 那种模式下浏览器是 MCP 客户端的子进程,
 必须允许与常驻实例并存,否则子进程一启动就退出、客户端的 stdio 连接直接断(`npm run test:mcp` 也会莫名其妙失败)。
 
-多窗口下 MCP 的 `tabId` **全局唯一**:`browser_list_tabs` 每条带 `windowId`,省略 `tabId` 时作用于
-**当前聚焦窗口**的活动标签,`browser_new_tab` 可用 `windowId` 指定窗口,`browser_switch_tab` 会把
-目标窗口设为后续操作的默认窗口(注:Wayland 下窗口管理器可能拒绝「提到前台」的焦点请求,但默认窗口仍会切换)。
+多窗口下 MCP 的 `tabId` **全局唯一**:`browser_list_tabs` 每条带 `windowId` 与 `windowRole`。
+**AI 用的是一个专属窗口**:省略 `tabId` 时只会作用于 bow 为 MCP 客户端自动创建并复用的 **agent 窗口**
+(`windowRole: "agent"`,标题带「· Agent」后缀、相对你的窗口级联偏移 32px),**绝不会动你正在浏览的主窗口**;
+没有就自动创建一个,之后一直复用。要操作你窗口里的标签(列表里 `windowRole: "user"`)必须在**那一次调用里显式传 `tabId`**。
+`browser_new_tab` 可用 `windowId` 指定窗口;`browser_switch_tab` 只在 agent 窗口之间切换后续默认窗口 ——
+指向用户窗口时只激活那个标签,不改默认窗口、也不抢焦点(注:Wayland 下窗口管理器可能拒绝「提到前台」的焦点请求)。
+响应顶层的 `mcpWindowId` 就是省略 `tabId` 时会作用的窗口(还没创建时为 `null`),`focusedWindowId` 仅表示你在看哪个窗口。
 
 ## 设为默认浏览器 / 打开本地文件
 
@@ -354,13 +360,6 @@ npm run test:mcp:http
 | `browser_screenshot {tabId?, fullPage?}` | 截图,以 PNG 图片内容返回给 AI;默认只截当前视口,`fullPage: true` 截整页(含滚动到视口外的内容) |
 | `browser_get_info {tabId?}` | 当前标签标题 / URL / 加载状态 |
 | `browser_add_bookmark {title?, url, folderId?}` / `browser_list_bookmarks` | 书签维护(由「书签」插件提供;`url` 除 http(s) 外也接受 `bow://` 内部页) |
-| `adblock_stats` | 广告/追踪拦截统计(由「广告/追踪拦截」插件提供) |
-| `adblock_list_rules {kind?, domain?, offset?, limit?}` | 广告规则分页查询(默认 network 类型、200 条;由「广告/追踪拦截」插件提供) |
-| `adblock_add_rule / adblock_remove_rule / adblock_set_enabled` | 广告规则增删与开关(不支持 `$` 选项的手写规则会被拒绝)(由「广告/追踪拦截」插件提供) |
-| `adblock_import_rules {text, replace?}` | 按 EasyList/AdGuard 子集批量导入规则,不支持的写法整行跳过并在 summary 汇总(由「广告/追踪拦截」插件提供) |
-| `adblock_subscribe {url, title?}` / `adblock_refresh_subscriptions {id?}` | 新增订阅并立即拉取 / 更新订阅(由「广告/追踪拦截」插件提供) |
-| `browser_fullscreen_element {selector, tabId?}` | 让页面元素铺满网页视口(由「元素全屏」插件提供) |
-| `browser_exit_fullscreen {tabId?}` | 退出元素全屏并还原页面(由「元素全屏」插件提供) |
 | `device_list_targets {serial?}` | 列出通过 adb 连接的可调试手机目标(Android 应用里的 WebView / Chrome),含所属 App 包名与 `targetKey`(由「设备检查」插件提供) |
 | `device_inspect {targetKey, activate?}` | 在 bow 的标签页里打开该目标的 DevTools 前端(等同 `chrome://inspect` 的 inspect)(由「设备检查」插件提供) |
 | `device_snapshot {targetKey?, maxElements?}` | 手机页面的可操作元素快照(与 `browser_snapshot` 同一份脚本、同一种返回形状),返回的 `selector` 可直接给 `device_tap` / `device_type`(由「设备检查」插件提供) |
@@ -402,11 +401,16 @@ npm run test:mcp:http
 
 ## 手动使用快捷键
 
+同一份清单也做成了设置页的「快捷键」分区(`bow://settings` → 快捷键,按分类展示、含各自例外说明),不用翻文档。
+
 - `Ctrl+T` 新标签、`Ctrl+W` 关闭**聚焦的那个窗格/标签**(终端页里也一样 —— 终端就是普通标签,`Ctrl+W` 一律关它)、`Ctrl+Shift+T` 恢复
 - `Ctrl+L` 聚焦地址栏(页面/地址栏/弹层任意焦点下都生效;**终端页除外** —— 那里 `Ctrl+L` 是 shell 的清屏)、`Ctrl+R` 刷新**聚焦窗格**(页面里也生效;**终端页除外** —— 那里 `Ctrl+R` 是 shell 的反向历史搜索)、`Ctrl+,` 打开设置(设置是内部标签页 `bow://settings`,重复打开只聚焦已有标签)
 - `Ctrl+Shift+L` 聚焦地址栏,**任何焦点下都生效(含终端页)** —— 在终端里想跳去地址栏就用它
 - `Ctrl+Shift+E`:**在聚焦窗格开终端**(顶替当前窗格,与在地址栏输 `bow://terminal` 同一条路;聚焦窗格已是终端则什么也不做)。
   它和 `Ctrl+Shift+L` 一样**在终端里也生效** —— 不会漏给 shell
+- `Ctrl+F` 页内查找:高亮并计数(`n/m`),`Enter` 下一个 / `Shift+Enter` 上一个 / `Esc` 关闭 / `Aa` 区分大小写
+  —— **终端页除外**(那里 `Ctrl+F` 是 shell 的按字符前进);DevTools 前端自带查找,也不接管;
+  地址栏建议 / 分屏面板 / 下载面板打开时查找条会被替换(页内高亮仍在)
 - `Ctrl+J`:打开 / 关闭**下载面板**(再按一次关;**终端页除外** —— 那里 `Ctrl+J` 是 shell 的 accept-line,
   等价于回车)。代价与 `Ctrl+←/→` 同类:网页里的编辑器(Jupyter、网页版 vim 等)拿不到这个组合
 - `Ctrl+数字`:`Ctrl+1..8` 切到标签栏第 n 项(一个分屏组只算一项)、`Ctrl+9` 取最后一项
@@ -421,10 +425,12 @@ npm run test:mcp:http
   —— 这两个组合在**普通网页标签**、**终端页**(`bow://terminal`)与**手机调试的 DevTools 前端标签**上接管 ——
   终端窗格里也能就地分屏 / 调大小,手机 DevTools 窗格里也能(它没有 preload,页面自己调不了 `splitPane`);
   地址栏、设置页里的它们保持原样(按词选择 / 前端自己的快捷键)。代价见下方「标签组与分屏」
-- 终端页(`bow://terminal`)里:`Ctrl+L`(清屏)、`Ctrl+R`(反向历史搜索)、`Ctrl+←/→`(按词移动)**归 shell**;**`Ctrl+W` 不再归 shell** —— 它照常关掉聚焦的那个终端窗格;
+- 终端页(`bow://terminal`)里:`Ctrl+L`(清屏)、`Ctrl+R`(反向历史搜索)、`Ctrl+F`(按字符前进)、`Ctrl+←/→`(按词移动)**归 shell**;**`Ctrl+W` 不再归 shell** —— 它照常关掉聚焦的那个终端窗格;
   `Ctrl+C` **有选中内容就复制**(不打扰 shell)、没有选中才照常发给 shell 当中断信号;`Ctrl+V` 粘贴
   (`Ctrl+Shift+C` / `Ctrl+Shift+V` 是同一套动作的备用组合;都走主进程剪贴板,不依赖渲染层的敏感上下文/权限)
-- `Ctrl+Shift+F` 元素全屏:框选当前页面元素铺满网页视口(再按一次或 `Esc` 退出)
+- `Ctrl+Shift+P` 密码:填入当前登录页 / 打开密码库(匹配到多个账号时在密码框旁弹页内下拉;
+  未创建 / 已锁定 / 当前页没有登录表单时改为打开密码面板)。网页 IDE(如 vscode.dev)的命令面板也是这个组合,
+  会被浏览器先吃掉
 - `Ctrl+Shift+I` / `F12`:为**当前聚焦的视图**(页面 / 浏览器 UI)打开或关闭 DevTools。
   DevTools 固定以**独立窗口**打开(不会停靠、也不会被标签页遮挡);焦点在 DevTools 窗口内时,
   按同一快捷键可关闭它。
@@ -461,6 +467,10 @@ npm run test:mcp:http
 - **新建标签(`Ctrl+T` / `+` / MCP `browser_new_tab`)永远是新建一个组,不会拆掉已有的分屏。**
 - 多窗格组在标签栏里只占**一项**:只显示**聚焦窗格**的名字,其余窗格只显示一个字母图标(点哪个图标就聚焦哪个窗格,
   中键点图标关掉它);聚焦窗格的那一项有高亮底色,地址栏、前进后退、`Ctrl+L` 都跟着它。
+  标签宽 90~160px(分屏组 160~240px),再长的标题用省略号截断。
+- 聚焦的窗格**四边都有 2px 强调色描边**(左右分屏 = 完整一圈框,嵌套分屏 = 每边各一段)。
+  分屏时页面区四周会留 **2px 内边距**给外边框让位 —— 窗格是盖在浏览器 UI 之上的原生视图,只有没被盖住的条带
+  能画高亮;单窗格 / 不分屏时不留内边距,页面区与以前**逐像素一致**。
 - `Ctrl+1..9` 切的是**组**(标签栏第几项,`9` = 最后一项),不是按标签切。
 - `Ctrl+W` / 标签上的 × / 中键点项体 = 关掉**聚焦的那个窗格**:它所在的节点会塌缩(剩下的兄弟顶替它占满那块地方),
   焦点落到阅读顺序里的下一个窗格;把组里最后一个窗格也关掉,这一项就消失。
@@ -498,7 +508,7 @@ npm run test:mcp:http
   (Windows 侧的 `cwd` 会被映射成 `/mnt/c/...`,不是 WSL 的 home)。
 - 外观:字体族 / 字号 / 滚动缓冲,**改完即时作用到已打开的终端**。
 - 键位:**`Ctrl+W` 归浏览器** —— 关掉聚焦的那个终端窗格(与标签上的 × 同义);
-  `Ctrl+L`(清屏)、`Ctrl+R`(反向历史搜索)、`Ctrl+←/→`(按词移动)**归 shell**;
+  `Ctrl+L`(清屏)、`Ctrl+R`(反向历史搜索)、`Ctrl+F`(按字符前进)、`Ctrl+←/→`(按词移动)**归 shell**;
   **`Ctrl+Shift+←/→/↑/↓` 与 `Alt+Shift+←/→/↑/↓` 也归浏览器** —— 焦点在终端窗格上照样分屏 / 调整大小,
   shell(以及终端里跑的程序)收不到这两个组合(xterm 平时会把它们编成 CSI 序列送进 pty)。
   ⇒ 想用 shell 的「删词」请按各 shell 自己的绑定(如 bash/WSL 的 `Alt+Backspace`);
@@ -513,6 +523,45 @@ npm run test:mcp:http
   两条已知边界:① AltGr 布局(德语/法语/波兰语…)里 Chromium 会给 `Ctrl+Alt` 组合置上 AltGraph,
   真组合仍分不出来(维持现状);② macOS 的 `Ctrl+Option+字母` 是另一处原因(`evaluateKeyboardEvent`
   在 mac 上就不产出 key),本次未修。
+- **AI 代理状态联动**:终端里的 **pi** 会把「在跑 / 等你确认 / 跑完了」写成一条自定义 OSC
+  (`ESC]1337;bow;{…}BEL`),终端插件在 pty 输出里把它剥掉(不会漏进 xterm),于是:
+  - **正在执行** → 那个标签亮一个蓝色呼吸点(标签栏一项 = 一个组,分屏时按 blocked > working > done 取优先级);
+  - **需要你确认**(一切 `ctx.ui.confirm/select/input/editor/custom` 弹框:plan→build 的批准、权限询问、
+    `ask_user_question` 等都算)→ 窗口**底部居中**弹通知,卡片带弹框标题与会话名;这条**不自动消失**(它就是要等你);
+  - **任务完成**(pi 的 `agent_settled` —— 重试/压缩/排队续跑都真的结束了)→ 底部居中弹「已完成」通知,8 秒后自动收起;
+  - **点通知卡片 = 进入对应标签**:切标签 + 把窗口提到前台 + 把键盘焦点交给那个终端。
+  接入(两种都行):**设置页 → 终端 → Pi 状态联动 → 安装**(点一下就好,装完在 pi 里重开或 `/reload` 生效),
+  或者命令行 `npm run pi:install-status`(幂等,`--uninstall` 可撤;需要 pi ≥ 0.84.4)。
+  不想动 pi 配置、只想试一次:`pi --extension <仓库>/integrations/pi/bow-agent-state.ts`。
+  - 📁 **pi 会把 `~/.pi/agent/extensions/` 下的每个 `*.ts` 都加载**,没有登记表 —— 所以这个目录里
+    可能同时躺着**别的宿主**留下的同类扩展(比如 herdr 装的那份)。这不是重复:每个扩展自己拿环境变量
+    门禁(bow 看 `BOW_TERMINAL=1`,herdr 看 `HERDR_ENV=1`),在别人的终端里一步就返回、什么都不做;
+    bow 的安装/卸载只碰**自己那个文件**(文件名 + `managed by bow` 归属标记),绝不改别人的扩展。
+  - ⚠️ **pi 与 bow 不在同一个系统里时**(典型:Windows 的 `bow.exe` + WSL 的 pi),要装两份到认知不一的地址:
+    设置页的按钮写的是 **`bow` 进程自己的家目录**(Windows 的 `%USERPROFILE%\.pi\agent\extensions`),
+    而发行版里的 pi 读的是 **WSL 的 `~/.pi/agent/extensions`** —— 后者要自己放一份。
+    **这一段不需要你手写命令**:只要你的终端配置里有 `wsl.exe`,设置页就会把那条命令显示出来并可一键复制
+    (它是拿主进程算出的 `/mnt/<盘>/…` 路径拼的,见 `src/plugins/terminal/piBridge.ts` 的 `wslHint`);
+    命令行等价写法:从 WSL 里 `cp /mnt/c/…/bow/integrations/pi/bow-agent-state.ts ~/.pi/agent/extensions/`,
+    或在 WSL 里直接跑 `node scripts/install-pi-agent-state.mjs`。
+  - ⚠️ **`shell` 是 `wsl.exe` 时**:bow 会自动把 `BOW_TERMINAL` 列进 `WSLENV`(否则 Windows 的变量进不了发行版,
+    扩展会认不出 bow —— 实测:不列是空、列了是 `1`)。若你用别的容器/远程终端做类似的事,就在那边 `export BOW_TERMINAL=1`。
+  **不装也能用一半**:靠 pi 内建的 `terminal.showTerminalProgress`(默认关)至少能显示「正在执行」,
+  没有「需要确认 / 已完成」这两档。协议本身是通用的(`BOW_TERMINAL=1` 门禁 + 1337 私有区间,
+  别的终端不认识这套序列),所以桥接扩展在 bow 之外什么都不做。
+  已知边界:在 tmux / screen / ssh 里跑 pi 时,外层复用器可能不放行这条 OSC。
+  **不生效时按这个顺序查**(三个判据,一次分清是哪一层坏了):
+  1. **先确认你敲命令的终端就是 bow 里那个**:`ps -o comm= -p $PPID`(bash/zsh/WSL)
+     —— 是 `bow`/`electron` 才对;是 `systemd`/`login`/`-zsh` 那就是普通终端,在那里打什么都到不了 bow;
+  2. **标记必须进得来**:`node -e "console.log(process.env.BOW_TERMINAL)"` 要输出 `1`
+     (PowerShell 里看环境变量要写 `$env:BOW_TERMINAL`;zsh/bash 才是 `echo $BOW_TERMINAL`)。
+     不是 `1` → bow 没送到:Windows+WSL 看上面的 `WSLENV` 那条,其它容器/远程终端就 `export BOW_TERMINAL=1` 兜底;
+  3. **手工打一条信号证明 bow 侧链路**(不经过 pi):
+     `node -e "process.stdout.write('\x1b]1337;bow;'+JSON.stringify({v:1,state:'blocked',title:'test'})+'\x07')"`
+     → 应当出现**黄点 + 底部居中卡片**。有卡片 = bow 侧没问题,去查 pi 那侧(扩展位置 / `pi --version` ≥ 0.84.4 / `/reload`);
+     没反应 = 看日志(`npm run dev` 时直接打在跑 dev 的那个终端里):
+     `会话已创建` / `通知视图加载失败` / `代理状态信号落到不存在的标签,忽略`。
+     注意这条命令**本身不会打印任何东西**,是正常的 —— 它写的是零宽控制序列,效果在标签栏。
 - 同时最多 12 个会话(超了会提示);终端页是内部页面标签,MCP 的页面类工具不会拿它做操作目标。
 - node-pty 的预编译二进制只覆盖 Windows / macOS —— 这套终端主要在 Windows 侧的 bow.exe 上用。
 
@@ -610,7 +659,6 @@ npm run test:mcp:http
 - 书签(「书签」插件):`<userData>/bookmarks.json`
 - 浏览历史(「浏览历史」插件,默认保留最近 500 条,可在「设置页 → 浏览历史」调整,按 URL 去重):`<userData>/history.json`;保留条数配置:`<userData>/history-settings.json`
 - CORS 放行配置(「CORS 放行」插件,首次启动从 `settings.json` 迁移):`<userData>/cors.json`
-- 广告拦截配置与计数(「广告/追踪拦截」插件,含网络规则、元素规则、元素例外标记与订阅,自动从旧版本迁移到 v3;单行 JSON):`<userData>/adblock.json`
 - 设备检查(「设备检查」插件):`<userData>/device-inspect.json` —— 只存 adb 命令、前端来源策略与**端口转发记录**(转发登记在 adb server 里,bow 被强杀后靠这份记录在下次启动时回收)
 - 终端(「终端」插件):`<userData>/terminal.json` —— 字体族 / 字号 / 滚动缓冲与 shell 配置列表(每次读取都会夹紧/兜底)
 - 笔记(「笔记」插件):`<userData>/logseq.json` —— 存**图目录 / 最近图 / 正文字号 / 每个图的收藏**;笔记内容本身就在你的 Logseq 图里,不另存一份
@@ -623,19 +671,25 @@ npm run test:mcp:http
 ## 设置页(`bow://settings`)
 
 设置是**浏览器内部标签页**,不是弹窗:工具栏齿轮、`Ctrl+,` 或地址栏输入 `bow://settings` 均可打开(已存在则只聚焦,不重复新建)。
-左侧导航固定为「常规 / 插件管理」+ 每个*已启用且提供设置分区*的插件各一项,右侧内容全宽渲染,**所有设置即时保存**(没有保存/取消按钮)。
+左侧导航固定为「常规 / 快捷键 / 插件管理」+ 每个*已启用且提供设置分区*的插件各一项,右侧内容全宽渲染,**所有设置即时保存**(没有保存/取消按钮)。
 
 - **常规**:默认搜索引擎、主页(主页留空视为放弃修改并回填已存值)。分屏布局改在工具栏的「分屏」面板里保存/套用/删除。
+- **快捷键**:按分类列出全部键位(标签 / 地址栏与导航 / 分屏与布局 / 视图与面板 / 终端 / 笔记 / 窗口),纯参考清单、**不注册任何热键**;macOS 上的 `⌘` 差异与平台受限组合(`Ctrl+←/→`)在条目里单独注明。
 - **插件管理**:运行时启停(立即生效并持久化)、能力标签、核心提示;有设置分区的插件可一键跳到对应分区。
-- **插件设置**:CORS 放行 / 浏览历史 / 广告追踪拦截 / 终端 / 笔记 / 下载 等分区直接内联展示(取消旧版的嵌套弹窗)。
+- **插件设置**:CORS 放行 / 浏览历史 / 终端 / 笔记 / 下载 等分区直接内联展示(取消旧版的嵌套弹窗)。
+  「终端」分区里有 shell 配置与外观,还有 **Pi 状态联动** —— 点一下把状态桥扩展装进 pi(或卸载),
+  装完终端里的 pi 就会把「执行中 / 等待确认 / 已完成」显示成标签角标与底部居中通知(见「终端」一节);
+  如果你的终端配置里有 `wsl.exe`(bow 在 Windows、pi 在 WSL2),这一段还会多出一条
+  **「如果使用 WSL2,请执行以下命令将扩展安装到 WSL2 中」** 的提醒 —— 命令直接可复制粘贴,
+  因为上面那个按钮装的是 bow 自己那个系统的家目录,发行版里的 pi 看不到(见「终端」一节的跨系统说明)。
   「笔记」分区可调**正文字号**,并**显示**从 `logseq/config.edn` 读到的目录 / 日期格式 / 默认模板与索引统计,还提供「重建索引」——
   改模板请去 Logseq 里改配置(这份插件从不写回 `config.edn`);收藏在笔记页里用标题旁的星标管理。
 
-边界约束:内部标签页只允许载入内部页面,因此**在设置页里输入普通网址会新开标签**,设置标签本身不会被导航走;地址栏星标、页面框选这类依赖真实页面的操作在设置标签下不可用(框选会先自动切回最近浏览的页面标签)。MCP 的页面类工具(`browser_eval` / `snapshot` / `click` 等)同样跳过内部页面标签,`browser_list_tabs` 会用 `internal: true` 标出它们。
+边界约束:内部标签页只允许载入内部页面,因此**在设置页里输入普通网址会新开标签**,设置标签本身不会被导航走;地址栏星标这类依赖真实页面的操作在设置标签下不可用。MCP 的页面类工具(`browser_eval` / `snapshot` / `click` 等)同样跳过内部页面标签,`browser_list_tabs` 会用 `internal: true` 标出它们。
 
 ## 插件体系
 
-书签、历史、CORS 放行、元素全屏、MCP HTTP 服务、默认浏览器、设备检查、终端、笔记、下载、夸克网盘都是内置插件;广告/追踪拦截是参考插件。插件是**仓库内编译期模块**(无动态代码执行),
+书签、历史、CORS 放行、MCP HTTP 服务、默认浏览器、设备检查、终端、笔记、下载、夸克网盘、密码都是内置插件。插件是**仓库内编译期模块**(无动态代码执行),
 可在「设置页 → 插件管理」里运行时启停(无需重启),状态持久化到 `plugins.json`;停用时内核自动回收其 IPC、
 建议源、MCP 工具、网络钩子与已注入 CSS。
 
@@ -665,10 +719,10 @@ MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生
 | --- | --- | --- |
 | 浏览器 UI | 工具栏按钮 / 地址栏尾部插槽 / Overlay 浮层 / 设置分区 | 书签星标与管理面板、MCP 状态灯、各插件设置分区(设置页侧栏) |
 | 地址栏建议源 | 贡献模糊匹配建议(同 URL 冲突按优先级决胜) | 历史(10)、书签(20) |
-| 网络钩子 | `onBeforeRequest` / `onBeforeSendHeaders` / `onHeadersReceived` 链式拦截与改写 | CORS 放行、广告拦截 |
-| 内容注入 | 按 URL 匹配在 `dom-ready` / `did-finish-load` 注入 CSS/JS(仅标签页,CSS 可按页面动态生成与刷新) | 广告元素隐藏 |
-| MCP 工具 | 把能力暴露给 AI 工具(随插件启停动态增减) | `browser_add_bookmark`、`adblock_stats` |
-| 快捷键 | 注册主进程全局热键(任意焦点下生效,含页面内) | 元素全屏(`Ctrl+Shift+F`) |
+| 网络钩子 | `onBeforeRequest` / `onBeforeSendHeaders` / `onHeadersReceived` 链式拦截与改写 | CORS 放行(暂时无插件使用 `onBeforeRequest`) |
+| 内容注入 | 按 URL 匹配在 `dom-ready` / `did-finish-load` 注入 CSS/JS(仅标签页,CSS 可按页面动态生成与刷新) | 目前无插件使用(钩子保留) |
+| MCP 工具 | 把能力暴露给 AI 工具(随插件启停动态增减) | `browser_add_bookmark`、`device_list_targets` |
+| 快捷键 | 注册主进程全局热键(任意焦点下生效,含页面内) | 密码(`Ctrl+Shift+P`) |
 
 > opencode 的 `x-opencode-session` 会话头由**前端应用自行发送**(OpenCode Go/Zen 的官方要求),
 > 浏览器不再代注入;需要时把 `docs/opencode-session-header.md` 里的提示词交给应用开发者。
@@ -719,6 +773,28 @@ MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生
 
 ⚠️ 这类工具处于「个人自用 vs 服务条款」的灰色地带,且会用到你已登录的账号;请自行判断是否使用。
 
+### 密码插件
+
+工具栏的钥匙按钮或 `Ctrl+Shift+P`:在登录页按需注入一个页内下拉(匹配到多个账号时)或直接填入;
+没有匹配 / 还没建库 / 已锁定时改为打开「密码」面板(点工具栏按钮也是它)。面板里可以搜索、增删改条目、
+复制用户名 / 密码、把某一条填入当前页,以及「从当前页面保存」(读回页面上已输入的账号密码并预填)。
+
+**数据与加密**:密码库由一个主密码解锁。主密码经 **scrypt** 派生密钥,条目整体用 **AES-256-GCM** 加密后
+写进 `passwords.json`(盐与 KDF 参数是明文,条目明文为零);主密码本身不落盘,解锁期间密钥与条目只在
+**主进程内存**里,面板只按需取单条。「设置页 → 密码」可改自动锁定时间、剪贴板清除秒数、子域匹配,
+以及修改主密码 / 清空密码库。**忘记主密码无法恢复** —— 想备份就整份复制 `passwords.json`(它是密文)。
+
+几条要知道的边界:
+
+- **只填不提交**:插件不会替你点「登录」;
+- 只有 `http/https` 页面能填,且**不注入常驻脚本**(每次探测 / 下拉 / 填入都是按需注入,用完即走);
+  `bow://` 内部页、手机调试的 DevTools 前端、`file://` 一律跳过;
+- **跨域 iframe 内、closed shadow root 内的密码框找不到**;
+- 多步登录(先输用户名、下一页才输密码)只覆盖一半:第一页填用户名,第二页再按一次 `Ctrl+Shift+P`;
+- 密码只在**真的填某一条**时才作为一次注入脚本的参数进入页面 —— 页内下拉里只送「名称 + 用户名」;
+- 复制密码后按设置清除剪贴板,但仅在「剪贴板里还是那条密码」时才清(你已复制别的东西就不动);
+- 不提供任何 MCP 工具:AI 拿不到密码库(刻意的隔离)。
+
 ### 浏览历史插件
 
 「设置页 → 浏览历史」提供:按标题 / 网址 / 搜索词的模糊搜索,单条删除、勾选批量删除、
@@ -726,39 +802,6 @@ MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生
 历史数据按 URL 去重、最近优先,并作为地址栏建议源参与模糊匹配。
 **`bow://` 内部页(终端 / 设置)也计入历史**(2026-09-19 起):开过一次终端,以后在空地址栏的「最近」列表里
 就能直接看到「终端」,输「终」/「term」也能模糊命中 —— 选中即顶替当前聚焦窗格。
-
-### 广告/追踪拦截插件
-
-规则分两类,均可在「设置页 → 广告/追踪拦截」中增删改/启停:
-
-- **网络规则**:拦截或放行请求,模式支持 `example.com`(含子域)、`*.example.com`、`||ads.example.com^`、`||host/path` 与含 `*` 的 URL 通配;`@@` 为放行例外(放行优先),`$important` 的拦截规则无视放行。主文档不拦截。规则列表在设置页里分页展示(默认 200 条、可筛选+加载更多)。
-- **元素规则**:按域隐藏页面元素,`domain##selector` 为隐藏、`domain#@#selector` 为例外,`~domain` 为排除域;域对该域及其子域生效,`*` 表示全站。
-
-**支持的 `$` 选项子集**(文本导入 / 订阅 / 导出往返):`third-party`(别名 `3p`)、`~third-party`(`1p`/`first-party`)、资源类型(`script`/`js`、`image`/`img`、`stylesheet`/`css`、`xmlhttprequest`/`xhr`、`subdocument`/`frame`、`font`、`media`、`websocket`、`ping`、`object`、`other` 及其取反 `~`)、`domain=a.com|~b.a.com`、`important`、`badfilter`(删除等价规则,含内置规则)。
-
-**不支持的写法会整行跳过并汇总**,绝不降级成更宽的规则(例如 `||x^$removeparam=` 不会被当成 `||x^` 整域拦截):`$document`/`$popup`/`$csp`/`$removeparam`/`$redirect`/`$replace`/`$removeheader`/`$permissions`/`$from=`/`$match-case`、scriptlet(`#$#`/`#%#`/`##+js(...)`)、扩展/过程式选择器(`#?#`、`:has-text()`、`:matches-*`、`:style()`、`:upward()`)。hosts / dnsmasq / Clash 格式(如 `0.0.0.0 domain`、`address=/domain/…`、`DOMAIN-SUFFIX,…`)会被识别并明确拒绝,不再假装导入成功。
-
-**元素例外标记**:`@@||host^$generichide`、`$elemhide`、`$specifichide` 落成「元素例外」(只关该 host 的泛化/专属元素隐藏),**不再变成网络放行规则** —— 早期版本会把这类行当成 `@@||host^`,导致整站放行。
-
-**订阅**:设置里的「订阅」页可维护 EasyList/AdGuard 的 `.txt` 地址,手动「更新全部」或单条更新;更新只替换该订阅上一次导入的规则,不影响手动规则与内置规则,并在列表里显示条数/更新时间/失败原因。订阅拉取在浏览器主进程完成(30s 超时,非 2xx 即失败),配置仍存在 `<userData>/adblock.json`。
-
-**MCP**:`adblock_import_rules` 走同一套解析(`summary` 里给出 `network/cosmetic/cosmeticFlags/badfilters/skipped{reasons,foreignFormats}`),`adblock_list_rules` 支持 `kind/domain/offset/limit`(默认 200 条,不再返回全表),另有 `adblock_subscribe` / `adblock_refresh_subscriptions`。
-
-**元素框选**(类 AdGuard):点击工具栏「屏蔽元素」后,在页面中悬停高亮、点击选中、父/子级切换、选择器可编辑、实时预览、`Esc` 取消、`Enter`/「屏蔽」确认;确认后按当前页域立即生效并持久化。在设置页里点「屏蔽元素」会先自动切回最近浏览的页面标签再进入框选。
-
-**文本规则与导入导出**:设置里的「文本规则」页可维护用户规则(仅用户规则,应用后整体替换,不影响内置与订阅),支持导入/导出 EasyList/AdGuard 常用子集(`||host^`、`host`、`*.host`、`*` 通配、`@@`、`##`、`#@#`、`~domain`、常用 `$` 选项、`!` 注释),导入结果会按「不支持选项 / scriptlet / 其它格式」分类汇总跳过项。
-
-**性能姿态**:网络规则走主机后缀索引(每次请求只查相关桶),元素规则建索引后按 host 取候选,单页最多注入 2000 条隐藏选择器(超过的部分不注入,`unhide` 例外仍然生效);设置页列表分页(默认 200 条 + 筛选 + 加载更多),`getState` 不再回传全量规则;`adblock.json` 以单行 JSON 写入(几万条规则时不再每次改动都 pretty-print 一遍)。
-
-> 限制:跨域 iframe 内部元素、closed shadow root 内部元素、scriptlet/JS 规则、过程式过滤暂不支持;`$third-party` / `$domain=` 依赖请求发起页的地址,Electron 的 `onBeforeRequest` 只给到当前 webContents 的 URL(子框架请求会有偏差),拿不到页面地址时按「不拦截」处理。
-
-### 元素全屏插件
-
-工具栏「元素全屏」按钮或 `Ctrl+Shift+F` 进入框选:悬停高亮、`↑`/`↓` 切换父/子级、点击选中、`Esc` 取消;选中后元素**原地**铺满网页视口(标签栏/工具栏保留),深色背景层,`img`/`video` 按 `contain` 保持比例。`Esc`、再次点按钮或 `Ctrl+Shift+F` 退出。
-
-- **仅当前页面有效**:不落盘,页面刷新/跳转后自动还原。
-- 仅 `http/https` 页面可用;不移动 DOM(iframe 不会重载),但跨域 iframe 内部元素、closed shadow root 内部元素无法选中。
-- AI 可经 MCP 的 `browser_fullscreen_element` / `browser_exit_fullscreen` 直接按选择器全屏或还原。
 
 ### 设备检查插件(手机 WebView / Chrome)
 
@@ -871,7 +914,7 @@ bow 自带的前端是 Electron 44(Chromium 152)的,它取 storage key 用的是
 ## MCP 冒烟测试
 
 ```bash
-npm run test:mcp   # 拉起 MCP 模式浏览器并自动跑关键流程(instructions 下发→新标签等待加载→快照→等待原语/超时 isError→截图→搜索→点击→输入→书签→广告拦截统计)
+npm run test:mcp   # 拉起 MCP 模式浏览器并自动跑关键流程(instructions 下发→新标签等待加载→快照→等待原语/超时 isError→截图→搜索→点击→输入→书签)
 ```
 
 需要显示环境;Linux 缺 ALSA 时:`SMOKE_LD_LIBRARY_PATH=<目录> npm run test:mcp`。
@@ -900,6 +943,42 @@ npm run test:e2e:device   # 真 Electron + 真 MCP + 真 TCP/WS,只有 adb 与�
 
 临时文件在 `$TMPDIR/bow-e2e`(`BOW_E2E_DIR` 可改);每次运行用独立 userData 与调试端口,不会碰你正在跑的 bow。
 真机上的差异(触摸注入是否需要 `Emulation.setTouchEmulationEnabled`、捏合缩放下的坐标口径)仍需真机验证。
+
+## 代理状态 E2E(假 pi)
+
+```bash
+npm run build && npm run test:e2e:agent                                                                  # 开发产物(out/)
+BOW_E2E_BIN=dist/linux-unpacked/bow npm run test:e2e:agent                                                # 打包版(需先 npm run dist)
+```
+
+终端里的 pi 写一条自定义 OSC(`ESC]1337;bow;{...}BEL`)就能驱动标签栏角标与底部居中通知。这个脚本里
+**pi 是假的**(一个几十字节的 node 脚本,只把那条序列打到 pty),其余全是真的:真 Electron、真终端(node-pty)、
+真信号剥离与归约、真通知视图。它用 CDP 断言三件事:
+
+- chrome 页面:`TabInfo.agent` 与标签栏角标的 DOM 同时变(`working` / `blocked` / `done`);
+- 通知视图:卡片文本、量出来的高度(视图 bounds 靠它)、点卡片后**真的切到了那个标签**,
+  而且**点通知 ≠ 回答弹框**(角标仍停在 blocked,直到 pi 报出下一个状态);
+- 清理:关标签后角标与通知都不留(这条靠的是主进程缓存的宿主引用 —— `TabManager.close()` 先摘 record 再发事件)。
+
+后半段还验**设置页 → 终端 → Pi 状态联动**的一键接入:`PI_CODING_AGENT_DIR` 指向临时目录,
+脚本点侧栏进分区、点「安装」→ 断言文件真的落盘且带 `managed by bow` 标记 → 点「卸载」→ 断言文件没了。
+`BOW_E2E_BIN` 指向打包后的可执行文件时,额外验一遍「源码能从 `app.asar` 里读到」(就靠 `build.files` 里的 `integrations`)。
+
+与设备/夸克 E2E 一样:独立 userData + 独立调试端口,不会碰你正在跑的 bow。
+
+> Linux 上 Electron 报 `libasound.so.2: cannot open shared object file` 时**不需要 root**:
+> `ldd node_modules/electron/dist/electron | grep 'not found'` 先确认只缺这一个,去镜像的 `extra.db`
+> (注意 `alsa-lib` 在 `extra` 仓库,不在 `core`:`bsdtar -xOf extra.db alsa-lib-*/desc | grep -A2 %FILENAME%`)
+> 查出包名,`curl` 下下来 `bsdtar -xf` 到**持久目录**(别放 `/tmp` —— 它会被清掉,实测凌晨清过一次,
+> 表现是「昨天还能跑的 E2E 突然报找不到 chrome target」):
+> ```bash
+> mkdir -p ~/.cache/bow-alsa && cd ~/.cache/bow-alsa
+> curl -sS https://geo.mirror.pkgbuild.com/extra/os/x86_64/extra.db -o extra.db
+> FN=$(bsdtar -xOf extra.db alsa-lib-*/desc | grep -A1 '^%FILENAME%' | tail -1)
+> curl -sS "https://geo.mirror.pkgbuild.com/extra/os/x86_64/$FN" -o "$FN" && bsdtar -xf "$FN" -C .
+> ```
+> 然后用 `LD_LIBRARY_PATH=$HOME/.cache/bow-alsa/usr/lib npm run test:e2e:agent`。
+> `test:mcp` / `test:e2e:device` 同理(那个脚本自己认 `SMOKE_LD_LIBRARY_PATH`)。
 
 ## 夸克网盘插件的离线 E2E
 
@@ -931,6 +1010,11 @@ UA / Referer,以及**白名单边界** —— 直链在 `quark.cn` 下才带 Coo
 与真实 `McpServer`/`Client` 握手,验证 instructions 下发、工具面与 schema、`waitUntil` 等待语义、
 失败一律 `isError`、内部页面标签边界与插件工具错误传播;`tests/mcpWait.test.ts` 单独覆盖等待原语。
 
+代理状态联动也能无显示环境测两层:`tests/agentState.test.ts`(OSC 解析与归约,含 chunk 切开 / 非本协议序列放行 / `9;4` 降级)、
+`tests/toasts.test.ts`(假 electron 验证通知视图的 bounds 数学)、`tests/terminalAgentSignal.test.ts`(假 pty 跑真插件代码)、
+`tests/piBridge.test.ts`(真 fs + 临时目录验证一键接入的归属/幂等)。
+端到端那层(`npm run test:e2e:agent`)需要能跑 Electron 的机器或 `LD_LIBRARY_PATH` 补库(见上)。
+
 ## 架构速览
 
 > 逐文件职责地图、插件契约(`PluginContext` 全 API)、七类扩展点、MCP 工具表、
@@ -941,6 +1025,7 @@ UA / Referer,以及**白名单边界** —— 直链在 `quark.cn` 下才带 Coo
 src/
   main/          主进程:窗口、TabManager(每标签 WebContentsView + 内部页面标签 + 标签组/分屏)、
                  通用 Overlay 浮层宿主(OverlayManager + overlay 页面注册表)、
+                 底部居中通知宿主(ToastManager)+ 代理状态落地(AgentNotify:角标 + 通知栈 + 定时器)、
                  渲染入口解析(rendererEntry)、MCP 服务器(stdio + 无状态 HTTP + instructions)、
                  注入式页面操作执行器与等待原语、JSON 存储、IPC
   main/plugins/  插件内核:注册/启停编排、独立存储、IPC 路由、事件总线、建议合并、
@@ -948,13 +1033,16 @@ src/
   plugins/<id>/  内置插件(自包含):main.ts(主进程侧)/ ui.ts + ui/*.vue(渲染层侧)
                  / shared.ts|rules.ts(同构纯逻辑)
   preload/       contextBridge 暴露 window.browserAPI(含 plugins 调用面)
-  renderer/      Vue 3 四个渲染入口:chrome UI(index.html:标签栏/地址栏/插件插槽/建议下拉浮现层)、
+  renderer/      Vue 3 六个渲染入口:chrome UI(index.html:标签栏/地址栏/插件插槽/建议下拉浮现层)、
                  Overlay 宿主(overlay.html)、设置页(settings.html,内部标签页 bow://settings)、
-                 终端页(terminal.html,内部标签页 bow://terminal)
+                 终端页(terminal.html,内部标签页 bow://terminal)、笔记页(logseq.html)、
+                 底部居中通知栈(toast.html)
                  plugins/registry.ts = 渲染层插件 UI 注册表
   shared/        三端共享:类型、URL 解析、内部页面标识、设置页导航模型、标签组记账、嵌套分屏树与几何、
+                 代理状态协议与通知栈归约(agentState.ts)、
                  书签树/历史/模糊匹配/建议合并/URL 匹配纯逻辑
-tests/           vitest 单元测试(url 解析、内部页面、设置导航、书签树、历史、模糊建议、插件注册表/匹配/边界)
+  integrations/  给外部工具装的辅助文件(pi/ 里是终端状态桥扩展)
+tests/           vitest 单元测试(url 解析、内部页面、设置导航、书签树、历史、模糊建议、插件注册表/匹配/边界、代理状态与通知)
 ```
 
 WebContentsView 的布局顶部偏移量由 chrome UI 实测高度通过 `ui:chrome-height` IPC 上报,标签栏/工具栏高度变化时自动跟随。
@@ -962,7 +1050,7 @@ WebContentsView 的布局顶部偏移量由 chrome UI 实测高度通过 `ui:chr
 **标签组与嵌套分屏**:一个标签组 = 一棵二叉布局树(`shared/split.ts` 的 `LayoutNode`:叶子是标签,`split` 节点带轴与比例),
 标签栏的一项就是一个组。`TabManager` 持有 `groups: TabGroup[]`(纯记账规则在 `@shared/groups`,可单测),
 `layout()` 是页面视图**可见性的唯一来源**:几何由 `computeLayout()` 现算(每层扣 4px 间隔、比例夹在 10%~90%、
-单窗格不小于 120px),主进程把**窗格 rect + 分隔条 rect** 一起回传,渲染层只画不重算。有两条关键不变式:
+单窗格不小于 120px),分屏组的内容区四周再留 `SPLIT_INSET`(2px)给聚焦窗格的外边框让位;主进程把**窗格 rect + 分隔条 rect** 一起回传,渲染层只画不重算。有两条关键不变式:
 新标签总是新建一个组(新建标签不会拆掉已有的分屏)、一个组最多 8 个窗格;`Ctrl+数字` 按组切。
 组状态只在内存,布局（只存结构）落盘在 `split-layouts.json`。
 

@@ -18,13 +18,28 @@ import type { WebContents } from 'electron'
 import type { TabInfo } from '@shared/types'
 import type { TabIdAllocator, TabManager, TabRecord } from './tabManager'
 import type { OverlayManager } from './overlay'
+import type { ToastManager } from './toasts'
+
+/**
+ * 窗口角色。
+ * - `user`:用户自己用的窗口(启动首窗口、重复启动开的新窗口、UI 里触发的窗口)。
+ * - `agent`:MCP 的专属窗口 —— 省略 tabId 时页面工具的默认目标,由 `createAgentWindow()` 按需创建。
+ * 软隔离:显式传 tabId 时仍可操作 `user` 窗口里的标签(见 mcp.ts 的 `target()`)。
+ */
+export type WindowRole = 'user' | 'agent'
+
+/** agent 窗口的标题后缀(窗口标题由 index.ts 的 wireWindowContext 设置) */
+export const AGENT_WINDOW_TITLE = 'Bow · Agent'
 
 /** 一个窗口的全部运行时对象(id 进程内唯一) */
 export interface WindowContext {
   id: number
+  role: WindowRole
   window: BrowserWindow
   tabs: TabManager
   overlay: OverlayManager
+  /** 底部居中通知的宿主(与 overlay 同级的顶层透明视图,见 main/toasts.ts) */
+  toasts: ToastManager
 }
 
 /** tabId → 所属窗口 + 该标签记录 */
@@ -46,11 +61,26 @@ export interface WindowRegistry {
   markActive(ctx: WindowContext): void
   /** 所有窗口的标签汇总,每条补上 `windowId` */
   allTabs(): TabInfo[]
+  /**
+   * MCP 的默认窗口:显式指定的(`markAgentActive`)优先,否则最近登记/创建的 agent 窗口。
+   * **不创建** —— 没有 agent 窗口时返回 null,由调用方决定要不要建(见 `createAgentWindow`)。
+   * 与 `focused()` 的区别:MCP 的默认目标**不随用户的鼠标点击 / OS 焦点变化**。
+   */
+  agentWindow(): WindowContext | null
+  /** 新建一个 agent 窗口并设为 MCP 默认窗口;没有创建能力(测试里的假注册表)时返回 null */
+  createAgentWindow(targets?: string[]): WindowContext | null
+  /** 显式指定 MCP 后续操作的默认窗口(browser_switch_tab 在 agent 窗口之间切换时调用) */
+  markAgentActive(ctx: WindowContext): void
 }
 
 export interface WindowManagerDeps {
   /** 覆盖「当前聚焦窗口」的判定(测试用);默认走 `BrowserWindow.getFocusedWindow()` */
   getFocusedWindow?: () => BrowserWindow | null
+  /**
+   * 建窗口 + 接线(index.ts 注入)。`WindowManager` 自己不碰 BrowserWindow 的创建路径,
+   * 只把「需要一个新的 agent 窗口」这个意图转交给窗口创建方。
+   */
+  createWindow?: (targets: string[], role: WindowRole) => WindowContext
 }
 
 export class WindowManager implements WindowRegistry {
@@ -66,6 +96,11 @@ export class WindowManager implements WindowRegistry {
    * 「省略 tabId 时的默认目标」。真实 focus 事件一到就清除(用户手动切窗口优先)。
    */
   private explicitActiveId: number | null = null
+  /**
+   * MCP 的默认窗口指针。与 `explicitActiveId` 分开:后者会被真实 focus 事件清掉(用户手动切窗口优先),
+   * 前者只由 `browser_switch_tab` / `createAgentWindow` 改动 —— MCP 的默认目标不该被用户的鼠标点击改变。
+   */
+  private agentActiveId: number | null = null
 
   /** 注入给每个 `TabManager`,保证 tabId / groupId 跨窗口全局唯一 */
   readonly ids: TabIdAllocator = {
@@ -83,9 +118,15 @@ export class WindowManager implements WindowRegistry {
     return this.contexts.length
   }
 
-  /** 登记一个已建好的窗口三件套。窗口 focus/closed 由这里接管(不额外占用调用方的监听) */
-  register(window: BrowserWindow, tabs: TabManager, overlay: OverlayManager): WindowContext {
-    const ctx: WindowContext = { id: this.nextWindowId++, window, tabs, overlay }
+  /** 登记一个已建好的窗口四件套。窗口 focus/closed 由这里接管(不额外占用调用方的监听) */
+  register(
+    window: BrowserWindow,
+    tabs: TabManager,
+    overlay: OverlayManager,
+    toasts: ToastManager,
+    role: WindowRole = 'user'
+  ): WindowContext {
+    const ctx: WindowContext = { id: this.nextWindowId++, role, window, tabs, overlay, toasts }
     this.contexts.push(ctx)
     this.lastFocusedId = ctx.id
     window.on('focus', () => {
@@ -101,12 +142,13 @@ export class WindowManager implements WindowRegistry {
     return this.contexts.find((c) => c.id === id) ?? null
   }
 
-  /** 由 webContents 反查窗口:chrome / overlay / 任意标签视图(含内部页)都认 */
+  /** 由 webContents 反查窗口:chrome / overlay / 通知视图 / 任意标签视图(含内部页)都认 */
   byWebContents(wc: WebContents): WindowContext | null {
     for (const ctx of this.contexts) {
       if (ctx.window.isDestroyed()) continue
       if (ctx.window.webContents === wc) return ctx
       if (ctx.overlay.hasWebContents(wc)) return ctx
+      if (ctx.toasts.hasWebContents(wc)) return ctx
       if (ctx.tabs.findTabIdByWebContents(wc) != null) return ctx
     }
     return null
@@ -149,6 +191,29 @@ export class WindowManager implements WindowRegistry {
     return this.contexts[this.contexts.length - 1] ?? null
   }
 
+  /** MCP 默认窗口:显式指定优先,否则最近登记的 agent 窗口;都不在时 null(不创建) */
+  agentWindow(): WindowContext | null {
+    if (this.agentActiveId != null) {
+      const explicit = this.byId(this.agentActiveId)
+      if (explicit?.role === 'agent') return explicit
+      this.agentActiveId = null
+    }
+    const newest = [...this.contexts].reverse().find((c) => c.role === 'agent') ?? null
+    if (newest) this.agentActiveId = newest.id
+    return newest
+  }
+
+  createAgentWindow(targets: string[] = []): WindowContext | null {
+    if (!this.deps.createWindow) return null
+    const ctx = this.deps.createWindow(targets, 'agent')
+    this.agentActiveId = ctx.id
+    return ctx
+  }
+
+  markAgentActive(ctx: WindowContext): void {
+    this.agentActiveId = ctx.id
+  }
+
   allTabs(): TabInfo[] {
     const out: TabInfo[] = []
     for (const ctx of this.contexts) {
@@ -158,8 +223,7 @@ export class WindowManager implements WindowRegistry {
     return out
   }
 
-  /** 向所有窗口的 chrome / overlay / 内部页面标签广播(插件事件、设置变更) */
-  broadcast(channel: string, payload: unknown): void {
+  /** 向所有窗口的 chrome / overlay / 内部页面标签广播(插件事件、设置变更) */  broadcast(channel: string, payload: unknown): void {
     for (const ctx of this.contexts) {
       if (ctx.window.isDestroyed()) continue
       const wc = ctx.window.webContents
@@ -173,5 +237,6 @@ export class WindowManager implements WindowRegistry {
     this.contexts = this.contexts.filter((c) => c !== ctx)
     if (this.lastFocusedId === ctx.id) this.lastFocusedId = null
     if (this.explicitActiveId === ctx.id) this.explicitActiveId = null
+    if (this.agentActiveId === ctx.id) this.agentActiveId = null
   }
 }

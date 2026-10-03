@@ -18,7 +18,7 @@ export interface PluginUiContribution {
   /**
    * 具名插槽:组件自行订阅 browserAPI 响应标签变化。
    * - `addressbar-trailing`:地址栏内的尾部区域(书签星标等)
-   * - `toolbar`:工具栏按钮区(在地址栏与恢复标签按钮之间)
+   * - `toolbar`:工具栏按钮区(在地址栏与分屏/设置按钮之间)
    */
   slots?: Partial<Record<PluginSlot, Component[]>>
   overlays?: PluginOverlayContribution[]

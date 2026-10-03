@@ -14,6 +14,7 @@ import type {
   PluginTabApi
 } from '@shared/plugins'
 import type { WebContents } from 'electron'
+import type { AgentSignal } from '@shared/agentState'
 import type { Suggestion, SuggestRow } from '@shared/types'
 import { matchHotkey } from '@shared/shortcuts'
 import type { HotkeySpec, KeyInputLike } from '@shared/shortcuts'
@@ -87,6 +88,8 @@ export class PluginKernel {
   private uiHost: PluginUiHost | null = null
   private tabProvider: () => PluginTabApi = () => EMPTY_TABS
   private pageApi: PluginPageApi = EMPTY_PAGE_API
+  /** 代理状态上报的落地端(main/agentNotify.ts);窗口就绪后由 index.ts 注入 */
+  private agentReporter: ((report: AgentSignal & { tabId: number }) => void) | null = null
 
   constructor() {
     this.stateStore = createStore<{ version: number; disabled: string[] }>('plugins.json', {
@@ -146,6 +149,23 @@ export class PluginKernel {
   /** 注入页面执行 API(标签视图创建后由 index.ts 接线) */
   setPageApi(api: PluginPageApi): void {
     this.pageApi = api
+  }
+
+  /**
+   * 注入代理状态上报的落地端(`main/agentNotify.ts`)。必须在第一个终端会话 `attach` 之前调用
+   * (窗口就绪即调),否则那条信号会被丢掉 —— 所以未注入时**不静默**:打一条 warn。
+   */
+  setAgentReporter(fn: (report: AgentSignal & { tabId: number }) => void): void {
+    this.agentReporter = fn
+  }
+
+  /** `ctx.service.agent.report` 的实现 */
+  reportAgentState(report: AgentSignal & { tabId: number }): void {
+    if (!this.agentReporter) {
+      logError('代理状态上报落地端未就绪,信号被丢弃', report.tabId, report.state)
+      return
+    }
+    this.agentReporter(report)
   }
 
   /** 由 TabManager 登记标签页 webContents,使其可获得内容注入 */
@@ -488,6 +508,9 @@ class PluginContextImpl implements PluginContext {
         this.disposers.push(off)
         return off
       }
+    },
+    agent: {
+      report: (report) => this.kernel.reportAgentState(report)
     }
   }
 

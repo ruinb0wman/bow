@@ -11,6 +11,7 @@ import { BrowserWindow, WebContentsView } from 'electron'
 import type { WebContents } from 'electron'
 import { join } from 'node:path'
 import type { OverlayContent, OverlayContentId, OverlayPlacement, OverlayShowMessage, SuggestPayload } from '@shared/types'
+import { findBarRect } from '@shared/find'
 import { rendererEntry } from './rendererEntry'
 import { log, logError } from './logger'
 import type { TabManager } from './tabManager'
@@ -45,8 +46,9 @@ export class OverlayManager {
   show(content: OverlayContent | null): void {
     if (content == null) {
       if (this.current == null) return
-      // modal 关闭后焦点还给活动标签页;suggest 场景焦点本就在 chrome(地址栏),不动
-      const refocusTab = this.current.placement === 'full'
+      // modal 关闭后焦点还给活动标签页;find(页内查找条)关闭后也一样 —— 键盘该回到页面。
+      // suggest 场景焦点本就在 chrome(地址栏),不动
+      const refocusTab = this.current.placement === 'full' || this.current.id === 'find'
       this.current = null
       if (this.view && !this.view.webContents.isDestroyed()) {
         // 视图只是隐藏、并不销毁,需顺手关掉它的 DevTools 窗口,避免留下孤立窗口
@@ -76,8 +78,9 @@ export class OverlayManager {
     this.layout()
     // 首次打开时页面可能还在加载,发送由 did-finish-load 兜底重放
     if (!first) this.send('overlay:show', this.showMessage())
-    // modal 弹层需要接管键盘/输入焦点;suggest 则保留 chrome 地址栏焦点
-    if (content.placement === 'full') this.view!.webContents.focus()
+    // modal 弹层需要接管键盘/输入焦点;页内查找条也需要(输入框就在它里面);
+    // suggest 则保留 chrome 地址栏焦点。
+    if (content.placement === 'full' || content.id === 'find') this.view!.webContents.focus()
     log('Overlay 显示', content.id)
   }
 
@@ -87,12 +90,20 @@ export class OverlayManager {
     this.window.contentView.addChildView(this.view)
   }
 
-  /** 按 placement 切视图 bounds:full 铺满窗口;below-chrome 从地址栏底边起始 */
+  /** 按 placement 切视图 bounds:full 铺满窗口;page-top-right 贴页面区右上角;below-chrome 从地址栏底边起始 */
   layout(): void {
     if (this.view == null || this.window.isDestroyed()) return
     const [w, h] = this.window.getContentSize()
     if (this.current == null || this.current.placement === 'full') {
       this.view.setBounds({ x: 0, y: 0, width: w, height: h })
+      return
+    }
+    if (this.current.placement === 'page-top-right') {
+      // ⚠️ 必须**刚好**包住查找条:WebContentsView 没有点击穿透(见顶部注释),
+      // 铺满会把右半页的点击全吃掉。几何算法在 @shared/find(有单测)。
+      this.view.setBounds(
+        findBarRect({ windowWidth: w, windowHeight: h, chromeHeight: this.tabs.getChromeHeight() })
+      )
       return
     }
     const bandY = this.bandTopOf()
@@ -159,6 +170,8 @@ export class OverlayManager {
         this.view!.setVisible(true)
         this.layout()
         this.send('overlay:show', this.showMessage())
+        // 查找条首开时视图可能刚创建:show() 里的 focus() 会早于加载完成,这里补一次
+        if (this.current.id === 'find') wc.focus()
       }
     })
     wc.on('did-fail-load', (_e, code, desc) => {

@@ -14,7 +14,8 @@
     },
     "files": [
       "out/**/*",
-      "package.json"
+      "package.json",
+      "integrations/**/*"
     ],
     "asarUnpack": [
       "**/node_modules/node-pty/**"
@@ -59,11 +60,13 @@
     "mcp": "npm run build && node scripts/open-bow.mjs stdio",
     "mcp:http": "npm run build && node scripts/open-bow.mjs http",
     "mcp:install": "node scripts/install-pi-mcp.mjs",
+    "pi:install-status": "node scripts/install-pi-agent-state.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
     "test:mcp": "node scripts/mcp-smoke.mjs",
     "test:mcp:http": "node scripts/mcp-smoke.mjs --http",
     "test:e2e:device": "node scripts/e2e-device-inspect.mjs",
+    "test:e2e:agent": "node scripts/e2e-agent-status.mjs",
     "test:e2e:quark": "node scripts/e2e-quark-headers.mjs"
   },
   "dependencies": {

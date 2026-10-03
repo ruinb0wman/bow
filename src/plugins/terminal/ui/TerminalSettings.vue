@@ -1,7 +1,10 @@
 <script setup lang="ts">
 /**
- * 终端设置分区(设置页 → 终端):外观(字体族 / 字号 / 滚动缓冲)+ shell 配置列表。
+ * 终端设置分区(设置页 → 终端):外观(字体族 / 字号 / 滚动缓冲)+ shell 配置列表 + Pi 状态联动。
  * 全部即时保存,没有保存按钮 —— 与其它插件分区一致。
+ *
+ * `data-bridge-state` / `data-bridge-action` 是给 E2E(`scripts/e2e-agent-status.mjs`)用的钩子:
+ * 一键接入是个「点一下真的会写文件到用户家目录」的动作,靠文案选按钮太脆。
  */
 import { computed, onMounted, ref } from 'vue'
 import { Plus, Trash2 } from 'lucide-vue-next'
@@ -9,10 +12,17 @@ import {
   FONT_SIZE_RANGE,
   SCROLLBACK_RANGE,
   formatArgsLine,
+  isWslShell,
   newProfileId,
   parseArgsLine
 } from '@plugins/terminal/shared'
-import type { TerminalCandidate, TerminalProfile, TerminalSettings } from '@plugins/terminal/shared'
+import type {
+  PiBridgeResult,
+  PiBridgeStatus,
+  TerminalCandidate,
+  TerminalProfile,
+  TerminalSettings
+} from '@plugins/terminal/shared'
 
 const api = window.browserAPI
 
@@ -21,6 +31,10 @@ const candidates = ref<TerminalCandidate[]>([])
 const choice = ref('')
 
 const profiles = computed(() => settings.value?.profiles ?? [])
+/** 配了 WSL 的终端配置的名字(有它就说明用户会把 pi 跑在 WSL2 里 → 显示那条「装进 WSL2」的说明) */
+const wslProfiles = computed(() =>
+  profiles.value.filter((p) => isWslShell(p.shell ?? '')).map((p) => p.name)
+)
 const fontFamilyDraft = ref('')
 const argsDraft = ref<Record<string, string>>({})
 
@@ -88,7 +102,69 @@ onMounted(async () => {
   settings.value = await invoke<TerminalSettings>('getSettings')
   syncDrafts()
   candidates.value = await invoke<TerminalCandidate[]>('listCandidates')
+  await refreshBridge()
 })
+
+// ---------- Pi 状态联动(把状态桥扩展装进 pi)----------
+
+const bridge = ref<PiBridgeStatus | null>(null)
+const bridgeBusy = ref(false)
+const bridgeMessage = ref('')
+
+/** 界面上那句话:先报「能不能做」,再报「做没做过」 */
+async function refreshBridge(): Promise<void> {
+  bridge.value = await invoke<PiBridgeStatus>('piBridgeStatus')
+}
+
+function bridgeStateText(): string {
+  const b = bridge.value
+  if (!b) return '检查中…'
+  if (!b.sourceAvailable) return '不可用:这个构建里没有扩展源码(打包漏配 build.files)'
+  if (b.foreign) return '目标文件已存在且不是 bow 装的'
+  if (!b.installed) return b.agentDirExists ? '未接入' : '未接入(没检测到 pi 的 agent 目录,也可以先装)'
+  return b.upToDate ? '已接入(最新)' : '已接入,有新版本可更新'
+}
+
+function bridgeButtonText(): string {
+  const b = bridge.value
+  if (!b?.installed) return '安装'
+  if (b.foreign) return '覆盖'
+  return b.upToDate ? '重装' : '更新'
+}
+
+async function runBridge(kind: 'install' | 'uninstall'): Promise<void> {
+  if (bridgeBusy.value) return
+  bridgeBusy.value = true
+  bridgeMessage.value = ''
+  try {
+    // 覆盖「不是 bow 装的」同名文件需要显式 force —— 界面上那个按钮写明了「覆盖」
+    const force = bridge.value?.foreign === true
+    const method = kind === 'install' ? 'piBridgeInstall' : 'piBridgeUninstall'
+    const result = await invoke<PiBridgeResult>(method, { force })
+    bridge.value = result.status
+    bridgeMessage.value = result.ok ? result.message : (result.status.error ?? result.message)
+  } finally {
+    bridgeBusy.value = false
+  }
+}
+
+/** 「WSL2 请执行这条命令」里的命令复制(渲染层的 navigator.clipboard 在内部页面可用,见 DeviceInspectPanel) */
+const wslCopied = ref(false)
+let wslCopiedTimer: number | undefined
+async function copyWslCommand(): Promise<void> {
+  const command = bridge.value?.wsl?.command
+  if (!command) return
+  try {
+    await navigator.clipboard.writeText(command)
+    wslCopied.value = true
+    if (wslCopiedTimer) window.clearTimeout(wslCopiedTimer)
+    wslCopiedTimer = window.setTimeout(() => {
+      wslCopied.value = false
+    }, 2000)
+  } catch {
+    bridgeMessage.value = '复制失败,请手动选中上面的命令'
+  }
+}
 </script>
 
 <template>
@@ -215,6 +291,69 @@ onMounted(async () => {
         </div>
       </div>
     </div>
+
+    <div class="set-row set-col">
+      <span class="set-label">Pi 状态联动</span>
+      <div class="term-bridge">
+        <div class="pbm-tools hint">
+          终端里的 <strong>pi</strong> 会把「正在执行 / 等待你确认 / 已完成」显示成标签角标与窗口底部居中通知
+          (点通知直接进入对应标签)。为此需要把 bow 的状态桥扩展装进 pi 的扩展目录 ——
+          点下面这个按钮就行,装完在 pi 里重开或 <code>/reload</code> 生效。
+          不装也有一半:pi 自己在设置里打开 <code>terminal.showTerminalProgress</code> 就只有「正在执行」角标。
+        </div>
+        <div class="term-bridge-row">
+          <span
+            class="term-bridge-state"
+            data-bridge-state
+            :class="{ ok: bridge?.upToDate, warn: !!bridge && !bridge.upToDate }"
+          >
+            {{ bridgeStateText() }}
+          </span>
+          <button
+            class="btn"
+            data-bridge-action="install"
+            :disabled="bridgeBusy || !bridge?.sourceAvailable"
+            :title="bridge?.foreign ? '目标文件不是 bow 装的,点击会覆盖它' : '把状态桥扩展写进 pi 的扩展目录'"
+            @click="runBridge('install')"
+          >
+            {{ bridgeButtonText() }}
+          </button>
+          <button
+            v-if="bridge?.installed"
+            class="btn danger"
+            data-bridge-action="uninstall"
+            :disabled="bridgeBusy"
+            title="删除 bow 装的那个扩展文件(不动别的扩展)"
+            @click="runBridge('uninstall')"
+          >
+            卸载
+          </button>
+        </div>
+        <div v-if="bridge" class="term-bridge-path">{{ bridge.target }}</div>
+        <div v-if="bridge?.wsl && wslProfiles.length" class="term-bridge-wsl" data-bridge-wsl>
+          <div class="pbm-tools hint">
+            <strong>如果使用 WSL2,请执行以下命令将扩展安装到 WSL2 中</strong>
+            —— 上面的按钮装进的是 bow 这个系统里的家目录(<code>{{ bridge.agentDir }}</code>),
+            而跑在 WSL2 里的 pi 读的是发行版的家目录,它看不到刚装的那份
+            (检测到你的终端配置 <code>{{ wslProfiles.join(' / ') }}</code> 用的是 <code>wsl.exe</code>)。
+            复制下面这条命令,到 WSL2 的终端里执行:
+          </div>
+          <div class="term-bridge-cmd">
+            <code data-bridge-wsl-command>{{ bridge.wsl.command }}</code>
+            <button
+              class="btn"
+              data-bridge-action="copy-wsl"
+              title="复制这条命令,粘到 WSL2 终端里执行"
+              @click="copyWslCommand()"
+            >
+              {{ wslCopied ? '已复制' : '复制' }}
+            </button>
+          </div>
+          <div class="pbm-tools hint">装完在 WSL2 里的 pi 中重开或 <code>/reload</code> 生效。</div>
+        </div>
+        <div v-if="bridgeMessage || bridge?.error" class="pbm-tools hint">{{ bridgeMessage || bridge?.error }}</div>
+      </div>
+    </div>
   </template>
 </template>
 
@@ -288,5 +427,68 @@ onMounted(async () => {
 .term-candidates {
   flex: 1;
   min-width: 0;
+}
+
+.term-bridge {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.term-bridge-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.term-bridge-state {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+/* 状态色与标签角标一致:已接入=绿、待处理=黄(见 src/renderer/src/style.css 的 .tab-agent) */
+.term-bridge-state.ok {
+  color: #7ec96a;
+}
+
+.term-bridge-state.warn {
+  color: #e2b93d;
+}
+
+.term-bridge-path {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--fg-dim);
+  overflow-wrap: anywhere;
+}
+
+.term-bridge-wsl {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 命令要能一眼看清并整行选中:横向可滚,不折行打断路径 */
+.term-bridge-cmd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.term-bridge-cmd > code {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg2);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--fg);
+  overflow-x: auto;
+  white-space: pre;
+  user-select: all;
 }
 </style>

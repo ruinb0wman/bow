@@ -127,6 +127,25 @@ export class FakeWc extends EventEmitter {
   throwOn = new Set<string>()
   /** 收到的原生按键事件 */
   sentEvents: unknown[] = []
+  /** findInPage 调用记录(页内查找) */
+  findCalls: Array<{ text: string; options?: unknown }> = []
+  /** stopFindInPage 的 action 序列 */
+  stopFindCalls: string[] = []
+  private nextFindId = 1
+
+  findInPage(text: string, options?: unknown): number {
+    this.findCalls.push({ text, options })
+    return this.nextFindId++
+  }
+
+  stopFindInPage(action: string): void {
+    this.stopFindCalls.push(action)
+  }
+
+  /** 模拟一次 'found-in-page'(页内查找结果) */
+  emitFoundInPage(result: unknown): void {
+    this.emit('found-in-page', {}, result)
+  }
 
   isDestroyed(): boolean {
     return this.destroyed

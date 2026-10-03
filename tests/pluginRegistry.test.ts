@@ -81,9 +81,9 @@ describe('McpHost', () => {
     const h = new McpHost()
     h.reserve(['browser_navigate'])
     expect(() => h.registerTool(spec('p', 'browser_navigate'))).toThrow(/核心冲突/)
-    h.registerTool(spec('p', 'adblock_stats'))
-    expect(() => h.registerTool(spec('q', 'adblock_stats'))).toThrow(/重复/)
-    expect(h.names()).toEqual(['adblock_stats'])
+    h.registerTool(spec('p', 'demo_tool'))
+    expect(() => h.registerTool(spec('q', 'demo_tool'))).toThrow(/重复/)
+    expect(h.names()).toEqual(['demo_tool'])
   })
 
   it('attach 前缓冲、attach 时补注册,之后即时注册', () => {

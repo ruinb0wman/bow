@@ -223,6 +223,7 @@ export function buildSpawnSpec(profile: TerminalProfile, opts: { homedir: string
 /**
  * Electron 进程里继承来的这几个变量会污染 shell(典型表现:shell 里执行 `node` 或再起 Electron 时行为异常),
  * 必须剔除;`TERM`/`COLORTERM` 则要显式补上,否则 WSL/Git Bash 里的程序按无终端处理,不输出颜色。
+ * 另外补一个 `BOW_TERMINAL=1`(终端插件与 pi 桥接扩展之间的约定)。
  */
 const DROPPED_ENV_KEYS = new Set(['ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ATTACH_CONSOLE', 'NODE_OPTIONS'])
 
@@ -235,7 +236,49 @@ export function cleanEnv(env: Record<string, string | undefined>): Record<string
   }
   out.TERM = 'xterm-256color'
   out.COLORTERM = 'truecolor'
+  // 告诉终端里的编码代理「你在 bow 的终端里」:pi 的桥接扩展用它做门禁
+  // (见 `integrations/pi/bow-agent-state.ts`),别的终端不会收到这条,所以不会乱发 OSC。
+  out.BOW_TERMINAL = '1'
   return out
+}
+
+/** 「你在 bow 的终端里」标记名(pi 桥接扩展的门禁;见 cleanEnv) */
+export const BOW_TERMINAL_ENV = 'BOW_TERMINAL'
+
+/** 这个 shell 是不是 WSL(`wsl.exe` / 带全路径的 `wsl.exe` / 没有后缀的 `wsl`) */
+export function isWslShell(shell: string): boolean {
+  const base = shell.trim().split(/[\\/]/).pop()?.toLowerCase() ?? ''
+  return base === 'wsl' || base === 'wsl.exe'
+}
+
+/**
+ * 把 spawn 环境补成「桥接扩展能认出 bow」的形状。
+ *
+ * 为什么要为 wsl.exe 额外加一手:Windows 侧进程的环境变量**默认不会进 WSL 发行版**,
+ * 只有列进 `WSLENV` 的才会被带进去。实测(wsl.exe 从 Windows 侧启动、命令是 `--cd ~ -e zsh -lc`):
+ *
+ * | 只看 wsl.exe 的 env | 加上 WSLENV | 结果 |
+ * | --- | --- | --- |
+ * | `BOW_TERMINAL=1` | — | 发行版里是空 |
+ * | `BOW_TERMINAL=1` | `WSLENV=BOW_TERMINAL` | 发行版里是 `1` |
+ * | `BOW_TERMINAL=1` | `WSLENV=PATH/l:PROXY/p:BOW_TERMINAL` | 发行版里是 `1`(用户原有的条目原样保留) |
+ *
+ * 不带 flag 的条目是「原样共享」(带 `/p` 会做路径翻译;我们的值是 `1`,不需要)。
+ * 不是 wsl.exe 的 profile 一律原样返回(同一个对象引用),不引入任何额外变量。
+ */
+export function withBowTerminalEnv(env: Record<string, string>, shell: string): Record<string, string> {
+  if (!isWslShell(shell)) return env
+  const base = env[BOW_TERMINAL_ENV] ?? '1'
+  const entries = (env.WSLENV ?? '')
+    .split(':')
+    .filter(Boolean)
+  // 已经列过(哪怕带 flag,如 `BOW_TERMINAL/u`)就不重复加
+  const listed = entries.some((entry) => entry.split('/')[0] === BOW_TERMINAL_ENV)
+  return {
+    ...env,
+    [BOW_TERMINAL_ENV]: base,
+    ...(listed ? {} : { WSLENV: [...entries, BOW_TERMINAL_ENV].join(':') })
+  }
 }
 
 // ---------- 回放缓冲 ----------
@@ -469,4 +512,60 @@ export interface TerminalExitMessage {
 export interface TerminalSessionClosedMessage {
   tabId: number
   reason: string
+}
+
+// ---------- pi 状态桥(设置页「一键接入」的跨端契约)----------
+
+/**
+ * 终端里的 pi 把状态写成 OSC(`@shared/agentState`),而**这条 OSC 得由 pi 进程里的一个扩展发出** ——
+ * 所以「让 pi 认识 bow 的终端」这件事需要往 pi 的扩展目录里放一个文件。
+ * 设置页 → 终端 → 「Pi 状态联动」的安装/卸载按钮就是在做这件事。
+ *
+ * 契约放 shared 而不放 `./piBridge` 的原因:`./piBridge` 是主进程侧模块(用 node:path + 注入的 fs),
+ * 渲染层不该 import 它;设置页要的只是下面这几个类型。
+ * 两侧共享的不变式(文件名 `bow-agent-state.ts` / 归属标记 `managed by bow` / 源路径
+ * `integrations/pi/`)由 `tests/piBridgeExtension.test.ts` 钉住 —— 改一处必须同步改脚本与这里。
+ */
+export interface PiBridgeStatus {
+  /** pi 的 agent 目录(默认 `~/.pi/agent`,可被 `PI_CODING_AGENT_DIR` 覆盖) */
+  agentDir: string
+  /** 安装目标:`<agentDir>/extensions/bow-agent-state.ts` */
+  target: string
+  /** 源文件:`<appPath>/integrations/pi/bow-agent-state.ts` */
+  source: string
+  /** pi 的 agent 目录存在吗(pi 装过没有) */
+  agentDirExists: boolean
+  installed: boolean
+  /** 已安装内容与 bow 自带的一致 */
+  upToDate: boolean
+  /** 目标存在但不是 bow 装的(没有归属标记) */
+  foreign: boolean
+  /** 读得到 bow 自带的源(打包漏配 `build.files` 时是 false) */
+  sourceAvailable: boolean
+  error?: string
+  /**
+   * 「bow 在 Windows、pi 跑在 WSL2」时给的那行命令(设置页显示 + 可复制)。
+   * 不适用时没有这个字段:bow 自己就跑在同一个系统里、或平台不是 Windows、或路径算不出来。
+   */
+  wsl?: PiBridgeWslHint
+}
+
+/** 把扩展也装进 WSL2 发行版的一行命令(见 `piBridge.wslHint`) */
+export interface PiBridgeWslHint {
+  /** 源:Windows 家目录里那份(`C:\Users\…` 在 WSL 里的样子,即 `/mnt/<盘>/…`) */
+  from: string
+  /** 目标:发行版里的扩展目录(`~` 在 WSL2 终端里就是发行版的家目录) */
+  to: string
+  /** 直接可复制粘贴进 WSL2 终端的一条命令 */
+  command: string
+}
+
+export type PiBridgeAction = 'installed' | 'updated' | 'unchanged' | 'removed' | 'absent' | 'refused' | 'failed'
+
+export interface PiBridgeResult {
+  ok: boolean
+  action: PiBridgeAction
+  /** 给用户看的一句话(直接显示在设置页里) */
+  message: string
+  status: PiBridgeStatus
 }

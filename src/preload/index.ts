@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import type {
+  FindStateMessage,
   OverlayContent,
   OverlayContentId,
   OverlayEvent,
@@ -11,6 +12,7 @@ import type {
   TabInfo
 } from '../shared/types'
 import type { PluginInfo } from '../shared/plugins'
+import type { AgentToastItem } from '../shared/agentState'
 import type { TabGroupInfo } from '../shared/types'
 import type { LayoutPreset, PaneDir } from '../shared/split'
 
@@ -18,6 +20,11 @@ export interface PluginHostEvent {
   id: string
   event: string
   args?: unknown
+}
+
+/** 主进程 → 通知视图:当前通知栈(空数组即收起) */
+export interface ToastShowMessage {
+  items: AgentToastItem[]
 }
 
 export interface BrowserAPI {
@@ -28,8 +35,6 @@ export interface BrowserAPI {
   activateTab: (id: number) => Promise<TabInfo | null>
   listTabs: () => Promise<TabInfo[]>
   getActiveTab: () => Promise<TabInfo | null>
-  // 激活最近浏览的普通页面标签(设置页的「屏蔽元素」等需要回到真实页面执行)
-  activateLastBrowsingTab: () => Promise<TabInfo | null>
   // 内部页面认领自己所属的标签 id(终端页据此绑定会话);不是标签页(null)的返回 null
   getSelfTabId: () => Promise<number | null>
   // 剪贴板(经主进程,避免 renderer 侧 clipboard 的权限/secure context 差异)
@@ -85,6 +90,23 @@ export interface BrowserAPI {
   // 以下仅 overlay 页面使用
   onOverlayShow: (cb: (msg: OverlayShowMessage | null) => void) => () => void
   overlayEmit: (id: OverlayContentId, event: string, args?: unknown) => Promise<boolean>
+  /**
+   * 仅 overlay 的查找条使用:主进程下行查找结果 / 重新聚焦信号。
+   * 结果不走 `onOverlayShow`(重发整套 payload 会重排浮层并抢焦点,见 `main/findBar.ts`)。
+   */
+  onFindState: (cb: (msg: FindStateMessage) => void) => () => void
+  /**
+   * 以下仅 toast 页面(底部居中通知)使用。
+   * `reportHeight` 是必需的:通知视图**不能铺满窗口**(WebContentsView 没有点击穿透,
+   * 见 main/toasts.ts),主进程按渲染层量出来的高度精确设 bounds。
+   */
+  toasts: {
+    onShow: (cb: (msg: ToastShowMessage) => void) => () => void
+    reportHeight: (height: number) => Promise<boolean>
+    /** 点卡片:进入该通知对应的标签 */
+    activate: (id: string) => Promise<boolean>
+    dismiss: (id: string) => Promise<boolean>
+  }
   // 插件调用面
   plugins: {
     list: () => Promise<PluginInfo[]>
@@ -117,7 +139,6 @@ const api: BrowserAPI = {
   activateTab: (id) => ipcRenderer.invoke('tab:activate', id),
   listTabs: () => ipcRenderer.invoke('tab:list'),
   getActiveTab: () => ipcRenderer.invoke('tab:active'),
-  activateLastBrowsingTab: () => ipcRenderer.invoke('tab:activate-last-browsing'),
   getSelfTabId: () => ipcRenderer.invoke('tab:self'),
   readClipboardText: () => ipcRenderer.invoke('clipboard:read-text'),
   writeClipboardText: (text) => ipcRenderer.invoke('clipboard:write-text', text),
@@ -145,7 +166,14 @@ const api: BrowserAPI = {
   showOverlay: (content) => ipcRenderer.invoke('ui:overlay', content),
   onOverlayEvent: (cb) => subscribe('overlay-event', cb),
   onOverlayShow: (cb) => subscribe('overlay:show', cb),
+  onFindState: (cb) => subscribe('find:state', cb),
   overlayEmit: (id, event, args) => ipcRenderer.invoke('ui:overlay-event', { id, event, args }),
+  toasts: {
+    onShow: (cb) => subscribe('toast:show', cb),
+    reportHeight: (height) => ipcRenderer.invoke('toast:height', height),
+    activate: (id) => ipcRenderer.invoke('toast:activate', id),
+    dismiss: (id) => ipcRenderer.invoke('toast:dismiss', id)
+  },
   plugins: {
     list: () => ipcRenderer.invoke('plugins:list'),
     setEnabled: (id, enabled) => ipcRenderer.invoke('plugins:set-enabled', id, enabled),

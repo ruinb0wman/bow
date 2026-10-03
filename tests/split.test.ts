@@ -2,15 +2,18 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  FOCUS_RING,
   MAX_GROUP_PANES,
   MAX_LAYOUT_PRESETS,
   MIN_PANE,
   RATIO_MAX,
   RATIO_MIN,
   SPLIT_GAP,
+  SPLIT_INSET,
   axisOfDir,
   clampRatio,
   computeLayout,
+  focusRingBars,
   hasPane,
   instantiateShape,
   isLeadingDir,
@@ -366,6 +369,73 @@ describe('computeLayout', () => {
     })
     expect(geo.panes[0].rect.width).toBe(490)
     expect(geo.dividers[0]).toEqual({ x: 490, y: 0, width: 20, height: 100 })
+  })
+})
+
+describe('focusRingBars(聚焦窗格的高亮边框)', () => {
+  const area = { x: 0, y: 0, width: 1004, height: 400 }
+
+  it('单窗格(rect === area)→ 没有可画的边', () => {
+    expect(focusRingBars(area, area)).toEqual([])
+  })
+
+  it('左右分屏聚焦左半 → 只有靠缝的一条竖线', () => {
+    const bars = focusRingBars({ x: 0, y: 0, width: 500, height: 400 }, area)
+    expect(bars).toEqual([{ x: 500, y: 0, width: FOCUS_RING, height: 400 }])
+  })
+
+  it('左右分屏聚焦右半 → 竖线在缝的另一半(与聚焦左半互斥)', () => {
+    const bars = focusRingBars({ x: 504, y: 0, width: 500, height: 400 }, area)
+    expect(bars).toEqual([{ x: 502, y: 0, width: FOCUS_RING, height: 400 }])
+  })
+
+  it('嵌套:只产出有空间的边(右半的上半 → 左右两条,上下贴边界不产出)', () => {
+    const bars = focusRingBars({ x: 504, y: 0, width: 248, height: 400 }, area)
+    expect(bars).toEqual([
+      { x: 502, y: 0, width: FOCUS_RING, height: 400 },
+      { x: 752, y: 0, width: FOCUS_RING, height: 400 }
+    ])
+  })
+
+  it('贴上边(组顶部)、下边有缝 → 只有底条', () => {
+    const bars = focusRingBars({ x: 0, y: 0, width: 300, height: 398 }, { x: 0, y: 0, width: 300, height: 800 })
+    expect(bars).toEqual([{ x: 0, y: 398, width: 300, height: FOCUS_RING }])
+  })
+
+  it('内容区有 y 偏移时按 area 判空间:pane 贴 area 顶 → 只有底条', () => {
+    const bars = focusRingBars({ x: 0, y: 30, width: 300, height: 398 }, { x: 0, y: 30, width: 300, height: 800 })
+    expect(bars).toEqual([{ x: 0, y: 428, width: 300, height: FOCUS_RING }])
+  })
+
+  it('area 内下移的窗格 → 顶条 + 底条都在(按 area 判,不按 0 判)', () => {
+    const bars = focusRingBars({ x: 0, y: 428, width: 300, height: 372 }, { x: 0, y: 30, width: 300, height: 800 })
+    expect(bars).toEqual([
+      { x: 0, y: 426, width: 300, height: FOCUS_RING },
+      { x: 0, y: 800, width: 300, height: FOCUS_RING }
+    ])
+  })
+
+  it('分屏内容区四周留 SPLIT_INSET 后四边都有条(外边框也能高亮)', () => {
+    // 主进程:分屏组的 area 内缩 SPLIT_INSET;渲染层:拿**窗口内容区**当 area 调 focusRingBars
+    const w = 1004
+    const h = 400
+    const top = 60
+    const area = {
+      x: SPLIT_INSET,
+      y: top + SPLIT_INSET,
+      width: w - SPLIT_INSET * 2,
+      height: h - top - SPLIT_INSET * 2
+    }
+    const geo = computeLayout(row(leaf(1), leaf(2)), area, { focusedTabId: 1 })
+    const pane = geo.panes[0].rect
+    const bars = focusRingBars(pane, { x: 0, y: top, width: w, height: h - top })
+    expect(bars).toHaveLength(4)
+    const atX = (x: number) => bars.find((b) => b.x === x && b.width === SPLIT_INSET)
+    const atY = (y: number) => bars.find((b) => b.y === y && b.height === SPLIT_INSET)
+    expect(atX(0)).toBeTruthy() // 左:贴窗口
+    expect(atY(top)).toBeTruthy() // 上:贴工具栏
+    expect(atX(geo.dividers[0].x)).toBeTruthy() // 右:贴缝的左半
+    expect(atY(h - SPLIT_INSET)).toBeTruthy() // 下:贴窗口
   })
 })
 

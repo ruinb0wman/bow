@@ -1,12 +1,15 @@
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, screen, shell } from 'electron'
 import { join } from 'node:path'
 import { TabManager } from './tabManager'
 import { OverlayManager } from './overlay'
 import { installCloseConfirm } from './closeConfirm'
+import { AgentNotify } from './agentNotify'
+import { ToastManager } from './toasts'
 import { registerIpc, wireWindowIpc } from './ipc'
 import { initStores, getSettingsStore } from './stores'
 import { setupDevTools } from './devtools'
 import { setupTabShortcuts } from './tabShortcuts'
+import { onTabActivated as onFindTabActivated, onTabClosed as onFindTabClosed, onTabNavigated as onFindTabNavigated } from './findBar'
 import { loadRendererEntry } from './rendererEntry'
 import { startMcpServer, CORE_MCP_TOOL_NAMES } from './mcp'
 import { applyBrowserIdentity } from './ua'
@@ -14,17 +17,32 @@ import { acquireSingletonLock } from './singleInstance'
 import { collectOpenTargets, defaultOpenTargetDeps } from './openArgs'
 import { PluginKernel } from './plugins/kernel'
 import { BUILTIN_PLUGINS } from './plugins/builtin'
-import { WindowManager } from './windows'
-import type { WindowContext } from './windows'
+import { AGENT_WINDOW_TITLE, WindowManager } from './windows'
+import type { WindowContext, WindowRole } from './windows'
 import { APP_DESKTOP_NAME } from '@shared/ua'
 import { IS_MCP, IS_MCP_STDIO, IS_MCP_HTTP, MCP_HTTP_PORT, MCP_HTTP_TOKEN, log, logError } from './logger'
 
-function createWindow(): BrowserWindow {
+/** agent 窗口相对聚焦窗口的级联偏移(轻标识:让 AI 的窗口不与用户的重叠) */
+const AGENT_CASCADE_OFFSET = 32
+
+/** agent 窗口的位置:相对当前聚焦窗口偏移,并夹在工作区内(避免开到屏幕外) */
+function agentCascadeBounds(): { x: number; y: number } | null {
+  const ref = windows?.focused()?.window
+  if (!ref || ref.isDestroyed()) return null
+  const b = ref.getBounds()
+  const area = screen.getDisplayMatching(b).workArea
+  const x = Math.min(b.x + AGENT_CASCADE_OFFSET, area.x + Math.max(0, area.width - 720))
+  const y = Math.min(b.y + AGENT_CASCADE_OFFSET, area.y + Math.max(0, area.height - 480))
+  return { x, y }
+}
+
+function createWindow(role: WindowRole = 'user'): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
     height: 820,
     minWidth: 720,
     minHeight: 480,
+    ...(role === 'agent' ? (agentCascadeBounds() ?? {}) : {}),
     frame: false,
     show: false,
     backgroundColor: '#1e1f24',
@@ -45,6 +63,11 @@ function createWindow(): BrowserWindow {
 /** 多窗口注册表(进程级);`null` 表示 whenReady 尚未完成 */
 let windows: WindowManager | null = null
 let kernel: PluginKernel
+/**
+ * 代理状态(终端里的 pi)落地端:`tabId → 角标 + 底部居中通知`。
+ * 进程级单例 —— 信号的权威身份 tabId 是全局唯一的,由它自己查表找到所属窗口。
+ */
+let agentNotify: AgentNotify
 
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
 // 本地 html 的相对资源(图片 / CSS / 普通脚本)本来就能加载,但 <script type="module"> 与 fetch
@@ -86,17 +109,18 @@ app.on('second-instance', (_e, argv, workingDirectory) => {
   const targets = collectOpenTargets(argv, app.isPackaged ? 1 : 2, defaultOpenTargetDeps(workingDirectory), {
     onSkip: (arg, reason) => log('忽略启动参数', arg, reason)
   })
-  createWindowContext(targets)
+  createWindowContext(targets, 'user')
 })
 
-/** 建一个窗口 + 它的 TabManager/OverlayManager,登记进注册表并接线 */
-function createWindowContext(targets: string[]): WindowContext {
-  const win = createWindow()
+/** 建一个窗口 + 它的 TabManager / OverlayManager / ToastManager,登记进注册表并接线 */
+function createWindowContext(targets: string[], role: WindowRole = 'user'): WindowContext {
+  const win = createWindow(role)
   const tabs = new TabManager(win, windows!.ids)
   const overlay = new OverlayManager(win, tabs)
-  const ctx = windows!.register(win, tabs, overlay)
+  const toasts = new ToastManager(win)
+  const ctx = windows!.register(win, tabs, overlay, toasts, role)
   wireWindowContext(ctx, targets)
-  log('创建窗口', ctx.id, targets.length > 0 ? `目标 ${targets.length} 个` : '(主页)')
+  log('创建窗口', ctx.id, role, targets.length > 0 ? `目标 ${targets.length} 个` : '(主页)')
   return ctx
 }
 
@@ -105,7 +129,14 @@ function createWindowContext(targets: string[]): WindowContext {
  * 之外的每一条约束都只有一处实现。
  */
 function wireWindowContext(ctx: WindowContext, targets: string[]): void {
-  const { window: win, tabs, overlay } = ctx
+  const { window: win, tabs, overlay, toasts } = ctx
+
+  // agent 窗口的轻标识:标题固定带后缀。chrome 页面的 document.title(index.html 的 <title>Bow</title>)
+  // 会同步到窗口标题,不拦掉的话 setTitle 会被覆盖 —— 所以只对 agent 窗口 preventDefault。
+  if (ctx.role === 'agent') {
+    win.on('page-title-updated', (e) => e.preventDefault())
+    win.setTitle(AGENT_WINDOW_TITLE)
+  }
 
   // 多标签时先弹确认框再关窗口(Alt+F4 / 自绘关闭按钮都汇聚到 close 事件)
   installCloseConfirm(ctx)
@@ -132,14 +163,38 @@ function wireWindowContext(ctx: WindowContext, targets: string[]): void {
   // 标签页 webContents → 内核内容注入宿主
   tabs.setPageTracker({ track: (wc) => kernel.trackPage(wc) })
 
-  // 标签生命周期 → 插件事件总线(历史等插件据此工作)
-  tabs.on('tab-navigated', (p) => kernel.emitEvent('tab:navigated', p))
+  // 标签生命周期 → 插件事件总线(历史等插件它们工作)
+  tabs.on('tab-navigated', (p) => {
+    kernel.emitEvent('tab:navigated', p)
+    // 页内查找:导航后文档重建,高亮已丢 —— 收起查找条
+    onFindTabNavigated(ctx, p.tabId)
+  })
   tabs.on('tab-created', (t) => kernel.emitEvent('tab:created', t))
-  tabs.on('tab-closed', (t) => kernel.emitEvent('tab:closed', t))
-  tabs.on('tab-activated', (t) => kernel.emitEvent('tab:activated', t))
+  tabs.on('tab-closed', (t) => {
+    kernel.emitEvent('tab:closed', t)
+    onFindTabClosed(ctx, t.id)
+  })
+  tabs.on('tab-activated', (t) => {
+    kernel.emitEvent('tab:activated', t)
+    // 页内查找:焦点切到了别的标签 → 收起(查找条与高亮都只对当前标签有效)
+    onFindTabActivated(ctx, t.id)
+  })
 
-  // 新建/关闭标签后把弹层重新置顶,防止新视图盖住已打开的弹层
-  tabs.on('tabs-changed', () => overlay.raise())
+  // 新建/关闭标签后把弹层重新置顶,防止新视图盖住已打开的弹层(通知视图同理)
+  tabs.on('tabs-changed', () => {
+    overlay.raise()
+    toasts.raise()
+  })
+
+  // 标签关闭 → 撤掉它的代理角标与通知(必须在主进程记,因为 TabManager 先摘 record 再发事件)
+  tabs.on('tab-closed', (tab) => agentNotify.tabClosed(tab.id))
+  // 窗口关闭 → 把本窗口所有标签的代理状态一并撤掉。
+  // 为什么不靠 tab-closed:**关窗口不会逐标签发 tab-closed**(视图被直接销毁了),
+  // 于是通知栈里会留着已死窗口的条目 —— 下一条通知进门时 apply() 还会去写那个已销毁的
+  // ToastManager。这里按窗口清一次,与 ToastManager.destroy() 是两回事(后者只收视图)。
+  win.on('closed', () => {
+    for (const tab of tabs.listTabs()) agentNotify.tabClosed(tab.id)
+  })
 
   // chrome 侧事件(chrome:tab-updated / tab:list-changed / groups:changed / chrome:page-focus)
   wireWindowIpc(ctx)
@@ -179,7 +234,17 @@ app.whenReady().then(async () => {
   kernel.installHooks()
   await kernel.activateEnabled()
 
-  windows = new WindowManager()
+  windows = new WindowManager({ createWindow: (targets, role) => createWindowContext(targets, role) })
+  agentNotify = new AgentNotify({
+    resolve: (tabId) => {
+      const hit = windows!.byTabId(tabId)
+      if (!hit) return null
+      return {
+        setBadge: (badge) => hit.ctx.tabs.setAgentState(tabId, badge),
+        toasts: hit.ctx.toasts
+      }
+    }
+  })
   // 快捷键需要「按键来源的窗口」,用惰性取值:此时 windows 已存在但还没有窗口
   setupTabShortcuts(
     () => windows!,
@@ -243,6 +308,8 @@ app.whenReady().then(async () => {
     }
   })
   kernel.setBroadcaster((channel, payload) => windows!.broadcast(channel, payload))
+  // 代理状态上报的落地端(终端插件经 `ctx.service.agent.report` 调它)
+  kernel.setAgentReporter((report) => agentNotify.report(report))
   kernel.setUiHost({
     // 插件停用:关掉**所有窗口**里属于它的浮层(每窗口一套 overlay)
     closePluginOverlays: (pluginId) => {
@@ -253,10 +320,11 @@ app.whenReady().then(async () => {
     }
   })
 
-  // 首个窗口:命令行 / 文件管理器传来的目标各开一个标签,否则开主页
-  createWindowContext(initialTargets)
+  // 首个窗口:命令行 / 文件管理器传来的目标各开一个标签,否则开主页。
+  // stdio 模式下浏览器是 MCP 客户端的子进程 —— 这个窗口就是 agent 的,标成 agent 角色。
+  createWindowContext(initialTargets, IS_MCP_STDIO ? 'agent' : 'user')
 
-  registerIpc(windows, kernel)
+  registerIpc(windows, kernel, agentNotify)
 
   if (IS_MCP_STDIO) {
     startMcpServer({ windows, kernel })

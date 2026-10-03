@@ -12,8 +12,10 @@ import type {
   SuggestRow
 } from '@shared/types'
 import type { PluginInfo } from '@shared/plugins'
+import type { AgentBadge } from '@shared/agentState'
 import type { PluginSlot } from './plugins/types'
 import { SETTINGS_URL } from '@shared/internalPages'
+import { focusRingBars } from '@shared/split'
 import { faviconLetter } from './lib/avatar'
 import {
   blurredSession,
@@ -35,7 +37,6 @@ import {
   Settings as SettingsIcon,
   Square,
   TriangleAlert,
-  Undo2,
   X
 } from 'lucide-vue-next'
 
@@ -103,6 +104,32 @@ const isSplitGroup = (g: TabGroupInfo): boolean => g.tabIds.length > 1
 /** 活动组的分隔条带:几何完全来自主进程(渲染层只画不重算) */
 const activeGroupDividers = computed(() => activeGroup.value?.dividers ?? [])
 
+/** chrome 渲染层的视口尺寸(= 窗口内容区 CSS px,与窗格 rect 同一坐标系) */
+const viewport = ref({ w: 0, h: 0 })
+
+/** 活动组里聚焦窗格的 rect;单窗格组没有「分屏边框」可谈 */
+const focusedPaneRect = computed(() => {
+  const g = activeGroup.value
+  if (!g || !isSplitGroup(g)) return null
+  return g.panes.find((p) => p.tabId === focusedTabId(g))?.rect ?? null
+})
+
+/**
+ * 聚焦窗格的高亮边框条:几何算法在 `shared/split.ts` 的纯函数里(渲染层不重算)。
+ * 条画在窗格 rect 之外 —— 只有窗格之间的缝隙里有空间,贴窗口的边不产出。
+ */
+const focusRing = computed(() => {
+  const r = focusedPaneRect.value
+  if (!r) return []
+  const area = {
+    x: 0,
+    y: chromeHeight.value,
+    width: viewport.value.w,
+    height: Math.max(0, viewport.value.h - chromeHeight.value)
+  }
+  return focusRingBars(r, area)
+})
+
 /** 组内成员标签(按 tabIds 顺序;标签刚被关掉时过滤掉取不到的) */
 function groupTabs(g: TabGroupInfo): TabInfo[] {
   return g.tabIds.map((id) => tabById.value.get(id)).filter((t): t is TabInfo => !!t)
@@ -128,6 +155,27 @@ const isGroupActive = (g: TabGroupInfo): boolean => !!activeTab.value && g.tabId
 const groupLoading = (g: TabGroupInfo): boolean => groupTabs(g).some((t) => t.loading)
 const groupCrashed = (g: TabGroupInfo): boolean => groupTabs(g).some((t) => t.crashed)
 const groupTitle = (t: TabInfo | undefined): string => (t?.crashed ? '页面崩溃' : t?.title || t?.url || '新标签页')
+
+/**
+ * 组内「AI 代理状态」的聚合角标(标签栏一项 = 一个组,状态要落在组上)。
+ * 优先级 blocked > working > done:分屏时任一半在等确认,整项就该是「等待确认」。
+ * 数据源是 `TabInfo.agent`(唯一写者是主进程,见 `shared/types.ts`)。
+ */
+const AGENT_BADGE_RANK: Record<AgentBadge, number> = { done: 1, working: 2, blocked: 3 }
+const AGENT_BADGE_TITLE: Record<AgentBadge, string> = {
+  working: 'AI 代理正在执行',
+  blocked: 'AI 代理等待确认(窗口底部有通知)',
+  done: 'AI 代理已完成'
+}
+
+function groupAgent(g: TabGroupInfo): AgentBadge | null {
+  let best: AgentBadge | null = null
+  for (const t of groupTabs(g)) {
+    const badge = t.agent
+    if (badge && (!best || AGENT_BADGE_RANK[badge] > AGENT_BADGE_RANK[best])) best = badge
+  }
+  return best
+}
 
 // ---------- 事件订阅 ----------
 const unsubs: Array<() => void> = []
@@ -208,6 +256,7 @@ onMounted(async () => {
 
   // chrome 高度上报(主进程据此布局 WebContentsView,分隔条也用它作起点)
   const report = (): void => {
+    viewport.value = { w: window.innerWidth, h: window.innerHeight }
     const height = Math.ceil(chromeRoot.value?.getBoundingClientRect().height ?? 0)
     chromeHeight.value = height
     void api.reportChromeHeight(height)
@@ -247,9 +296,6 @@ async function closeTab(id: number, e?: MouseEvent): Promise<void> {
   if (list.length === 0) await api.createTab('about:blank')
 }
 
-function restoreTab(): void {
-  void api.restoreTab()
-}
 
 // ---------- 分屏面板(chrome 是 owner,面板只回传事件) ----------
 function splitButtonRect(): SplitMenuPayload['rect'] {
@@ -601,6 +647,7 @@ onBeforeUnmount(() => {
             <TriangleAlert v-if="t.crashed" :size="10" />
             <template v-else>{{ faviconLetter(t.title) }}</template>
           </span>
+          <span v-if="groupAgent(g)" class="tab-agent" :class="`agent-${groupAgent(g)}`" :title="AGENT_BADGE_TITLE[groupAgent(g)!]"></span>
           <span v-if="groupLoading(g)" class="tab-spinner"></span>
           <button
             class="tab-close no-drag"
@@ -665,9 +712,6 @@ onBeforeUnmount(() => {
       >
         <Columns2 :size="16" />
       </button>
-      <button class="tool-btn no-drag" title="恢复刚刚关闭的标签 (Ctrl+Shift+T)" @click="restoreTab">
-        <Undo2 :size="14" />
-      </button>
       <button class="tool-btn no-drag" title="设置 (Ctrl+,)" @click="openSettings">
         <SettingsIcon :size="16" />
       </button>
@@ -683,6 +727,19 @@ onBeforeUnmount(() => {
         top: `${d.y}px`,
         width: `${d.width}px`,
         height: `${d.height}px`
+      }"
+    />
+
+    <!-- 聚焦窗格的边框:只有窗格之间的缝隙里有空间,贴窗口的四条边画不出来 -->
+    <div
+      v-for="(b, i) in focusRing"
+      :key="`fr-${i}`"
+      class="split-focus-bar"
+      :style="{
+        left: `${b.x}px`,
+        top: `${b.y}px`,
+        width: `${b.width}px`,
+        height: `${b.height}px`
       }"
     />
   </div>

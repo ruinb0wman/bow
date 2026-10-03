@@ -354,7 +354,7 @@ npm run typecheck && npm test
 
 ## 9. 范围外(本轮不做)
 
-- 插件工具(`adblock_*`、`browser_fullscreen_element` 等)的 strict 校验 —— 它们走 `kernel.mcp` 声明快照,改动面完全不同。
+- 插件工具(`device_*`、`browser_add_bookmark` 等)的 strict 校验 —— 它们走 `kernel.mcp` 声明快照,改动面完全不同。
 - `pressKey` 的渲染进程往返兜底(见 4 节「可选实验」)。
 - `navigate` 接受 `bow://` 内部页面 URL —— `isHttpUrl` 这道闸门是有意为之,不要放开。
 - 重写 `openUrl` 的统一入口语义。

@@ -20,8 +20,8 @@ function names(list: unknown[]): string[] {
 
 const registry: SlotContribution[] = [
   src('bookmarks', { 'addressbar-trailing': [A], toolbar: [A] }),
-  src('adblock', { toolbar: [B] }),
-  src('element-fullscreen', { toolbar: [C] })
+  src('history', { toolbar: [B] }),
+  src('sample-plugin', { toolbar: [C] })
 ]
 
 describe('插件插槽合并', () => {
@@ -30,13 +30,13 @@ describe('插件插槽合并', () => {
   })
 
   it('preferredOrder 决定插件次序,未列出的排在最后', () => {
-    const list = collectSlot(registry, 'toolbar', () => true, ['element-fullscreen', 'bookmarks'])
+    const list = collectSlot(registry, 'toolbar', () => true, ['sample-plugin', 'bookmarks'])
     expect(names(list)).toEqual(['C', 'A', 'B'])
   })
 
   it('停用的插件不贡献任何组件,且不打乱其余顺序', () => {
-    const list = collectSlot(registry, 'toolbar', (id) => id !== 'adblock', [
-      'element-fullscreen',
+    const list = collectSlot(registry, 'toolbar', (id) => id !== 'history', [
+      'sample-plugin',
       'bookmarks'
     ])
     expect(names(list)).toEqual(['C', 'A'])

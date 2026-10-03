@@ -4,7 +4,7 @@ module.exports = {
 
   // 目标目录: Windows 路径 (必需)
   // 统一使用 /mnt/c/... 格式
-  target: '/mnt/d/Workspace/browser',
+  target: '/mnt/c/Workspace/browser',
 
   // 同步到目标目录的子文件夹下 (可选)
   prefix: '',

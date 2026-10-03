@@ -247,12 +247,38 @@ describe('matchTabHotkey Ctrl/Cmd+J 下载面板', () => {
   })
 })
 
+describe('matchTabHotkey Ctrl/Cmd+F 页内查找', () => {
+  it('Ctrl+F / ⌘F 命中', () => {
+    expect(matchTabHotkey(input({ key: 'f', code: 'KeyF', shift: false }))).toEqual({ action: 'find' })
+    expect(matchTabHotkey(input({ key: 'F', code: 'KeyF', shift: false }))).toEqual({ action: 'find' })
+    expect(
+      matchTabHotkey(input({ key: 'f', code: 'KeyF', shift: false, control: false, meta: true }))
+    ).toEqual({ action: 'find' })
+  })
+
+  it('Ctrl+Shift+F 不命中(没有核心绑定,交给页面/插件)', () => {
+    expect(matchTabHotkey(input({ key: 'f', code: 'KeyF', shift: true }))).toBe(null)
+  })
+
+  it('带 Alt / 无修饰键不接管', () => {
+    expect(matchTabHotkey(input({ key: 'f', code: 'KeyF', shift: false, alt: true }))).toBe(null)
+    expect(
+      matchTabHotkey(input({ key: 'f', code: 'KeyF', shift: false, control: false, meta: false }))
+    ).toBe(null)
+  })
+
+  it('非 QWERTY 下 code 仍为 KeyF(key 为其它字符)不依赖 key', () => {
+    expect(matchTabHotkey(input({ key: 'а', code: 'KeyF', shift: false }))).toEqual({ action: 'find' })
+  })
+})
+
 describe('releasesToTerminal 终端页的快捷键放行', () => {
-  it('Ctrl+L(清屏)/ Ctrl+R(反向搜索)/ Ctrl+J(accept-line)/ Ctrl+←/→(按词移动)还给 shell', () => {
+  it('Ctrl+L(清屏)/ Ctrl+R(反向搜索)/ Ctrl+J(accept-line)/ Ctrl+F(forward-char)/ Ctrl+←/→(按词移动)还给 shell', () => {
     expect(releasesToTerminal(matchTabHotkey(input({ key: 'w', code: 'KeyW', shift: false }))!)).toBe(false)
     expect(releasesToTerminal(matchTabHotkey(input({ key: 'l', code: 'KeyL', shift: false }))!)).toBe(true)
     expect(releasesToTerminal(matchTabHotkey(input({ key: 'r', code: 'KeyR', shift: false }))!)).toBe(true)
     expect(releasesToTerminal(matchTabHotkey(input({ key: 'j', code: 'KeyJ', shift: false }))!)).toBe(true)
+    expect(releasesToTerminal(matchTabHotkey(input({ key: 'f', code: 'KeyF', shift: false }))!)).toBe(true)
     expect(releasesToTerminal(matchTabHotkey(input({ key: 'ArrowLeft', code: 'ArrowLeft', shift: false }))!)).toBe(true)
     expect(
       releasesToTerminal(matchTabHotkey(input({ key: 'ArrowRight', code: 'ArrowRight', shift: false }))!)

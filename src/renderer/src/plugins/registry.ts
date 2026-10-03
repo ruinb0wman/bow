@@ -8,8 +8,6 @@ import type { PluginUiContribution, PluginSlot } from './types'
 import bookmarksUi from '@plugins/bookmarks/ui'
 import historyUi from '@plugins/history/ui'
 import corsUi from '@plugins/cors/ui'
-import adblockUi from '@plugins/adblock/ui'
-import elementFullscreenUi from '@plugins/element-fullscreen/ui'
 import mcpHttpUi from '@plugins/mcp-http/ui'
 import defaultBrowserUi from '@plugins/default-browser/ui'
 import deviceInspectUi from '@plugins/device-inspect/ui'
@@ -17,20 +15,20 @@ import terminalUi from '@plugins/terminal/ui'
 import logseqUi from '@plugins/logseq/ui'
 import downloadsUi from '@plugins/downloads/ui'
 import quarkUi from '@plugins/quark/ui'
+import passwordsUi from '@plugins/passwords/ui'
 
 export const PLUGIN_UI: PluginUiContribution[] = [
   bookmarksUi,
   historyUi,
   corsUi,
-  adblockUi,
-  elementFullscreenUi,
   mcpHttpUi,
   defaultBrowserUi,
   deviceInspectUi,
   terminalUi,
   logseqUi,
   downloadsUi,
-  quarkUi
+  quarkUi,
+  passwordsUi
 ]
 
 /**
@@ -39,7 +37,7 @@ export const PLUGIN_UI: PluginUiContribution[] = [
  */
 export const SLOT_PLUGIN_ORDER: Record<PluginSlot, readonly string[]> = {
   'addressbar-trailing': [],
-  toolbar: ['bookmarks', 'downloads', 'mcp-http', 'adblock', 'element-fullscreen', 'terminal', 'logseq']
+  toolbar: ['bookmarks', 'downloads', 'mcp-http', 'terminal', 'logseq', 'passwords']
 }
 
 export function pluginUi(id: string): PluginUiContribution | undefined {

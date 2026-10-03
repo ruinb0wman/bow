@@ -5,7 +5,8 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 
 # bow 浏览器(MCP 服务器 `browser`)
 
-本地 Electron 多标签浏览器,44 个工具(19 核心 + 25 插件,随插件启停浮动);**你的每次操作用户都实时可见**,所以破坏性操作前先说明意图。
+本地 Electron 多标签浏览器,34 个工具(19 核心 + 15 插件,随插件启停浮动);**你的每次操作用户都实时可见**,所以破坏性操作前先说明意图。
+默认操作目标是 bow 为你自动创建并复用的 **agent 专属窗口**(标题带「· Agent」),**不会动用户正在浏览的窗口**。
 
 ## 第一步:确认工具怎么调
 
@@ -47,7 +48,9 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 - `waited`:只看它是不是 `true` —— `false` 表示**没有观察到这次的加载过程**(调用时页面已就绪,或这次动作根本没引发导航);给 `tabId` 导航非活动标签时 Chromium 可能推迟加载,这时 `waitUntil: 'load'` 会一直等到真结果或超时
 - `createdTab`:活动标签是 `bow://` 内部页(如设置页)时会另开标签 —— 一律以返回的 `tabId` 为准
 - `maxElements`:快照默认最多 200 个元素;页面很大时先调小定位,再按需扩大
-- `tabId`:省略则作用于活动标签(活动标签是内部页时会退到最近浏览的页面标签;都没有则自动新建 `about:blank`)
+- `tabId`:省略则作用于 **agent 专属窗口**(`windowRole: "agent"`,标题带「· Agent」;没有就自动创建)的活动标签
+  —— **不会动用户正在用的窗口**。要操作用户窗口里的标签(`list_tabs` 里 `windowRole: "user"`)必须显式传它的 `tabId`。
+  活动标签是内部页时会退到该窗口最近浏览的页面标签;都没有则自动新建 `about:blank`
 - 超时:等加载 15s、等元素 10s,可用 `timeoutMs` 覆盖(上限 120s)
 - `fullPage`(仅 `browser_screenshot`):`true` 截整页。输出分辨率是设备像素(文档 CSS 尺寸 × `devicePixelRatio`),
   所以高倍屏下的 PNG 会比 CSS 尺寸大;页面当前滚到哪里都不影响结果。页面太高会被上限拦下(见下)。
@@ -73,7 +76,10 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 ## 边界与故障
 
 - `bow://` 内部页面标签(设置页等)不支持页面类工具,会明确拒绝;`browser_list_tabs` 用 `internal: true` 标出它们。
-- `adblock_*` 等插件工具在对应插件停用时会**从工具列表消失**,这不是故障 —— `bow://settings → 插件管理` 可重新启用。
+- 默认目标是 bow 为你自动创建并复用的 **agent 专属窗口**:`browser_list_tabs` 顶层的 `mcpWindowId` 就是它
+  (还没创建时为 `null`,下一次页面类工具会自动建);`focusedWindowId` 只是「用户在看哪个」的参考。
+  `browser_switch_tab` 只在 agent 窗口之间切换默认目标,指向用户窗口时只激活那个标签、不改默认目标。
+- `device_*` / `browser_add_bookmark` 等插件工具在对应插件停用时会**从工具列表消失**,这不是故障 —— `bow://settings → 插件管理` 可重新启用。
 - 无 GPU 环境(ssh/CI 容器)截图可能是黑帧,别反复重试;导航、点击、快照、`browser_eval` 都正常。
 - `fullPage: true` 两条硬限制,都**不是 bug**:①该标签开着 DevTools 时会报错(整页截图要临时挂调试器,不抢别人的);
   ②超过 16000 设备像素高会明确报错 —— Chromium 在这个尺寸以上不报错而是返回内容重复的错图(实测 dpr 1.25 下

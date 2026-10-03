@@ -5,7 +5,7 @@ import type { WebContents } from 'electron'
 import { EventEmitter } from 'node:events'
 import { join } from 'node:path'
 import type { TabGroupInfo, TabInfo } from '@shared/types'
-import { MAX_GROUP_PANES, MIN_PANE, SPLIT_GAP, computeLayout, hasPane, instantiateShape, paneCount, resizePane, shapePaneCount } from '@shared/split'
+import { MAX_GROUP_PANES, MIN_PANE, SPLIT_GAP, SPLIT_INSET, computeLayout, hasPane, instantiateShape, paneCount, resizePane, shapePaneCount } from '@shared/split'
 import type { LayoutGeometry, LayoutNode, LayoutShape, PaneDir, Rect } from '@shared/split'
 import {
   findGroupOfTab,
@@ -23,6 +23,7 @@ import {
 import type { TabGroup } from '@shared/groups'
 import { INTERNAL_PAGES, internalPageUrl, opensInPane, parseInternalUrl } from '@shared/internalPages'
 import type { InternalPageId } from '@shared/internalPages'
+import type { AgentBadge } from '@shared/agentState'
 import { isDevToolsFrontendUrl } from '@shared/devtools'
 import { loadRendererEntry } from './rendererEntry'
 import { log, logError } from './logger'
@@ -162,14 +163,6 @@ export class TabManager extends EventEmitter {
     const active = this.getActiveRecord()
     if (active && !active.info.internal) return active
     return this.getLastBrowsingView()
-  }
-
-  /** 激活最近浏览的网页标签(设置页的「屏蔽元素」等需要回到真实页面执行) */
-  activateLastBrowsing(): TabInfo | null {
-    const hit = this.getLastBrowsingView()
-    if (!hit) return null
-    this.activate(hit.info.id)
-    return { ...hit.info, active: true }
   }
 
   /** 向内部页面标签(如设置页)广播消息:普通网页标签没有 preload,不参与广播 */
@@ -451,6 +444,20 @@ export class TabManager extends EventEmitter {
     this.emit('tab-updated', this.decorate(hit.info))
   }
 
+  /**
+   * 写标签的「编码代理状态」角标(唯一写者:`main/agentNotify.ts` 经插件 `service.agent` 上报)。
+   * 值没变就不发事件 —— 状态心跳不该让 chrome 重画标签栏。
+   */
+  setAgentState(id: number, badge: AgentBadge | null): void {
+    const hit = this.views.get(id)
+    if (!hit) return
+    const prev = hit.info.agent ?? null
+    if (prev === badge) return
+    if (badge) hit.info.agent = badge
+    else delete hit.info.agent
+    this.publish(id)
+  }
+
   activate(id: number, silent = false): void {
     const hit = this.views.get(id)
     if (!hit) return
@@ -668,15 +675,25 @@ export class TabManager extends EventEmitter {
     }))
   }
 
-  /** 活动组的窗格与分隔条几何(窗口内容坐标:页面区从 chromeHeight 起)。几何只有这一处实现 */
+  /**
+   * 活动组的窗格与分隔条几何(窗口内容坐标:页面区从 chromeHeight 起)。几何只有这一处实现。
+   * 分屏组在内容区四周留 `SPLIT_INSET` 的内边距:给聚焦窗格的**外边框**腾出可画的条带
+   * (窗格 rect 之外的区域才不被原生视图盖住)。单窗格组 inset = 0,与不分屏时逐像素一致。
+   */
   private geometryOf(group: TabGroup): LayoutGeometry {
     const [w, h] = this.window.isDestroyed() ? [0, 0] : this.window.getContentSize()
     const top = this.chromeHeight
-    return computeLayout(group.tree, { x: 0, y: top, width: w, height: Math.max(0, h - top) }, {
-      gap: SPLIT_GAP,
-      minPane: MIN_PANE,
-      focusedTabId: this.activeId
-    })
+    const inset = paneCount(group.tree) > 1 ? SPLIT_INSET : 0
+    return computeLayout(
+      group.tree,
+      {
+        x: inset,
+        y: top + inset,
+        width: Math.max(0, w - inset * 2),
+        height: Math.max(0, h - top - inset * 2)
+      },
+      { gap: SPLIT_GAP, minPane: MIN_PANE, focusedTabId: this.activeId }
+    )
   }
 
   /** 活动组 = 含 `activeId` 的那个(不另存 activeGroupId,省得两边不同步) */

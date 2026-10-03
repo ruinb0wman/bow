@@ -45,6 +45,14 @@ export interface LayoutGeometry {
 
 /** 每个分隔条的厚度(px);露出的底层是 chrome 页面背景,渲染层在这条缝上画分隔条 */
 export const SPLIT_GAP = 4
+/** 聚焦窗格高亮边框的厚度(px):吃掉缝隙里靠聚焦窗格的那一半 */
+export const FOCUS_RING = SPLIT_GAP / 2
+/**
+ * 分屏组内容区四周留的内边距(px):窗格是原生 WebContentsView,高亮只能画在**没被盖住**的条带上 ——
+ * 不留这一圈,贴着窗口/工具栏的那几条边就没地方画(只能看到中间那条缝)。取 `FOCUS_RING`,
+ * 使外边框与缝隙里的半幅高亮**同宽**。单窗格组不留(页面区与不分屏时逐像素一致)。
+ */
+export const SPLIT_INSET = FOCUS_RING
 /** 单窗格最小宽/高(px):某个 split 节点放不下两个最小窗格时,它只渲染聚焦那一支 */
 export const MIN_PANE = 120
 /** `ratio` 的夹紧范围(再大/再小都由 `MIN_PANE` 在几何层兜底) */
@@ -253,6 +261,25 @@ export function computeLayout(root: LayoutNode, area: Rect, opts: LayoutOptions)
   }
   walk(root, area)
   return { panes, dividers }
+}
+
+/**
+ * 聚焦窗格的边框条:沿 `pane` 的四条外边各向外扩一条 `thickness` 宽的条,**只产出有空间的边**
+ * (贴 `area` 边界的边没地方画 ⇒ 不产出)。调用方把这些条 `position: fixed` 画在窗格之间的缝隙上:
+ * 与相邻窗格 rect 重叠的部分被对方的 WebContentsView 盖住,于是只有缝隙里的 `thickness` px 可见。
+ * 单窗格(rect === area)恒返回 `[]`。单测在 `tests/split.test.ts`。
+ */
+export function focusRingBars(pane: Rect, area: Rect, thickness = FOCUS_RING): Rect[] {
+  const bars: Rect[] = []
+  if (pane.y - area.y >= thickness)
+    bars.push({ x: pane.x, y: pane.y - thickness, width: pane.width, height: thickness })
+  if (area.y + area.height - (pane.y + pane.height) >= thickness)
+    bars.push({ x: pane.x, y: pane.y + pane.height, width: pane.width, height: thickness })
+  if (pane.x - area.x >= thickness)
+    bars.push({ x: pane.x - thickness, y: pane.y, width: thickness, height: pane.height })
+  if (area.x + area.width - (pane.x + pane.width) >= thickness)
+    bars.push({ x: pane.x + pane.width, y: pane.y, width: thickness, height: pane.height })
+  return bars
 }
 
 // ---------- 布局形状(存盘用:只存结构,不存 tabId) ----------

@@ -22,11 +22,13 @@ import {
   switchIndexForDigit
 } from '@shared/shortcuts'
 import { TERMINAL_URL, parseInternalUrl } from '@shared/internalPages'
+import { isDevToolsFrontendUrl } from '@shared/devtools'
 import type { TabInfo } from '@shared/types'
 import type { TabManager } from './tabManager'
 import type { PluginKernel } from './plugins/kernel'
 import type { WindowManager } from './windows'
 import { CLOSE_CONFIRM_OVERLAY_ID } from './closeConfirm'
+import { openFind } from './findBar'
 import { log } from './logger'
 
 /**
@@ -79,10 +81,23 @@ export function setupTabShortcuts(getWindows: () => WindowManager, getKernel: ()
 
       const hk = matchTabHotkey(input)
       if (hk) {
+        // 页内查找(Ctrl+F)在 DevTools 里归 DevTools 自己先挡两道(终端页由下面的 releasesToTerminal 放行):
+        // ① Electron 自带 DevTools 的 detach 窗口**不是 bow 的窗口**,byWebContents 会回退到聚焦窗口 ——
+        //    不挡下来 bow 会把 DevTools 自己的查找抢走(判据与 devtools.ts 同源);
+        // ② 远程调试前端标签(TabInfo.inspector)自带查找,且它的 URL 可能是 https 前端(不只 devtools://),
+        //    所以还要在拿到 srcTab 之后再查一次。
+        if (hk.action === 'find' && isDevToolsFrontendUrl(contents.getURL())) {
+          log('快捷键放行给 DevTools', 'find')
+          return
+        }
         // 放行规则看的是**按键来源的那个窗格**,不是「活动标签」:
         // 焦点在地址栏/浮层时来源拿不到标签 → 一律按浏览器处理(否则 Ctrl+W / Ctrl+L 会变成什么都没做的死键)。
         const srcTabId = tabs.findTabIdByWebContents(contents)
         const srcTab = srcTabId != null ? tabs.getView(srcTabId)?.info ?? null : null
+        if (hk.action === 'find' && srcTab?.inspector) {
+          log('快捷键放行给 DevTools 前端', 'find')
+          return
+        }
         // 终端里的 Ctrl+L(清屏)必须落到 shell 上。
         // 关键点是**不能 preventDefault**:渲染层收不到被 preventDefault 的按键,
         // xterm 也就无法把这个组合送进 pty。
@@ -166,6 +181,13 @@ export function setupTabShortcuts(getWindows: () => WindowManager, getKernel: ()
             log('快捷键:打开下载面板(Ctrl+J)')
             break
           }
+          case 'find': {
+            // 页内查找(Ctrl+F)。终端页已在上面被 releasesToTerminal 放行(shell 的 forward-char),
+            // DevTools 两种前端也已在进入这个分支前放行。全窗浮层开着时不抢焦点(与 Ctrl+T / Ctrl+L 同策略)。
+            if (!overlay.isFullOpen) openFind(ctx, srcTabId)
+            log('快捷键:页内查找(Ctrl+F)')
+            break
+          }
           case 'restore':
             if (tabs.restoreLastClosed()) log('快捷键:恢复标签(Ctrl+Shift+T)')
             break
@@ -231,7 +253,7 @@ export function setupTabShortcuts(getWindows: () => WindowManager, getKernel: ()
         }
         return
       }
-      // 核心快捷键未命中:交给插件注册的热键(如元素全屏 Ctrl+Shift+F)
+      // 核心快捷键未命中:交给插件注册的热键(Ctrl/Cmd+Shift+P 密码等)
       if (getKernel()?.handleHotkey(input)) {
         event.preventDefault()
         log('快捷键:插件热键')
