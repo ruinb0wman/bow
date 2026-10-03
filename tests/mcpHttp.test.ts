@@ -9,6 +9,7 @@
  */
 
 import { request as httpRequest } from 'node:http'
+import { connect as tcpConnect } from 'node:net'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -66,7 +67,12 @@ async function call(client: Client, name: string, args: Record<string, unknown> 
   return { isError: res.isError === true, data: data as any }
 }
 
-/** 绕过 SDK 发原始请求,用于校验 HTTP 层行为 */
+/** 绕过 SDK 发原始请求,用于校验 HTTP 层行为。
+ *
+ * ⚠️ 想伪造 `Host` 头时不能只改 `headers`:Node ≥ 24 的 `http.request` 会在**客户端侧**
+ * 就拒绝「`Host` 与连接地址不符」的请求(`The property 'Host in options.headers' must match
+ * the request authority`)—— 请求根本发不出去。所以让 authority 与 `Host` 同值,
+ * 再用 `createConnection` 把 TCP 连接钉在回环端口上(不触发 DNS 解析)。 */
 function rawRequest(
   port: number,
   path: string,
@@ -74,12 +80,22 @@ function rawRequest(
   headers: Record<string, string> = {}
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
-    const req = httpRequest({ host: '127.0.0.1', port, path, method, headers }, (res) => {
-      let body = ''
-      res.setEncoding('utf-8')
-      res.on('data', (c) => (body += c))
-      res.on('end', () => resolve({ status: res.statusCode ?? 0, body }))
-    })
+    const req = httpRequest(
+      {
+        host: headers.host ?? '127.0.0.1',
+        port,
+        path,
+        method,
+        headers,
+        createConnection: () => tcpConnect(port, '127.0.0.1')
+      },
+      (res) => {
+        let body = ''
+        res.setEncoding('utf-8')
+        res.on('data', (c) => (body += c))
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body }))
+      }
+    )
     req.on('error', reject)
     req.end()
   })
@@ -208,11 +224,22 @@ describe('MCP over HTTP:HTTP 层防护', () => {
 
   it('DNS rebinding 防护:非白名单 Host 被拒', async () => {
     const { handle } = await setup()
+    // 对照组:默认 Host(`127.0.0.1:<port>`,在白名单里)不会被 HTTP 层挡下。
+    // 这条对照是必需的 —— 否则「>= 400」可能来自内容协商失败(406)而不是 Host 校验,
+    // 把保护拿掉测试也照样绿。
+    const allowed = await rawRequest(handle.port, MCP_HTTP_PATH, 'POST', {
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream'
+    })
+    expect(allowed.status).not.toBe(403)
+
     const res = await rawRequest(handle.port, MCP_HTTP_PATH, 'POST', {
       'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
       host: 'evil.example.com'
     })
-    expect(res.status).toBeGreaterThanOrEqual(400)
+    expect(res.status).toBe(403)
+    expect(res.body).toContain('Invalid Host header')
     expect(res.status).not.toBe(401)
   })
 })
