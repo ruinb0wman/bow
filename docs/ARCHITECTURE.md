@@ -535,6 +535,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `downloads` | — | ui, mcp | `list` `pause` `resume` `cancel` `retry` `remove` `clear` `openFile` `showInFolder` `getSettings` `setSettings` `pickDirectory` `revealDir` | `browser_list_downloads` `browser_download` | — | — | — | — | emit `changed` | `downloads.json`(记录)+ `downloads-settings.json`(目录 / 询问 / 保留条数) |
 | `quark` | — | ui | `listFiles` `pushAria2` `getSettings` `setSettings` `testAria2` | —(不贡献 MCP 工具) | — | —(按需 `pages.execute`,不注入常驻脚本) | — | — | — | `quark.json`(UA / Cookie 域名白名单 / aria2 RPC) |
 | `passwords` | — | ui, shortcut | `status` `setup` `unlock` `lock` `list` `getEntry` `save` `remove` `copy` `readPageFields` `fillEntry` `beginFill` `changeMaster` `getSettings` `setSettings` `wipe` | —(刻意不贡献 MCP 工具:与 AI 隔离) | — | —(按需 `pages.execute` 注入探测 / 下拉 / 填入脚本,不注入常驻脚本) | — | `Ctrl/Cmd+Shift+P` | emit `state-changed` `settings-changed` `open-panel` | `passwords.json`(AES-256-GCM 密文)+ `passwords-settings.json`(自动锁定 / 剪贴板 / 子域匹配) |
+| `pomo` | — | ui, mcp, shortcut | `getState` `getSettings` `setSettings` `start` `pause` `skip` `reset` `toggle` | `browser_pomo_status` `browser_pomo_start` `browser_pomo_pause` `browser_pomo_skip` | — | — | — | `Ctrl/Cmd+Shift+O` | emit `state` `phase-end` | `pomo.json`(设置 + 运行状态:阶段 / `endsAt` / 本轮计数 / 今日完成数;**只在状态转换时写盘**) |
 
 **渲染层侧**(`registry.ts` / 各插件 `ui.ts`)
 
@@ -551,12 +552,13 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `downloads` | — | `DownloadsButton` | `plugin:downloads:panel`(full,`DownloadsPanel`) | `DownloadsSettings` |
 | `quark` | — | `QuarkButton`(仅夸克个人网盘页可点) | `plugin:quark:panel`(full,`QuarkPanel`) | `QuarkSettings` |
 | `passwords` | — | `PasswordsButton` | `plugin:passwords:panel`(full,`PasswordsPanel`) | `PasswordsSettings` |
+| `pomo` | — | `PomoButton`(显示倒计时) | `plugin:pomo:panel`(below-chrome,`PomoPanel`;锚定在按钮右下方) | `PomoSettings` |
 
 ⚠️ 终端插件的 `ui/TerminalView.vue` 与笔记插件的 `ui/JournalView.vue` **不在**注册表里 ——
 它们分别是 `bow://terminal` / `bow://logseq` 页面的主体,由 `renderer/src/<entry>/main.ts` 直接引用。
 插槽/浮层注册表面向的是 chrome 与 overlay 两个宿主。
 
-`SLOT_PLUGIN_ORDER.toolbar = ['bookmarks','downloads','mcp-http','terminal','logseq','passwords']`;
+`SLOT_PLUGIN_ORDER.toolbar = ['bookmarks','downloads','mcp-http','terminal','logseq','passwords','pomo']`;
 `addressbar-trailing` 为空(保持注册顺序)。未列出的插件排在已列出者之后。
 
 **笔记插件(`bow://logseq`)的五条不变式**(它是唯一直接读写用户仓库外文件的插件,改它之前请务必看这几条,
@@ -628,16 +630,18 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `browser_screenshot` | tabId, fullPage | fullPage falsy | **image content**(`image/png`);失败才是 text |
 | `browser_get_info` | tabId | — | `{ok,info:TabInfo}`(info 带 `windowId`) |
 
-插件工具 15 个:`browser_add_bookmark` `browser_list_bookmarks`(书签)、
+插件工具 19 个:`browser_add_bookmark` `browser_list_bookmarks`(书签)、
 `device_list_targets` `device_inspect` `device_snapshot` `device_tap` `device_type` `device_press_key`
 `device_scroll` `device_console` `device_eval` `device_screenshot` `device_connect`(设备检查)、
-`browser_list_downloads` `browser_download`(下载)
-—— 共 15 个,合计 **34** 个工具。
+`browser_list_downloads` `browser_download`(下载)、
+`browser_pomo_status` `browser_pomo_start` `browser_pomo_pause` `browser_pomo_skip`(番茄钟)
+—— 共 19 个,合计 **38** 个工具。
 
 静态计数来源:`CORE_MCP_TOOL_NAMES`(19)+ `ctx.mcp.tool(...)` 的调用点
 (`bookmarks/main.ts:137,165`、
 `device-inspect/main.ts:451,493,510,531,554,574,612,642,666,698,731`、
-`downloads/main.ts:500,529`)。
+`downloads/main.ts:500,529`、
+`pomo/main.ts:229,238,249,260`)。
 ⚠️ 实际工具面**随插件启停变化**:停用 device-inspect 就少 11 个,停用 downloads 就少 2 个。
 
 ⚠️ 插件工具的 schema **不做 strict 校验**(走 `kernel.mcp` 声明快照),未知参数会被静默丢弃。
@@ -883,6 +887,7 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `downloads-settings.json` | `{askWhereToSave, downloadDir, maxRecords}` | `{askWhereToSave:true, downloadDir:'', maxRecords:500}`(`downloadDir` 为空 = `app.getPath('downloads')`) | downloads |
 | `passwords.json` | 密码库密文(AES-256-GCM;盐 / KDF 参数 / iv / tag 为明文,**条目明文为零**) | `{version:1, kdf:null, verifier:null, data:null}`;加解密在 `passwords/vault.ts`(只用 node:crypto,`scrypt(N=2^15,r=8,p=1)` + 显式 `maxmem`),条目读出后过 `normalizeEntries()` | passwords |
 | `passwords-settings.json` | `{autoLockMinutes, clipboardClearSeconds, matchSubdomains}` | `{autoLockMinutes:5, clipboardClearSeconds:30, matchSubdomains:true}`;读写都过 `normalizeSettings()`(只接受设置页下拉里的合法值) | passwords |
+| `pomo.json` | `{settings, state}` | `settings` = `{focusMinutes:25, shortBreakMinutes:5, longBreakMinutes:15, roundsBeforeLongBreak:4, autoStartNext:false, notify:true, sound:true}`;`state` = `{phase, running, endsAt, remainingMs, cycleIndex, completedToday, completedDate}`。读写都过 `normalizeSettings()` / `normalizeState()`(夹紧 + 跨天归零 + `running` 无 `endsAt` 退化);**只在状态转换时写盘**,不逐秒写 | pomo |
 | `browser.log` | 日志(MCP 模式) | — | logger |
 
 ---
@@ -1056,12 +1061,13 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
   ⚠️ 给主进程加新的 `tabs.*` / `wc.*` 调用时**必须同步补假实现**,否则测试会红得莫名其妙。
 - `tests/mcpServer.test.ts`(861 行)用 `InMemoryTransport` + 真实 `McpServer`/`Client` 握手,
   覆盖 instructions 下发、工具面与 schema、`waitUntil` 语义、失败一律 `isError`、内部页面边界、插件工具错误传播。
-- **当前基线(2026-10-03 复测)**:`bun run test` → **58 个文件 / 1189 个用例全绿**,约 9s。
+- **当前基线(2026-10-03 复测,含番茄钟插件)**:`bun run test` → **60 个文件 / 1217 个用例全绿**,约 9s。
+  (本次 +2 文件 / +28 例:`pomoShared.test.ts` 17 例钉状态机 / 跨天 / 夹紧,`pomoPlugin.test.ts` 11 例用假时钟 + 假通知钉阶段转移 / 重启恢复 / MCP 返回体。)
   (2026-09-25 → 2026-10-02 期间 `mcpHttp.test.ts` 的「DNS rebinding 防护:非白名单 Host 被拒」
   一直失败:那是**测试自己**的问题 —— Node ≥ 24 的 `http.request` 会在客户端就拒绝「`Host` 与连接
   地址不符」的请求,伪造的 Host 根本发不出去;已于 2026-10-03 改用 `createConnection` 钉回环端口
   修好,并加了对照组断言。服务端的 Host 校验一直是对的。)
-  58 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
+  60 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
   `fakeWc.ts`、`fakeKernel.ts`。
 - ⚠️ **`.vue` 组件不在 `tsc` 的类型检查范围内**(`npm run typecheck` 只跑 `.ts`):组件里「导入了不存在的
   符号」这类错误只有 `npm run build`(rollup)才会报。改渲染层之后**必须跑一次 build** ——

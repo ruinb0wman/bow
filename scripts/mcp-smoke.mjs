@@ -93,6 +93,10 @@ assert(names.includes('browser_navigate') && names.includes('browser_screenshot'
 assert(names.includes('browser_wait'), '等待工具 browser_wait 已注册')
 // 插件贡献的工具应随插件激活一并注册(书签插件 / 设备检查插件)
 assert(names.includes('browser_add_bookmark'), '书签插件已贡献 MCP 工具')
+// 番茄钟插件:4 个工具都应在册(只验注册面,行为由单测覆盖)
+for (const pomoTool of ['browser_pomo_status', 'browser_pomo_start', 'browser_pomo_pause', 'browser_pomo_skip']) {
+  assert(names.includes(pomoTool), `番茄钟插件已注册 ${pomoTool}`)
+}
 // 设备检查插件:只验工具在册(真正的行为要连真机,不在冒烟里做)
 for (const deviceTool of [
   'device_list_targets',
@@ -379,6 +383,15 @@ const lbText = JSON.parse(lb.content[0].text)
 assert(Array.isArray(lbText.bookmarks), '书签列表可读', lbText)
 if (allowMutations) assert(lbText.bookmarks.some((b) => b.url === 'https://example.com'), '书签已持久化')
 console.log(`✓ browser_list_bookmarks: ${lbText.bookmarks.length} 条`)
+
+// 8.5 番茄钟:状态可读,start / pause 能改状态(不真的等 25 分钟)
+const ps = JSON.parse((await client.callTool({ name: 'browser_pomo_status', arguments: {} })).content[0].text)
+assert(ps.ok === true && typeof ps.phase === 'string', 'browser_pomo_status 可读', ps)
+const pStart = JSON.parse((await client.callTool({ name: 'browser_pomo_start', arguments: {} })).content[0].text)
+assert(pStart.running === true, 'browser_pomo_start 让计时跑起来', pStart)
+const pPause = JSON.parse((await client.callTool({ name: 'browser_pomo_pause', arguments: {} })).content[0].text)
+assert(pPause.running === false, 'browser_pomo_pause 暂停', pPause)
+console.log(`✓ 番茄钟: ${ps.phaseLabel} ${ps.remainingText} → running=${pStart.running} → paused=${pPause.running}`)
 
 // 9. 关标签
 const ct = await client.callTool({ name: 'browser_close_tab', arguments: { tabId } })

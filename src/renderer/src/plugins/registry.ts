@@ -16,6 +16,7 @@ import logseqUi from '@plugins/logseq/ui'
 import downloadsUi from '@plugins/downloads/ui'
 import quarkUi from '@plugins/quark/ui'
 import passwordsUi from '@plugins/passwords/ui'
+import pomoUi from '@plugins/pomo/ui'
 
 export const PLUGIN_UI: PluginUiContribution[] = [
   bookmarksUi,
@@ -28,7 +29,8 @@ export const PLUGIN_UI: PluginUiContribution[] = [
   logseqUi,
   downloadsUi,
   quarkUi,
-  passwordsUi
+  passwordsUi,
+  pomoUi
 ]
 
 /**
@@ -37,7 +39,7 @@ export const PLUGIN_UI: PluginUiContribution[] = [
  */
 export const SLOT_PLUGIN_ORDER: Record<PluginSlot, readonly string[]> = {
   'addressbar-trailing': [],
-  toolbar: ['bookmarks', 'downloads', 'mcp-http', 'terminal', 'logseq', 'passwords']
+  toolbar: ['bookmarks', 'downloads', 'mcp-http', 'terminal', 'logseq', 'passwords', 'pomo']
 }
 
 export function pluginUi(id: string): PluginUiContribution | undefined {

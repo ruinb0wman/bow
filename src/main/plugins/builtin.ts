@@ -12,6 +12,7 @@ import logseq from '@plugins/logseq/main'
 import downloads from '@plugins/downloads/main'
 import quark from '@plugins/quark/main'
 import passwords from '@plugins/passwords/main'
+import pomo from '@plugins/pomo/main'
 
 export const BUILTIN_PLUGINS: PluginMain[] = [
   history,
@@ -30,5 +31,7 @@ export const BUILTIN_PLUGINS: PluginMain[] = [
   // 同上(只贡献 UI 与 Ctrl+Shift+P;按需 pages.execute 注入填充脚本,不注册网络钩子与 MCP 工具)
   quark,
   // 同上(只贡献 UI 与快捷键:主密码解锁的本地密码库,页面侧按需注入、不常驻)
-  passwords
+  passwords,
+  // 同上(只贡献 UI / MCP 工具 / 全局热键:主进程权威时钟的番茄钟,不参与网络钩子与建议源顺序)
+  pomo
 ]
