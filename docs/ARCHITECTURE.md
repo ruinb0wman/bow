@@ -1056,9 +1056,11 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
   ⚠️ 给主进程加新的 `tabs.*` / `wc.*` 调用时**必须同步补假实现**,否则测试会红得莫名其妙。
 - `tests/mcpServer.test.ts`(861 行)用 `InMemoryTransport` + 真实 `McpServer`/`Client` 握手,
   覆盖 instructions 下发、工具面与 schema、`waitUntil` 语义、失败一律 `isError`、内部页面边界、插件工具错误传播。
-- **当前基线(2026-10-02 复测:删除广告拦截插件)**:`bun run test` → **58 个文件 / 1189 个用例**,约 9s。
-  本机 Node 26 下 `mcpHttp.test.ts` 的「DNS rebinding 防护:非白名单 Host 被拒」一例失败 —— 是 client 端
-  `http.request` 现在会直接拒绝与连接地址不符的 `Host` 头(测试自己弹错,不是服务端没拒),与本类改动无关。
+- **当前基线(2026-10-03 复测)**:`bun run test` → **58 个文件 / 1189 个用例全绿**,约 9s。
+  (2026-09-25 → 2026-10-02 期间 `mcpHttp.test.ts` 的「DNS rebinding 防护:非白名单 Host 被拒」
+  一直失败:那是**测试自己**的问题 —— Node ≥ 24 的 `http.request` 会在客户端就拒绝「`Host` 与连接
+  地址不符」的请求,伪造的 Host 根本发不出去;已于 2026-10-03 改用 `createConnection` 钉回环端口
+  修好,并加了对照组断言。服务端的 Host 校验一直是对的。)
   58 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
   `fakeWc.ts`、`fakeKernel.ts`。
 - ⚠️ **`.vue` 组件不在 `tsc` 的类型检查范围内**(`npm run typecheck` 只跑 `.ts`):组件里「导入了不存在的
