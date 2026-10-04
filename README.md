@@ -1,6 +1,6 @@
 # MCP Browser — AI 可操纵的简易 Electron 浏览器
 
-多标签页浏览器:地址栏搜索(输历史/书签实时模糊建议)、浏览历史、书签(文件夹分组)、下载管理(工具栏面板:记录 / 暂停恢复 / 重新下载 / 取消)、页内查找(`Ctrl+F`:高亮 + `n/m` 计数 + 上下一个)、设置页(内部标签页 `bow://settings`)、终端(内部标签页 `bow://terminal`,连本机 shell,并会把终端里 pi 的执行 / 等待确认 / 完成状态显示成**标签角标**与**底部居中通知**)、笔记(内部标签页 `bow://logseq`,直接读写你已有的 Logseq 文件图)、番茄钟(工具栏倒计时按钮 + 下拉面板,专注 / 休息计时,阶段结束弹系统通知、响提示音并让按钮闪烁);内置 **MCP 服务器(stdio)**,AI 编码工具(pi / Claude Code / Cursor 等)可以实时操纵这个浏览器:导航、搜索、点击、输入、滚动、切换标签、截图、读取页面快照、下载文件。
+多标签页浏览器:地址栏搜索(输历史/书签实时模糊建议)、浏览历史、书签(文件夹分组、可导出 JSON)、下载管理(工具栏面板:记录 / 暂停恢复 / 重新下载 / 取消)、页内查找(`Ctrl+F`:高亮 + `n/m` 计数 + 上下一个)、设置页(内部标签页 `bow://settings`)、终端(内部标签页 `bow://terminal`,连本机 shell,并会把终端里 pi 的执行 / 等待确认 / 完成状态显示成**标签角标**与**系统通知**)、笔记(内部标签页 `bow://logseq`,直接读写你已有的 Logseq 文件图)、密码(主密码解锁的本地密码库与登录页填充,可导出加密备份)、番茄钟(工具栏倒计时按钮 + 下拉面板,专注 / 休息计时,阶段结束弹系统通知、响提示音并让按钮闪烁);内置 **MCP 服务器(stdio)**,AI 编码工具(pi / Claude Code / Cursor 等)可以实时操纵这个浏览器:导航、搜索、点击、输入、滚动、切换标签、截图、读取页面快照、下载文件。
 
 ## 技术栈
 
@@ -27,7 +27,7 @@ npm run mcp:http   # 构建后以 HTTP MCP 模式常驻(强制模式;普通启�
 npm run test:mcp   # 真机冒烟测试(自己拉起浏览器)
 npm run test:mcp:http  # 真机冒烟测试(连已常驻的 HTTP 浏览器)
 npm run test:e2e:device  # 设备检查的假手机 E2E(真 Electron + 真 MCP,不需要真机/显示环境)
-npm run test:e2e:agent   # 代理状态 E2E(假 pi 往 pty 打 OSC → 角标 / 底部居中通知 / 点击进标签)
+npm run test:e2e:agent   # 代理状态 E2E(假 pi 往 pty 打 OSC → 角标 / 系统通知 / 点击进标签)
 npm run test:e2e:quark   # 夸克网盘插件的离线 E2E(假夸克服务器 + 假 aria2 RPC,不需要夸克账号,需要 openssl)
 npm run pi:install-status   # 把状态桥扩展装进 pi(~/.pi/agent/extensions/),终端里的 pi 才有完整状态联动
 node scripts/open-bow.mjs http --dry-run   # 只看 HTTP 模式将注入的环境变量与端点
@@ -531,9 +531,11 @@ npm run test:mcp:http
   (`ESC]1337;bow;{…}BEL`),终端插件在 pty 输出里把它剥掉(不会漏进 xterm),于是:
   - **正在执行** → 那个标签亮一个蓝色呼吸点(标签栏一项 = 一个组,分屏时按 blocked > working > done 取优先级);
   - **需要你确认**(一切 `ctx.ui.confirm/select/input/editor/custom` 弹框:plan→build 的批准、权限询问、
-    `ask_user_question` 等都算)→ 窗口**底部居中**弹通知,卡片带弹框标题与会话名;这条**不自动消失**(它就是要等你);
-  - **任务完成**(pi 的 `agent_settled` —— 重试/压缩/排队续跑都真的结束了)→ 底部居中弹「已完成」通知,8 秒后自动收起;
-  - **点通知卡片 = 进入对应标签**:切标签 + 把窗口提到前台 + 把键盘焦点交给那个终端。
+    `ask_user_question` 等都算)→ 弹一条**系统通知**,标题「pi 需要确认」,正文 = 弹框标题 · 会话名;
+    这条在 agent 继续跑(你答了)或标签关闭时会被撤回,但**什么时候收起由桌面环境决定**;
+  - **任务完成**(pi 的 `agent_settled` —— 重试/压缩/排队续跑都真的结束了)→ 弹「pi 已完成」系统通知,带上会话名;
+  - **点系统通知 = 进入对应标签**:切标签 + 把窗口提到前台 + 把键盘焦点交给那个终端(标签已经关了则什么都不做);
+  - 通知一律 **silent**(不出声),不看窗口是否聚焦(在 bow 里也照发)。
   接入(两种都行):**设置页 → 终端 → Pi 状态联动 → 安装**(点一下就好,装完在 pi 里重开或 `/reload` 生效),
   或者命令行 `npm run pi:install-status`(幂等,`--uninstall` 可撤;需要 pi ≥ 0.84.4)。
   不想动 pi 配置、只想试一次:`pi --extension <仓库>/integrations/pi/bow-agent-state.ts`。
@@ -562,9 +564,9 @@ npm run test:mcp:http
      不是 `1` → bow 没送到:Windows+WSL 看上面的 `WSLENV` 那条,其它容器/远程终端就 `export BOW_TERMINAL=1` 兜底;
   3. **手工打一条信号证明 bow 侧链路**(不经过 pi):
      `node -e "process.stdout.write('\x1b]1337;bow;'+JSON.stringify({v:1,state:'blocked',title:'test'})+'\x07')"`
-     → 应当出现**黄点 + 底部居中卡片**。有卡片 = bow 侧没问题,去查 pi 那侧(扩展位置 / `pi --version` ≥ 0.84.4 / `/reload`);
+     → 应当出现**黄点 + 一条系统通知**。有通知 = bow 侧没问题,去查 pi 那侧(扩展位置 / `pi --version` ≥ 0.84.4 / `/reload`);
      没反应 = 看日志(`npm run dev` 时直接打在跑 dev 的那个终端里):
-     `会话已创建` / `通知视图加载失败` / `代理状态信号落到不存在的标签,忽略`。
+     `会话已创建` / `系统通知不可用(平台不支持),丢弃` / `代理状态信号落到不存在的标签,忽略`。
      注意这条命令**本身不会打印任何东西**,是正常的 —— 它写的是零宽控制序列,效果在标签栏。
 - 同时最多 12 个会话(超了会提示);终端页是内部页面标签,MCP 的页面类工具不会拿它做操作目标。
 - node-pty 的预编译二进制只覆盖 Windows / macOS —— 这套终端主要在 Windows 侧的 bow.exe 上用。
@@ -668,6 +670,7 @@ npm run test:mcp:http
 - 笔记(「笔记」插件):`<userData>/logseq.json` —— 存**图目录 / 最近图 / 正文字号 / 每个图的收藏**;笔记内容本身就在你的 Logseq 图里,不另存一份
 - 下载(「下载」插件):`<userData>/downloads.json` —— 下载记录(文件名 / 网址 / 保存路径 / 状态 / 进度 / 是否可续传);设置(保存目录 / 是否询问 / 保留条数)在同目录的 `downloads-settings.json`。**删除记录不会删文件**
 - 番茄钟(「番茄钟」插件):`<userData>/pomo.json` —— 设置(各阶段时长 / 长休轮数 / 自动开始 / 通知与提示音)与运行状态(阶段 / `running` / `endsAt` / 本轮计数 / 今日完成数);**只在状态转换时写入,不逐秒写盘**
+- 插件导出的文件(书签 JSON、密码库加密备份):**bow 下载目录**(= 下载插件设置里的保存目录,空则系统下载目录);同名自动加 ` (1)`,**不进下载记录列表**
 - 插件启停状态(内核):`<userData>/plugins.json`
 - 核心设置(默认搜索引擎/主页):`<userData>/settings.json`
 - 保存的分屏布局(只存结构):`<userData>/split-layouts.json`
@@ -683,7 +686,7 @@ npm run test:mcp:http
 - **插件管理**:运行时启停(立即生效并持久化)、能力标签、核心提示;有设置分区的插件可一键跳到对应分区。
 - **插件设置**:CORS 放行 / 浏览历史 / 终端 / 笔记 / 下载 / 番茄钟 等分区直接内联展示(取消旧版的嵌套弹窗)。
   「终端」分区里有 shell 配置与外观,还有 **Pi 状态联动** —— 点一下把状态桥扩展装进 pi(或卸载),
-  装完终端里的 pi 就会把「执行中 / 等待确认 / 已完成」显示成标签角标与底部居中通知(见「终端」一节);
+  装完终端里的 pi 就会把「执行中 / 等待确认 / 已完成」显示成标签角标与系统通知(见「终端」一节);
   如果你的终端配置里有 `wsl.exe`(bow 在 Windows、pi 在 WSL2),这一段还会多出一条
   **「如果使用 WSL2,请执行以下命令将扩展安装到 WSL2 中」** 的提醒 —— 命令直接可复制粘贴,
   因为上面那个按钮装的是 bow 自己那个系统的家目录,发行版里的 pi 看不到(见「终端」一节的跨系统说明)。
@@ -787,7 +790,8 @@ MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生
 **数据与加密**:密码库由一个主密码解锁。主密码经 **scrypt** 派生密钥,条目整体用 **AES-256-GCM** 加密后
 写进 `passwords.json`(盐与 KDF 参数是明文,条目明文为零);主密码本身不落盘,解锁期间密钥与条目只在
 **主进程内存**里,面板只按需取单条。「设置页 → 密码」可改自动锁定时间、剪贴板清除秒数、子域匹配,
-以及修改主密码 / 清空密码库。**忘记主密码无法恢复** —— 想备份就整份复制 `passwords.json`(它是密文)。
+以及修改主密码 / 清空密码库。**忘记主密码无法恢复** —— 「设置页 → 密码 → 备份」的「导出加密备份」会把
+整库**密文**写进 bow 下载目录(锁定时也能用,导出物不含明文;恢复仍需主密码),手工整份复制 `passwords.json` 同样可行。
 
 几条要知道的边界:
 
@@ -970,14 +974,15 @@ npm run build && npm run test:e2e:agent                                         
 BOW_E2E_BIN=dist/linux-unpacked/bow npm run test:e2e:agent                                                # 打包版(需先 npm run dist)
 ```
 
-终端里的 pi 写一条自定义 OSC(`ESC]1337;bow;{...}BEL`)就能驱动标签栏角标与底部居中通知。这个脚本里
+终端里的 pi 写一条自定义 OSC(`ESC]1337;bow;{...}BEL`)就能驱动标签栏角标与系统通知。这个脚本里
 **pi 是假的**(一个几十字节的 node 脚本,只把那条序列打到 pty),其余全是真的:真 Electron、真终端(node-pty)、
-真信号剥离与归约、真通知视图。它用 CDP 断言三件事:
+真信号剥离与归约、真系统通知调用。桌面通知本身从 CDP 观察不到(headless 下甚至可能没有 notification daemon),
+所以开 `BOW_NOTIFY_LOG` 让 bow 把每次 show/close 追加成 JSONL,再断言三件事:
 
 - chrome 页面:`TabInfo.agent` 与标签栏角标的 DOM 同时变(`working` / `blocked` / `done`);
-- 通知视图:卡片文本、量出来的高度(视图 bounds 靠它)、点卡片后**真的切到了那个标签**,
+- 通知:标题与正文(`pi 需要确认` / 弹框标题 · 会话名 / `pi 已完成`)、代理继续时那条被**撤回**、点通知后**真的切到了那个标签**,
   而且**点通知 ≠ 回答弹框**(角标仍停在 blocked,直到 pi 报出下一个状态);
-- 清理:关标签后角标与通知都不留(这条靠的是主进程缓存的宿主引用 —— `TabManager.close()` 先摘 record 再发事件)。
+- 清理:关标签后角标与在途的等待通知都不留。
 
 后半段还验**设置页 → 终端 → Pi 状态联动**的一键接入:`PI_CODING_AGENT_DIR` 指向临时目录,
 脚本点侧栏进分区、点「安装」→ 断言文件真的落盘且带 `managed by bow` 标记 → 点「卸载」→ 断言文件没了。
@@ -1029,9 +1034,9 @@ UA / Referer,以及**白名单边界** —— 直链在 `quark.cn` 下才带 Coo
 与真实 `McpServer`/`Client` 握手,验证 instructions 下发、工具面与 schema、`waitUntil` 等待语义、
 失败一律 `isError`、内部页面标签边界与插件工具错误传播;`tests/mcpWait.test.ts` 单独覆盖等待原语。
 
-代理状态联动也能无显示环境测两层:`tests/agentState.test.ts`(OSC 解析与归约,含 chunk 切开 / 非本协议序列放行 / `9;4` 降级)、
-`tests/toasts.test.ts`(假 electron 验证通知视图的 bounds 数学)、`tests/terminalAgentSignal.test.ts`(假 pty 跑真插件代码)、
-`tests/piBridge.test.ts`(真 fs + 临时目录验证一键接入的归属/幂等)。
+代理状态联动也能无显示环境测三层:`tests/agentState.test.ts`(OSC 解析、角标映射与通知文案,含 chunk 切开 / 非本协议序列放行 / `9;4` 降级)、
+`tests/agentNotify.test.ts`(假时钟下通知时机:撤回 / 角标过期)、`tests/systemNotify.test.ts`(假 electron 验证 `Notification` 的构造参数 / click 接线 / 缓存与失败不上抛)、
+`tests/terminalAgentSignal.test.ts`(假 pty 跑真插件代码)、`tests/piBridge.test.ts`(真 fs + 临时目录验证一键接入的归属/幂等)。
 端到端那层(`npm run test:e2e:agent`)需要能跑 Electron 的机器或 `LD_LIBRARY_PATH` 补库(见上)。
 
 ## 架构速览
@@ -1044,7 +1049,7 @@ UA / Referer,以及**白名单边界** —— 直链在 `quark.cn` 下才带 Coo
 src/
   main/          主进程:窗口、TabManager(每标签 WebContentsView + 内部页面标签 + 标签组/分屏)、
                  通用 Overlay 浮层宿主(OverlayManager + overlay 页面注册表)、
-                 底部居中通知宿主(ToastManager)+ 代理状态落地(AgentNotify:角标 + 通知栈 + 定时器)、
+                 代理状态落地(AgentNotify:标签角标 + 系统通知的时机与撤回;Electron 薄壳在 systemNotify.ts)、
                  渲染入口解析(rendererEntry)、MCP 服务器(stdio + 无状态 HTTP + instructions)、
                  注入式页面操作执行器与等待原语、JSON 存储、IPC
   main/plugins/  插件内核:注册/启停编排、独立存储、IPC 路由、事件总线、建议合并、
@@ -1052,13 +1057,12 @@ src/
   plugins/<id>/  内置插件(自包含):main.ts(主进程侧)/ ui.ts + ui/*.vue(渲染层侧)
                  / shared.ts|rules.ts(同构纯逻辑)
   preload/       contextBridge 暴露 window.browserAPI(含 plugins 调用面)
-  renderer/      Vue 3 六个渲染入口:chrome UI(index.html:标签栏/地址栏/插件插槽/建议下拉浮现层)、
+  renderer/      Vue 3 五个渲染入口:chrome UI(index.html:标签栏/地址栏/插件插槽/建议下拉浮现层)、
                  Overlay 宿主(overlay.html)、设置页(settings.html,内部标签页 bow://settings)、
-                 终端页(terminal.html,内部标签页 bow://terminal)、笔记页(logseq.html)、
-                 底部居中通知栈(toast.html)
+                 终端页(terminal.html,内部标签页 bow://terminal)、笔记页(logseq.html)
                  plugins/registry.ts = 渲染层插件 UI 注册表
   shared/        三端共享:类型、URL 解析、内部页面标识、设置页导航模型、标签组记账、嵌套分屏树与几何、
-                 代理状态协议与通知栈归约(agentState.ts)、
+                 代理状态协议/角标映射与通知文案(agentState.ts)、
                  书签树/历史/模糊匹配/建议合并/URL 匹配纯逻辑
   integrations/  给外部工具装的辅助文件(pi/ 里是终端状态桥扩展)
 tests/           vitest 单元测试(url 解析、内部页面、设置导航、书签树、历史、模糊建议、插件注册表/匹配/边界、代理状态与通知)

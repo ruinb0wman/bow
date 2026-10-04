@@ -2,7 +2,7 @@
  * 页内查找(`Ctrl+F`)的几何纯函数(三端安全:main / renderer / 测试都可用,不 import electron / vue)。
  *
  * 为什么单独拎出来:查找条复用 Overlay 的小尺寸 placement(`page-top-right`),而
- * `WebContentsView` **没有点击穿透**(见 `main/toasts.ts` 顶部)—— bounds 算错的表现是
+ * `WebContentsView` **没有点击穿透**(见 `docs/ARCHITECTURE.md` §3 的视图表)—— bounds 算错的表现是
  * 「查找条被裁掉」或「页面右上角一片透明视图把点击吃掉」,两者只能靠真机肉眼发现。
  * 所以几何只有这一处实现,并由 `tests/find.test.ts` 钉住(与 `shared/split.ts` 的 `focusRingBars` 同一思路)。
  */

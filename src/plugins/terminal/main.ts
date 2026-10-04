@@ -175,8 +175,8 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
   // ---------- 编码代理状态(终端里的 pi 等,见 @shared/agentState)----------
 
   /**
-   * 把一个状态报给主进程(`service.agent`,由 `main/agentNotify.ts` 落地成角标 + 底部居中通知)。
-   * 去重按「完整状态键」:同一状态重复喊(心跳 / 重复输出)不该惊动标签栏与通知栈。
+   * 把一个状态报给主进程(`service.agent`,由 `main/agentNotify.ts` 落地成角标 + 系统通知)。
+   * 去重按「完整状态键」:同一状态重复喊(心跳 / 重复输出)不该惊动标签栏、也不该重复弹通知。
    */
   function reportAgent(session: Session, signal: AgentSignal): void {
     const key = [signal.state, signal.done ? 1 : 0, signal.agent ?? '', signal.title ?? '', signal.text ?? ''].join('|')

@@ -4,7 +4,8 @@ import { TabManager } from './tabManager'
 import { OverlayManager } from './overlay'
 import { installCloseConfirm } from './closeConfirm'
 import { AgentNotify } from './agentNotify'
-import { ToastManager } from './toasts'
+import { activateAgentTab } from './agentActivate'
+import { createSystemNotifier } from './systemNotify'
 import { registerIpc, wireWindowIpc } from './ipc'
 import { initStores, getSettingsStore } from './stores'
 import { setupDevTools } from './devtools'
@@ -64,7 +65,7 @@ function createWindow(role: WindowRole = 'user'): BrowserWindow {
 let windows: WindowManager | null = null
 let kernel: PluginKernel
 /**
- * 代理状态(终端里的 pi)落地端:`tabId → 角标 + 底部居中通知`。
+ * 代理状态(终端里的 pi)落地端:`tabId → 标签角标 + 系统通知`。
  * 进程级单例 —— 信号的权威身份 tabId 是全局唯一的,由它自己查表找到所属窗口。
  */
 let agentNotify: AgentNotify
@@ -112,13 +113,12 @@ app.on('second-instance', (_e, argv, workingDirectory) => {
   createWindowContext(targets, 'user')
 })
 
-/** 建一个窗口 + 它的 TabManager / OverlayManager / ToastManager,登记进注册表并接线 */
+/** 建一个窗口 + 它的 TabManager / OverlayManager,登记进注册表并接线 */
 function createWindowContext(targets: string[], role: WindowRole = 'user'): WindowContext {
   const win = createWindow(role)
   const tabs = new TabManager(win, windows!.ids)
   const overlay = new OverlayManager(win, tabs)
-  const toasts = new ToastManager(win)
-  const ctx = windows!.register(win, tabs, overlay, toasts, role)
+  const ctx = windows!.register(win, tabs, overlay, role)
   wireWindowContext(ctx, targets)
   log('创建窗口', ctx.id, role, targets.length > 0 ? `目标 ${targets.length} 个` : '(主页)')
   return ctx
@@ -129,7 +129,7 @@ function createWindowContext(targets: string[], role: WindowRole = 'user'): Wind
  * 之外的每一条约束都只有一处实现。
  */
 function wireWindowContext(ctx: WindowContext, targets: string[]): void {
-  const { window: win, tabs, overlay, toasts } = ctx
+  const { window: win, tabs, overlay } = ctx
 
   // agent 窗口的轻标识:标题固定带后缀。chrome 页面的 document.title(index.html 的 <title>Bow</title>)
   // 会同步到窗口标题,不拦掉的话 setTitle 会被覆盖 —— 所以只对 agent 窗口 preventDefault。
@@ -180,18 +180,16 @@ function wireWindowContext(ctx: WindowContext, targets: string[]): void {
     onFindTabActivated(ctx, t.id)
   })
 
-  // 新建/关闭标签后把弹层重新置顶,防止新视图盖住已打开的弹层(通知视图同理)
+  // 新建/关闭标签后把弹层重新置顶,防止新视图盖住已打开的弹层
   tabs.on('tabs-changed', () => {
     overlay.raise()
-    toasts.raise()
   })
 
   // 标签关闭 → 撤掉它的代理角标与通知(必须在主进程记,因为 TabManager 先摘 record 再发事件)
   tabs.on('tab-closed', (tab) => agentNotify.tabClosed(tab.id))
-  // 窗口关闭 → 把本窗口所有标签的代理状态一并撤掉。
+  // 窗口关闭 → 把本窗口所有标签的代理状态(角标 + `blocked` 系统通知)一并撤掉。
   // 为什么不靠 tab-closed:**关窗口不会逐标签发 tab-closed**(视图被直接销毁了),
-  // 于是通知栈里会留着已死窗口的条目 —— 下一条通知进门时 apply() 还会去写那个已销毁的
-  // ToastManager。这里按窗口清一次,与 ToastManager.destroy() 是两回事(后者只收视图)。
+  // 于是那些标签的「等你确认」通知会永远留在桌面上 —— 这里按窗口清一次。
   win.on('closed', () => {
     for (const tab of tabs.listTabs()) agentNotify.tabClosed(tab.id)
   })
@@ -239,11 +237,12 @@ app.whenReady().then(async () => {
     resolve: (tabId) => {
       const hit = windows!.byTabId(tabId)
       if (!hit) return null
-      return {
-        setBadge: (badge) => hit.ctx.tabs.setAgentState(tabId, badge),
-        toasts: hit.ctx.toasts
-      }
-    }
+      return { setBadge: (badge) => hit.ctx.tabs.setAgentState(tabId, badge) }
+    },
+    notify: createSystemNotifier({
+      activate: (tabId) => void activateAgentTab(windows!, tabId),
+      logPath: process.env.BOW_NOTIFY_LOG
+    })
   })
   // 快捷键需要「按键来源的窗口」,用惰性取值:此时 windows 已存在但还没有窗口
   setupTabShortcuts(
@@ -324,7 +323,7 @@ app.whenReady().then(async () => {
   // stdio 模式下浏览器是 MCP 客户端的子进程 —— 这个窗口就是 agent 的,标成 agent 角色。
   createWindowContext(initialTargets, IS_MCP_STDIO ? 'agent' : 'user')
 
-  registerIpc(windows, kernel, agentNotify)
+  registerIpc(windows, kernel)
 
   if (IS_MCP_STDIO) {
     startMcpServer({ windows, kernel })

@@ -8,7 +8,6 @@ import { nextLayoutName, nextLayoutPresetId, normalizeLayoutPresets, paneCount, 
 import type { LayoutPreset, PaneDir } from '@shared/split'
 import type { PluginKernel } from './plugins/kernel'
 import type { WindowContext, WindowManager } from './windows'
-import type { AgentNotify } from './agentNotify'
 import { getLayoutsStore, getSettingsStore } from './stores'
 import { CLOSE_CONFIRM_OVERLAY_ID, confirmWindowClose } from './closeConfirm'
 import { focusAddressBar } from './tabShortcuts'
@@ -52,7 +51,7 @@ export function wireWindowIpc(ctx: WindowContext): void {
   })
 }
 
-export function registerIpc(windows: WindowManager, kernel: PluginKernel, agentNotify: AgentNotify): void {
+export function registerIpc(windows: WindowManager, kernel: PluginKernel): void {
   /** 由 IPC 来源的 webContents 反查窗口(chrome / overlay / 内部页都能认出来) */
   const ctxOf = (e: IpcMainInvokeEvent): WindowContext | null => windows.byWebContents(e.sender)
   /** 同时通知所有窗口的 chrome、overlay 与内部页面标签(设置变更/插件事件是全局的) */
@@ -228,8 +227,6 @@ export function registerIpc(windows: WindowManager, kernel: PluginKernel, agentN
     const ctx = ctxOf(e)
     if (!ctx) return false
     ctx.overlay.show(content)
-    // 浮层刚置顶,会把通知盖住(below-chrome 的建议下拉是全宽带)—— 把通知再抬一次
-    ctx.toasts.raise()
     return true
   })
   // overlay → chrome / 插件:
@@ -292,44 +289,6 @@ export function registerIpc(windows: WindowManager, kernel: PluginKernel, agentN
     log('chrome 高度上报', height)
     ctx.tabs.setChromeHeight(Math.max(0, Math.round(height)))
     ctx.overlay.layout()
-    ctx.toasts.layout()
-    return true
-  })
-
-  // ---------- 底部居中通知(toast 页面专用,见 main/toasts.ts)----------
-  // 通知栈的权威在主进程(`main/agentNotify.ts`),这里只做三件事:量高度、关一条、点进标签。
-  ipcMain.handle('toast:height', (e, height: number) => {
-    const ctx = ctxOf(e)
-    if (!ctx) return false
-    ctx.toasts.setHeight(Number(height))
-    return true
-  })
-  ipcMain.handle('toast:dismiss', (e, id: string) => {
-    if (!ctxOf(e)) return false
-    agentNotify.dismiss(id)
-    return true
-  })
-  /**
-   * 点通知卡片:进入对应标签。
-   * 三件事都要做 —— 切标签("对应 tab")、把窗口提到前台(通知可能在后台窗口)、
-   * 以及**补一次页面 focus**:`TabManager.activate()` 对已激活的标签会早退,不补的话
-   * 键盘焦点还留在通知视图上(看得见但打不进字)。
-   */
-  ipcMain.handle('toast:activate', (e, id: string) => {
-    const ctx = ctxOf(e)
-    const item = ctx?.toasts.getItem(id)
-    if (!ctx || !item) return false
-    agentNotify.dismiss(id)
-    const hit = windows.byTabId(item.tabId)
-    if (!hit) return false
-    windows.markActive(hit.ctx) // 多窗口:后续省略 windowId 的操作也落到这个窗口
-    hit.ctx.tabs.activate(item.tabId)
-    const view = hit.record.view.webContents
-    if (!view.isDestroyed()) view.focus()
-    if (hit.ctx.window.isMinimized()) hit.ctx.window.restore()
-    hit.ctx.window.show()
-    hit.ctx.window.focus()
-    log('通知已点开', item.tabId, item.kind)
     return true
   })
 

@@ -34,7 +34,7 @@ src/
                                  APP_DESKTOP_NAME 导出桌面集成标识(与 .desktop 文件名同源)
     singleInstance.ts            单实例锁(stdio 模式例外)
     windows.ts                   WindowManager:多窗口注册表 + 进程级 tabId/groupId 分配器 + byWebContents/byTabId/focused/allTabs/broadcast
-    rendererEntry.ts             六个渲染入口解析(dev=ELECTRON_RENDERER_URL,prod=file)
+    rendererEntry.ts             五个渲染入口解析(dev=ELECTRON_RENDERER_URL,prod=file)
     openArgs.ts                  启动参数 → 打开目标(裸路径/URL;classifyArg 的判定顺序对 Windows 盘符路径敏感,
                                  second-instance 复用同一套规则)
     navInput.ts                  地址栏输入的本地文件兜底(不 import electron,可单测)
@@ -42,10 +42,11 @@ src/
     tabShortcuts.ts              标签/分屏/历史快捷键(Ctrl+T/W/L/R/,/数字/Shift+T/Shift+E + Ctrl+←/→ + Ctrl+Shift+方向/Alt+Shift+方向)全局拦截(终端页里 Ctrl+L/Ctrl+R/Ctrl+←/→ 放行给 shell;分屏键在终端页也由主进程接管)
     tabManager.ts                TabManager:每标签一个 WebContentsView + 内部页面标签 + 标签组/嵌套分屏 + 布局
     overlay.ts                   OverlayManager:常驻透明顶层视图,按 placement 布局
-    toasts.ts                    ToastManager:每窗口一个「底部居中通知」顶层视图(透明、**按内容实测高度**精确定位;
-                                 `WebContentsView` 不能点击穿透,铺满窗口会吃掉页面点击,见 §3)
-    agentNotify.ts               AgentNotify:代理(终端里的 pi)状态信号 → 标签角标 + 通知栈 + 三种定时器
-                                 (纯归约在 @shared/agentState;信号从终端插件经 service.agent 进来)
+    agentNotify.ts               AgentNotify:代理(终端里的 pi)状态信号 → 标签角标 + 系统通知的**时机**
+                                 (角标定时器 / `blocked` 通知的撤回;不 import electron,可单测)
+    systemNotify.ts              系统通知的 Electron 薄壳(`Notification` + click 接线 + 失败不上抛;
+                                 `BOW_NOTIFY_LOG` 给 E2E 的 JSONL 测试缝)
+    agentActivate.ts             「点代理通知 = 进入对应标签」的唯一实现(系统通知的 click 调它)
     closeConfirm.ts              关闭窗口确认:多标签时拦下 close 事件,改用应用内确认框(确认态按窗口隔离)
     actions.ts                   注入式页面操作原语(snapshot/click/type/scroll/pressKey/screenshot)+ waitForLoad
     pageScripts.ts               注入脚本字符串的唯一来源(SNAPSHOT/CLICK/TYPE/SCROLL_FN;actions.ts 与设备检查插件共用,
@@ -65,6 +66,7 @@ src/
       mcpHost.ts                 McpHost:缓冲插件工具声明,支持停用时热移除
       mcpHttpHost.ts             McpHttpHost:HTTP 服务的 owner/幂等/串行化
       mcpResult.ts               textContent / errorContent / imageContent(统一 isError 判定)
+      exportFile.ts              导出到 bow 下载目录(目录解析与下载插件同源;书签 / 密码共用)
   plugins/<id>/                 内置插件(自包含,每插件一个目录)
     main.ts                     主进程侧:manifest + capabilities + activate(ctx)
     ui.ts                       渲染层侧:slots / overlays / settingsSections
@@ -87,8 +89,6 @@ src/
     settings.html + src/settings/       设置页(bow://settings 内部标签页)
     terminal.html + src/terminal/       终端页(bow://terminal 内部标签页;xterm 视图在终端插件的 ui/ 里)
     logseq.html + src/logseq/           笔记页(bow://logseq 内部标签页;编辑器视图在笔记插件的 ui/ 里)
-    toast.html + src/toast/             底部居中通知栈(不是内部标签页:由 ToastManager 持有的顶层视图加载,
-                                         只画 main/agentNotify.ts 下发的通知栈,并把量到的高度回传)
     src/plugins/registry.ts             PLUGIN_UI 注册表 + SLOT_PLUGIN_ORDER(渲染层唯一登记点)
     src/plugins/slots.ts                collectSlot 纯函数(插槽合并顺序,可单测)
     src/components/                     SuggestPanel(地址栏下拉)/ SplitMenu(分屏面板)/ CloseConfirmModal(关闭窗口确认)/ ModalShell(弹层壳 + Esc 栈顶)
@@ -110,7 +110,7 @@ src/
     bookmarkTree.ts 书签树 CRUD + 展平 + 一级目录迁移
     ua.ts           bowUserAgent() 纯函数
     devtools.ts     DevTools 前端 URL 构造(tabManager 与设备检查插件共用的唯一来源)
-    agentState.ts   代理状态协议与纯归约:OSC 信号解析(1337;bow + pi 内建 9;4 降级)、角标映射、通知栈归约
+    agentState.ts   代理状态协议与纯逻辑:OSC 信号解析(1337;bow + pi 内建 9;4 降级)、角标映射、通知文案
 tests/            vitest 测试文件 + 3 个测试替身(fakeTabs/fakeWc/fakeKernel)
 integrations/pi/  给 pi 装的辅助文件(bow-agent-state.ts = 状态桥扩展,由 scripts/install-pi-agent-state.mjs 写入 ~/.pi/agent/extensions/)
 scripts/          构建与运维脚本(见 §11)
@@ -179,10 +179,10 @@ whenReady():
 Electron 的合成顺序:`contentView` 的子视图按加入顺序从底到顶;**页面(WebContentsView)永远绘制在 chrome UI 之上**,
 所以任何要浮在页面上的 UI 都必须交给 Overlay。
 
-**多窗口**:一个窗口 = 一个 `WindowContext`(`{ id, role, window, tabs, overlay, toasts }`),由 `src/main/windows.ts` 的
+**多窗口**:一个窗口 = 一个 `WindowContext`(`{ id, role, window, tabs, overlay }`),由 `src/main/windows.ts` 的
 `WindowManager` 登记。每个窗口有**自己的** chrome webContents、TabManager(标签集/标签组)与 OverlayManager;
 窗口之间不共享标签。`WindowManager` 同时提供:进程级 `tabId`/`groupId` 分配器(全局唯一)、
-`byWebContents`(IPC/快捷键反查窗口;chrome、overlay、**通知视图**、任意标签视图都认)、`byTabId`(MCP/插件反查窗口)、`focused()`(聚焦窗口:优先级 = `markActive` 显式指定 → OS 焦点 → 最近聚焦 → 最后创建)、
+`byWebContents`(IPC/快捷键反查窗口;chrome、overlay、任意标签视图都认)、`byTabId`(MCP/插件反查窗口)、`focused()`(聚焦窗口:优先级 = `markActive` 显式指定 → OS 焦点 → 最近聚焦 → 最后创建)、
 `allTabs()`(汇总,每条补 `windowId`)、`broadcast()`(向所有窗口广播插件事件)。
 
 `role` 是 `'user' | 'agent'` 二选一:`'agent'` 表示该窗口是 bow 为 MCP 客户端维护的**专属窗口**
@@ -200,7 +200,6 @@ Electron 的合成顺序:`contentView` 的子视图按加入顺序从底到顶;*
 | chrome 窗口 webContents | `index.ts` 的 `createWindow()` | `frame:false`;承载 `index.html`(标签栏+工具栏+地址栏) |
 | 每标签一个 `WebContentsView` | `TabManager.spawn()`(`create()` / `splitFocused()` / `applyLayout()` 共用) | 普通标签**不给 preload**(`sandbox:true`);bounds 全部由活动组的 `computeLayout()` 给出(见下) |
 | Overlay `WebContentsView` | `OverlayManager.ensureView()` | 透明(`#00000000`)、**每窗口**单例、按需创建;`raise()` = 重新 `addChildView` 置顶 |
-| Toast `WebContentsView` | `ToastManager.ensureView()` | 透明、**每窗口**单例、按需创建;贴底部居中、**bounds 刚好包住通知卡片**(高度由 `toast.html` 实测后经 `toast:height` 上报,`layout()` 按它摆)。**不能铺满窗口**:`setIgnoreMouseEvents` 只属于 BaseWindow/BrowserWindow,`WebContentsView` 没有点击穿透,铺满就会把页面点击吃掉 |
 | 内部页面标签 | `TabManager.create(internalId)` | 唯一的例外:普通标签视图 + **注入应用 preload** |
 
 布局引擎:
@@ -213,11 +212,9 @@ Electron 的合成顺序:`contentView` 的子视图按加入顺序从底到顶;*
     `min(chromeHeight, ceil(payload.rect.y + rect.height))`——即「绝不上盖工具栏,但尽量贴住地址栏底边」。
     **假设工具栏是 chrome 的最后一行**;将来加书签栏这种整行,这里要回退成 `chromeHeight`;
   - `page-top-right`:页面区右上角的小矩形(页内查找条),bounds 由 `@shared/find` 的 `findBarRect()`
-    精算 —— `WebContentsView` **没有点击穿透**,铺满会把右半页的点击全吃掉(与底部居中通知同一类约束,见 §3 开头表)。
+    精算 —— `WebContentsView` **没有点击穿透**,铺满会把右半页的点击全吃掉(见 §3 开头表与 §13 第 3 条)。
     打开与关闭时都接管/归还键盘焦点(`content.id === 'find'` 与 `full` 同一处理)。
 - `raise()` 由 `tabs.on('tabs-changed')` 触发:新标签视图会盖住已开浮层,所以每次标签增删都要重新置顶。
-  **通知视图同理**(同一处一起抬),而且 `ui:overlay` 开浮层的分支里还要再抬一次
-  (`below-chrome` 的地址栏建议是**全宽带**,不重抬就会盖住底部居中通知)。
 - **标签组(标签栏的一项 = 一个组)**:一个组是一棵**二叉嵌套分屏树**(`shared/split.ts` 的 `LayoutNode`:
   叶子是标签,`split` 节点带 `axis`(row=左右 / column=上下)与 `ratio`)。`TabManager` 持有
   `groups: TabGroup[]`(纯记账在 `@shared/groups`,树操作在 `@shared/split`;单测见 `tests/groups.test.ts`、
@@ -386,7 +383,7 @@ interface PluginUiContribution {
 | `service.onMcpHttpReady` | `(cb) => void` | 订阅 `MCP_HTTP_READY_EVENT` |
 | `service.mcpHttp.start/stop/restart/status` | 见 §6.5 | 内核持有监听;`stop()` 固定以 `source:'plugin'` 调用 |
 | `service.activity.snapshot/onChange` | 见 §6.6 | `onChange` 的取消订阅进 disposer |
-| `service.agent.report` | `(signal: AgentSignal & { tabId }) => void` | 不回收(内核持有)。把「终端里的编码代理」状态交给主进程:角标写进 `TabInfo.agent`(经 `TabManager.setAgentState`)、通知进底部居中视图。`tabId` 是**权威身份**(信号来自哪个 pty 会话),不采信负载里的值。实现:`kernel.setAgentReporter`(index.ts 注入)→ `main/agentNotify.ts`;协议与归约见 `@shared/agentState`。唯一调用方是终端插件(剥 OSC 后上报) |
+| `service.agent.report` | `(signal: AgentSignal & { tabId }) => void` | 不回收(内核持有)。把「终端里的编码代理」状态交给主进程:角标写进 `TabInfo.agent`(经 `TabManager.setAgentState`),`blocked` / `idle+done` 各弹一条**系统通知**。`tabId` 是**权威身份**(信号来自哪个 pty 会话),不采信负载里的值。实现:`kernel.setAgentReporter`(index.ts 注入)→ `main/agentNotify.ts`(通知出口 = `main/systemNotify.ts`);协议与文案见 `@shared/agentState`。唯一调用方是终端插件(剥 OSC 后上报) |
 | `shortcuts.register` | `(HotkeySpec, handler) => void` | 从热键数组移除 |
 
 ⚠️ `PluginStorage` 只是 `JsonStore<T>` 的结构子集(`get` / `set(patch)` / `setRaw(value)`)。
@@ -525,7 +522,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | id | core | capabilities | IPC 方法 | MCP 工具 | net | content | suggest | shortcut | events | 存储 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `history` | ✓ | ui, suggest | `list` `count` `remove(ids[])` `clear` `getSettings` `setSettings` | — | — | — | priority 10 | — | on `tab:navigated` `search:performed`;emit `changed` | `history.json` `history-settings.json` |
-| `bookmarks` | ✓ | ui, suggest, mcp | `list` `add` `addFolder` `update` `remove` `move` `findByUrl` | `browser_add_bookmark` `browser_list_bookmarks` | — | — | priority 20 | — | emit `changed` | `bookmarks.json` |
+| `bookmarks` | ✓ | ui, suggest, mcp | `list` `add` `addFolder` `update` `remove` `move` `findByUrl` `export` | `browser_add_bookmark` `browser_list_bookmarks` | — | — | priority 20 | — | emit `changed` | `bookmarks.json` |
 | `cors` | — | ui, net | `getSettings` `setSettings` | — | `onBeforeSendHeaders`(记预检 id)+ `onHeadersReceived`(注入 ACAO/ACAM/ACAH,预检覆盖 statusLine) | — | — | — | emit `changed` | `cors.json` |
 | `mcp-http` | ✓ | ui, service | `getState` `setSettings` `restart` `toggle` | — | — | — | — | — | on `mcp-http:ready`(经 `service.onMcpHttpReady`)+ `mcpActivity.onChange`;emit `changed` | `mcp-http.json` |
 | `default-browser` | — | ui | `status` `register` `unregister` `openSettings` | — | — | — | — | — | — | 无(状态现读系统:Linux 读 `mimeapps.list`;Windows 先按 UserChoice 主键→备用键→`Software\Classes` 默认值读“记录”,再用 PowerShell 调 shell 的 `AssocQueryString` 拿“**实际生效者**”,两者不一致时以实际为准并标注记录已失效) |
@@ -534,7 +531,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `logseq` | — | ui | `getState` `pickGraph` `setGraph` `rebuildIndex` `getSettings` `setSettings` `toggleFavorite` `readJournal` `readPage` `listJournals` `listPages` `backlinks` `listTemplates` `savePage` `attach` `setView` `openInNewPane` | — | — | — | — | — | on `tab:closed`(按 tabId 丢视图状态);emit `graph-changed` `settings-changed` `favorites-changed` | `logseq.json`(图目录 + 最近图 + 正文字号 + 每个图的收藏) |
 | `downloads` | — | ui, mcp | `list` `pause` `resume` `cancel` `retry` `remove` `clear` `openFile` `showInFolder` `getSettings` `setSettings` `pickDirectory` `revealDir` | `browser_list_downloads` `browser_download` | — | — | — | — | emit `changed` | `downloads.json`(记录)+ `downloads-settings.json`(目录 / 询问 / 保留条数) |
 | `quark` | — | ui | `listFiles` `pushAria2` `getSettings` `setSettings` `testAria2` | —(不贡献 MCP 工具) | — | —(按需 `pages.execute`,不注入常驻脚本) | — | — | — | `quark.json`(UA / Cookie 域名白名单 / aria2 RPC) |
-| `passwords` | — | ui, shortcut | `status` `setup` `unlock` `lock` `list` `getEntry` `save` `remove` `copy` `readPageFields` `fillEntry` `beginFill` `changeMaster` `getSettings` `setSettings` `wipe` | —(刻意不贡献 MCP 工具:与 AI 隔离) | — | —(按需 `pages.execute` 注入探测 / 下拉 / 填入脚本,不注入常驻脚本) | — | `Ctrl/Cmd+Shift+P` | emit `state-changed` `settings-changed` `open-panel` | `passwords.json`(AES-256-GCM 密文)+ `passwords-settings.json`(自动锁定 / 剪贴板 / 子域匹配) |
+| `passwords` | — | ui, shortcut | `status` `setup` `unlock` `lock` `list` `getEntry` `save` `remove` `copy` `readPageFields` `fillEntry` `beginFill` `changeMaster` `getSettings` `setSettings` `wipe` `exportBackup` | —(刻意不贡献 MCP 工具:与 AI 隔离) | — | —(按需 `pages.execute` 注入探测 / 下拉 / 填入脚本,不注入常驻脚本) | — | `Ctrl/Cmd+Shift+P` | emit `state-changed` `settings-changed` `open-panel` | `passwords.json`(AES-256-GCM 密文)+ `passwords-settings.json`(自动锁定 / 剪贴板 / 子域匹配);`exportBackup` 只写**密文副本**到 bow 下载目录 |
 | `pomo` | — | ui, mcp, shortcut | `getState` `getSettings` `setSettings` `start` `pause` `skip` `reset` `toggle` | `browser_pomo_status` `browser_pomo_start` `browser_pomo_pause` `browser_pomo_skip` | — | — | — | `Ctrl/Cmd+Shift+O` | emit `state` `phase-end` | `pomo.json`(设置 + 运行状态:阶段 / `endsAt` / 本轮计数 / 今日完成数;**只在状态转换时写盘**) |
 
 **渲染层侧**(`registry.ts` / 各插件 `ui.ts`)
@@ -748,13 +745,12 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | 标签组 | `getGroups()` `groupsActivate(groupId)` `splitPane(dir)` `resizePane(dir)` `groupsUngroup()`(后两条键盘入口在主进程,IPC 是渲染层兜底与 E2E 入口) |
 | 分屏布局 | `getLayouts()` `saveLayout(name?)` `applyLayout(id)` `deleteLayout(id)`(只存结构;套用 = 在当前组后面新开一个标签组) |
 | 浮层 | `showOverlay(content\|null)` `onOverlayEvent(cb)` `onOverlayShow(cb)` `overlayEmit(id,event,args)` |
-| 通知 | `toasts.onShow(cb)` `toasts.reportHeight(h)` `toasts.activate(id)` `toasts.dismiss(id)`(仅 `toast.html` 用;`reportHeight` 是必需的 —— 视图 bounds 按它摆,见 §3) |
 | 插件 | `plugins.list()` `setEnabled(id,enabled)` `invoke(id,method,…args)` `overlayEvent(overlayId,event,args)` `suggest(input)` `onChanged(cb)` `onEvent(cb)` |
 | 订阅 | `onTabUpdated` `onTabsChanged` `onTabActivated` `onSettingsChanged` `onFocusAddressRequest` `onWindowBlur` `onGroupsChanged`(均返回取消订阅函数) |
 
 ⚠️ `browserAPI` 也暴露给内部页面标签(设置页)与 Overlay;普通网页标签**没有** preload。
 
-### 7.2 六个渲染入口
+### 7.2 五个渲染入口
 
 | 入口 | 文件 | 职责 |
 | --- | --- | --- |
@@ -763,7 +759,6 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | settings | `renderer/settings.html` → `SettingsPage.vue` | 左侧导航 + 右侧内容(常规 / 快捷键 / 插件管理 / 插件分区) |
 | terminal | `renderer/terminal.html` → `terminal/TerminalApp.vue` | `bow://terminal` 页面:xterm + node-pty 会话接线(视图组件在终端插件的 `ui/TerminalView.vue`) |
 | logseq | `renderer/logseq.html` → `logseq/LogseqApp.vue` | `bow://logseq` 页面:日志/页面编辑器(视图组件在笔记插件的 `ui/JournalView.vue`) |
-| toast | `renderer/toast.html` → `toast/ToastApp.vue` | 底部居中通知栈:只画主进程下发的栈,把量到的高度回传;**没有本地状态机**(该不该弹/何时消失只有 `main/agentNotify.ts` 一处实现) |
 
 `App.vue` 关键机制:
 
@@ -933,16 +928,13 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `settings:set` | patch | `Settings` |
 | `ui:overlay` | `OverlayContent \| null` | `true` |
 | `ui:overlay-event` | `OverlayEvent` | `true`(`find` 由 `findBar.ts` 处理;`confirm-close` 的 `confirm` 由 `closeConfirm.ts` 处理:置位后放行关闭;取消走通用 `close-request`) |
-| `ui:chrome-height` | height | `true`(同时重排页面视图、overlay 条带与底部居中通知) |
+| `ui:chrome-height` | height | `true`(同时重排页面视图与 overlay 条带) |
 | `plugins:list` | — | `PluginInfo[]` |
 | `plugins:set-enabled` | id, enabled | `PluginInfo[]` |
 | `plugins:invoke` | id, method, args[] | `unknown` |
 | `plugins:overlay-event` | overlayId, event, args | `boolean` |
 | `plugins:suggest` | input | `{rows, suggestions}` |
 | `window:minimize` / `window:maximize` / `window:close` | — | `void`(≥2 标签时被 `closeConfirm.ts` 拦下,先弹确认框) |
-| `toast:height` | height | `true`(仅通知视图用:把量到的栈高度告诉主进程,`ToastManager` 按它设 bounds) |
-| `toast:dismiss` | id | `true`(× 按钮:从通知栈里摘掉并取消自动关闭) |
-| `toast:activate` | id | `true`(点卡片:摘掉通知 → `markActive` + `tabs.activate(tabId)` + 补一次页面 focus(已激活标签的 `activate()` 会早退)+ `show/focus` 窗口) |
 
 `send`(主进程 → 渲染层):
 
@@ -957,7 +949,6 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `plugin:event` | `{id, event, args}` | `ctx.ipc.emit()` 经 broadcaster。终端插件的 `data`/`exit`/`settings-changed`/`session-closed` 与笔记插件的 `graph-changed` 走的就是这条(内部页面按 `args.tabId` / `args.paths` 自过滤) |
 | `overlay:show` | `OverlayShowMessage \| null` | `OverlayManager.send()` |
 | `find:state` | `FindStateMessage` | `main/findBar.ts` 的 `pushState()`(仅查找条订阅;`currentId !== 'find'` 时不推) |
-| `toast:show` | `{ items: AgentToastItem[] }` | `ToastManager.send()`(空数组 = 清空并收起;首次加载完成会补发一次) |
 | `overlay-event` | `OverlayEvent` | `ipc.ts`(suggest 专用转发) |
 | `chrome:focus-address` | — | `tabShortcuts.ts` 的 `focusAddressBar()`(Ctrl+L / Ctrl+T 与 `chrome:request-focus-address` 共用) |
 | `chrome:page-focus` | — | `ipc.ts`(订阅 `TabManager` 的 `view-focused`;投递前用 `isFocused()` 丢掉迟到的 focus 事件) |
@@ -1010,7 +1001,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `npm run test:mcp:http` | 连已常驻的 HTTP 浏览器 |
 | `npm run test:e2e:device` | 设备检查插件的**假手机** E2E:真 Electron + 真 MCP + 真 TCP/WS,只有 adb 与设备端是假的(不需要真机,也不需要显示环境) |
 | `npm run test:e2e:quark` | 夸克网盘插件的**离线** E2E:用 `--host-resolver-rules` 把 `pan/drive-pc.quark.cn` 指到本机一个 HTTPS 假服务器(自签证书 + `--ignore-certificate-errors`),再起一个假 aria2 JSON-RPC 服务器,于是「读页面 → 取直链 → 推 aria2」整条链路在真 Electron 里跑一遍,并断言**两端真正收到了什么**(接口的 UA/登录态/无 `Origin`;aria2 header 的 UA/Referer 与 Cookie 白名单边界)。页面用 MCP 核心工具打开,插件 IPC 用 `--remote-debugging-port` 在 chrome 页面 target 上调 `plugins.invoke`。不需要夸克账号,只需要 openssl |
-| `npm run test:e2e:agent` | 代理状态的 E2E:假 pi(只往 pty 打一条 `1337;bow` 信号)走真终端 → 断言标签栏角标、底部居中通知卡片的文本/高度、点卡片进入对应标签、点通知≠回答弹框、关标签后清理;后半段还验设置页「Pi 状态联动」的一键接入(写/删真实文件到临时 `PI_CODING_AGENT_DIR`);在 Linux 上另验「WSL2 提醒不出现」(`status.wsl` 不存在——那段提醒只在 Windows 上给,免得误导)。`BOW_E2E_BIN=dist/linux-unpacked/bow` 可改验打包版(确认源码能从 asar 里读到)。Linux 缺 `libasound.so.2` 时不需要 root:从镜像的 `extra.db` 查出 `alsa-lib` 的包名,下下来 `bsdtar -xf` 到**持久目录**(如 `~/.cache/bow-alsa` —— 放 `/tmp` 会被清掉),再 `LD_LIBRARY_PATH=<解包的 usr/lib>`(与 README 的 `SMOKE_LD_LIBRARY_PATH` 同一招) |
+| `npm run test:e2e:agent` | 代理状态的 E2E:假 pi(只往 pty 打一条 `1337;bow` 信号)走真终端 → 断言标签栏角标、系统通知的标题/正文(桌面通知观察不到,靠 `BOW_NOTIFY_LOG` 的 JSONL)、代理继续时那条通知被撤回、点通知进入对应标签(OS 点击合成不了,走 `__bowNotifyClick`)、点通知≠回答弹框、关标签后清理,并断言 `toast.html` 不存在;后半段还验设置页「Pi 状态联动」的一键接入(写/删真实文件到临时 `PI_CODING_AGENT_DIR`);在 Linux 上另验「WSL2 提醒不出现」(`status.wsl` 不存在——那段提醒只在 Windows 上给,免得误导)。`BOW_E2E_BIN=dist/linux-unpacked/bow` 可改验打包版(确认源码能从 asar 里读到)。Linux 缺 `libasound.so.2` 时不需要 root:从镜像的 `extra.db` 查出 `alsa-lib` 的包名,下下来 `bsdtar -xf` 到**持久目录**(如 `~/.cache/bow-alsa` —— 放 `/tmp` 会被清掉),再 `LD_LIBRARY_PATH=<解包的 usr/lib>`(与 README 的 `SMOKE_LD_LIBRARY_PATH` 同一招) |
 | `npm run mcp` / `mcp:http` | 经 `open-bow.mjs` 以 stdio / HTTP 模式启动 |
 | `npm run mcp:install [-- …]` | 把 MCP 配置 + skill 写进 pi(幂等、可回滚、非 JSON 直接中止) |
 | `npm run pi:install-status [-- …]` | 把状态桥扩展写进 `~/.pi/agent/extensions/bow-agent-state.ts`(幂等;`--dry-run` / `--print` / `--uninstall` / `--force` / `--extension-dir`)。目标文件带 `managed by bow` 标记:没有该标记且存在时拒写(不覆盖别人的扩展) |
@@ -1031,7 +1022,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `e2e-device-inspect.mjs` + `fixtures/fake-phone-{,adb,device}.mjs` | 设备检查插件的假手机 E2E:`fake-phone-adb.mjs` 仿 adb 输出并在 `forward` 时拉起 `fake-phone-device.mjs`(HTTP `/json` + WS CDP,并把收到的每条命令写进 `cdp-log.jsonl`),驱动脚本用 MCP 客户端跑 11 个 `device_*` 工具,并用 bow 自己的 `--remote-debugging-port` 往手机 DevTools 前端 target 发 `Ctrl+Shift+→` 验分屏 |
 | `e2e-quark-headers.mjs` | 夸克插件的离线 E2E(自签 HTTPS 假夸克服务器 + 假 aria2 JSON-RPC 服务器 + 隔离 `--user-data-dir`)。它**自己 spawn Electron**(不经 `open-bow.mjs`),因为 `host-resolver-rules` 的值里含空格,而 `BOW_ELECTRON_ARGS` 是按空格切分的 |
 | `install-pi-agent-state.mjs` | 写 pi 的状态桥扩展;源是仓库里的 `integrations/pi/bow-agent-state.ts`(单文件、无运行时依赖,jiti 直接跑)。未安装时的降级:只有「正在执行」角标(靠 pi 内建的 `terminal.showTerminalProgress`)。打包后的应用里**没有这个脚本**:设置页的一键接入走 `src/plugins/terminal/piBridge.ts`(同一套规则,不变式由 `tests/piBridgeExtension.test.ts` 钉住) |
-| `e2e-agent-status.mjs` | 代理状态 E2E:不装 MCP、不用真 pi,全程 CDP —— chrome target 开终端页、终端页 `window.__bowTerminal.send` 敲命令、toast target 读/点卡片、设置页 target 点一键接入的按钮 |
+| `e2e-agent-status.mjs` | 代理状态 E2E:不装 MCP、不用真 pi,全程 CDP —— chrome target 开终端页、终端页 `window.__bowTerminal.send` 敲命令、主进程 inspector target 驱动 `__bowNotifyClick` 并读 `BOW_NOTIFY_LOG`、设置页 target 点一键接入的按钮 |
 | `cors-test-server.mjs` / `cors-probe.html` | CORS 插件的人工验证环境 |
 | `fetch-northbound.mjs` | 外网连通性探测 |
 
@@ -1150,11 +1141,11 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 
 1. 插件 `activate` 早于窗口/标签创建 → 需要 TabManager 的能力必须走 `onMcpHttpReady` 或惰性取 `ctx.tabs`/`ctx.pages`。
 2. `NetHookHost.install()` / `setupDevTools()` / `setupTabShortcuts()` 都**必须在创建任何窗口/视图之前**调用。
-3. 页面视图永远盖在 chrome 上 → 任何浮在页面上方的 UI 都必须走 OverlayManager / ToastManager,
-   `tabs-changed` 时要 `raise()`(开浮层之后也要再抬一次通知:`below-chrome` 的建议下拉是全宽带)。
+3. 页面视图永远盖在 chrome 上 → 任何浮在页面上方的 UI 都必须走 OverlayManager,`tabs-changed` 时要 `raise()`。
    **`WebContentsView` 没有点击穿透**(`setIgnoreMouseEvents` 只属于 BaseWindow/BrowserWindow,
-   见 electron.d.ts)→ 底部居中通知视图的 bounds 必须**刚好包住卡片**(高度由渲染层实测回传),
+   见 electron.d.ts)→ 浮层的 bounds 必须**刚好包住内容**(页内查找条的高度是固定值、宽度有上限),
    别想用「铺满窗口 + CSS `pointer-events:none`」:落在视图矩形里的点击会被它吃掉。
+   (代理状态通知已改成 OS 级通知,不再有这个约束。)
 4. 浮层 id 必须满足 `plugin:<pluginId>:<panelId>`,否则 `routeOverlayEvent` 路由不到插件。
    **核心浮层**(`suggest` / `split-menu` / `confirm-close`)反过来必须自己在 `ipc.ts` 开分支:
    `suggest` 与 `split-menu` 的事件要转发给 chrome(它们的 owner 是 chrome),

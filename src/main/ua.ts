@@ -2,7 +2,7 @@
 
 import { app } from 'electron'
 import { join } from 'node:path'
-import { BROWSER_NAME, bowUserAgent } from '@shared/ua'
+import { APP_DESKTOP_NAME, BROWSER_NAME, bowUserAgent } from '@shared/ua'
 
 // 旧数据目录名:钉住它,改名不影响书签/历史/设置/日志
 // 注意:若日后 package.json name 变更,此路径常量需同步更新
@@ -26,6 +26,7 @@ function hasExplicitUserData(): boolean {
  *   (**显式指定 userData 时跳过**,见 hasExplicitUserData)
  * - app.userAgentFallback 全局替换为 bow 签名:同时生效于 HTTP 请求头、
  *   Service Worker 与页面侧 navigator.userAgent / appVersion / platform
+ * - Windows:AppUserModelID → bow(系统通知 / 任务栏分组都挂在这个标识下)
  * 顺序要求:先取旧名再 setName;setPath('userData') 必须先于任何 getPath('userData')。
  */
 export function applyBrowserIdentity(): void {
@@ -35,5 +36,9 @@ export function applyBrowserIdentity(): void {
   if (!hasExplicitUserData()) {
     app.setPath('userData', join(app.getPath('appData'), LEGACY_APP_DIR))
   }
+  // Windows 的 Toast 通知需要 AppUserModelID:不设的话通知会归到 electron.exe 名下,
+  // 未安装形态(没有带这个 ID 的 Start Menu 快捷方式)甚至可能完全不弹。
+  // 值与 `package.json` 的 build.appId / Linux 的 .desktop 基名同源(见 @shared/ua)。
+  if (process.platform === 'win32') app.setAppUserModelId(APP_DESKTOP_NAME)
   app.userAgentFallback = bowUserAgent(app.userAgentFallback, legacyName, version)
 }

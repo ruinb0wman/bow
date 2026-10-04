@@ -1,38 +1,18 @@
 /**
- * 代理状态纯逻辑:OSC 信号解析 + 角标 + 通知栈归约。
+ * 代理状态纯逻辑:OSC 信号解析 + 角标映射 + 通知文案。
  *
  * 这些用例是本方案最值钱的一层 —— 协议边界(pty 的 chunk 切分、非本协议序列必须原样放行、
  * 坏负载不能吞文本、`9;4` 降级)全在这里,任何一条回归都表现为「终端里冒出乱码」或「通知弹错/不消」。
  */
 
 import { describe, expect, it } from 'vitest'
-import {
-  AGENT_DONE_BADGE_MS,
-  BOW_OSC_PREFIX,
-  MAX_AGENT_TOASTS,
-  OscSignalParser,
-  badgeOfSignal,
-  normalizeAgentSignal,
-  reduceToasts,
-  toastHeadline,
-  toastsWouldChange
-} from '../src/shared/agentState'
-import type { AgentToastItem, ToastAction, ToastContext } from '../src/shared/agentState'
+import { AGENT_DONE_BADGE_MS, BOW_OSC_PREFIX, OscSignalParser, badgeOfSignal, notificationCopy } from '../src/shared/agentState'
 
 const BEL = '\x07'
 const ST = '\x1b\\'
 
 function sig(payload: Record<string, unknown>): string {
   return `${BOW_OSC_PREFIX}${JSON.stringify(payload)}${BEL}`
-}
-
-function ctx(): ToastContext {
-  let n = 0
-  return { id: () => `t${++n}`, now: () => 1_000_000 + n }
-}
-
-function signalAction(tabId: number, payload: Record<string, unknown>, c: ToastContext): ToastAction {
-  return { type: 'signal', tabId, signal: normalizeAgentSignal({ v: 1, ...payload })!, id: c.id(), at: c.now() }
 }
 
 // ---------- ① 解析 ----------
@@ -157,108 +137,24 @@ describe('badgeOfSignal', () => {
   })
 })
 
-// ---------- ③ 通知栈 ----------
+// ---------- ③ 通知文案 ----------
 
-describe('reduceToasts', () => {
-  it('blocked 入栈;同一标签再来一条 blocked 是替换而不是堆叠', () => {
-    const c = ctx()
-    let items: AgentToastItem[] = []
-    items = reduceToasts(items, signalAction(1, { v: 1, state: 'blocked', title: '第一个' }, c), c)
-    expect(items).toHaveLength(1)
-    items = reduceToasts(items, signalAction(1, { v: 1, state: 'blocked', title: '第二个' }, c), c)
-    expect(items).toHaveLength(1)
-    expect(items[0]?.text).toBe('第二个')
-  })
-
-  it('blocked → working:撤掉该标签的等待通知(用户答了)', () => {
-    const c = ctx()
-    let items = reduceToasts([], signalAction(1, { v: 1, state: 'blocked' }, c), c)
-    items = reduceToasts(items, signalAction(1, { v: 1, state: 'working' }, c), c)
-    expect(items).toEqual([])
-  })
-
-  it('idle(非 done)不弹任何东西,但会撤掉 blocked', () => {
-    const c = ctx()
-    let items = reduceToasts([], signalAction(1, { v: 1, state: 'blocked' }, c), c)
-    items = reduceToasts(items, signalAction(1, { v: 1, state: 'idle' }, c), c)
-    expect(items).toEqual([])
-    items = reduceToasts([], signalAction(1, { v: 1, state: 'idle' }, c), c)
-    expect(items).toEqual([])
-  })
-
-  it('idle + done 入 done 通知;再来一次是替换', () => {
-    const c = ctx()
-    let items = reduceToasts([], signalAction(1, { v: 1, state: 'idle', done: true, text: 'π - bow' }, c), c)
-    expect(items).toHaveLength(1)
-    expect(items[0]?.kind).toBe('done')
-    expect(items[0]?.text).toBe('π - bow')
-    items = reduceToasts(items, signalAction(1, { v: 1, state: 'idle', done: true }, c), c)
-    expect(items).toHaveLength(1)
-  })
-
-  it('done 通知不被随后的 working 抹掉(它是提醒,不是状态)', () => {
-    const c = ctx()
-    let items = reduceToasts([], signalAction(1, { v: 1, state: 'idle', done: true }, c), c)
-    items = reduceToasts(items, signalAction(1, { v: 1, state: 'working' }, c), c)
-    expect(items).toHaveLength(1)
-  })
-
-  it('不同标签互不影响', () => {
-    const c = ctx()
-    let items = reduceToasts([], signalAction(1, { v: 1, state: 'blocked' }, c), c)
-    items = reduceToasts(items, signalAction(2, { v: 1, state: 'blocked' }, c), c)
-    items = reduceToasts(items, signalAction(1, { v: 1, state: 'working' }, c), c)
-    expect(items.map((t) => t.tabId)).toEqual([2])
-  })
-
-  it('dismiss 按 id 移除;tab-closed 清掉该标签的全部通知', () => {
-    const c = ctx()
-    let items = reduceToasts([], signalAction(1, { v: 1, state: 'blocked' }, c), c)
-    items = reduceToasts(items, signalAction(2, { v: 1, state: 'idle', done: true }, c), c)
-    const first = items[0]!
-    expect(reduceToasts(items, { type: 'dismiss', id: first.id }, c)).toHaveLength(1)
-    expect(reduceToasts(items, { type: 'tab-closed', tabId: 1 }, c).map((t) => t.tabId)).toEqual([2])
-  })
-
-  it('超过上限丢最旧的', () => {
-    const c = ctx()
-    let items: AgentToastItem[] = []
-    for (let tab = 1; tab <= MAX_AGENT_TOASTS + 1; tab++) {
-      items = reduceToasts(items, signalAction(tab, { v: 1, state: 'blocked' }, c), c)
-    }
-    expect(items).toHaveLength(MAX_AGENT_TOASTS)
-    expect(items.map((t) => t.tabId)).toEqual([2, 3, 4, 5])
-  })
-})
-
-describe('toastsWouldChange', () => {
-  it('只在该动的动作上为真(避免心跳把视图重画)', () => {
-    const c = ctx()
-    const items = reduceToasts([], signalAction(1, { v: 1, state: 'blocked' }, c), c)
-    expect(toastsWouldChange(items, signalAction(1, { v: 1, state: 'blocked' }, c))).toBe(true)
-    expect(toastsWouldChange(items, signalAction(1, { v: 1, state: 'working' }, c))).toBe(true)
-    expect(toastsWouldChange(items, signalAction(2, { v: 1, state: 'working' }, c))).toBe(false)
-    expect(toastsWouldChange(items, signalAction(2, { v: 1, state: 'idle' }, c))).toBe(false)
-    expect(toastsWouldChange(items, signalAction(2, { v: 1, state: 'idle', done: true }, c))).toBe(true)
-  })
-})
-
-describe('toastHeadline', () => {
+describe('notificationCopy', () => {
   it('blocked 把对话框标题与会话标签都带上;done 用会话标签', () => {
     expect(
-      toastHeadline('blocked', { v: 1, state: 'blocked', title: '切换到 build？', text: 'π - bow - repo' })
+      notificationCopy('blocked', { v: 1, state: 'blocked', title: '切换到 build？', text: 'π - bow - repo' })
     ).toEqual({
       title: 'pi 需要确认',
       text: '切换到 build？ · π - bow - repo'
     })
-    expect(toastHeadline('blocked', { v: 1, state: 'blocked', text: 'π - bow - repo' })).toEqual({
+    expect(notificationCopy('blocked', { v: 1, state: 'blocked', text: 'π - bow - repo' })).toEqual({
       title: 'pi 需要确认',
       text: 'π - bow - repo'
     })
-    expect(toastHeadline('done', { v: 1, state: 'idle', done: true, agent: 'claude', text: 'π - bow' })).toEqual({
+    expect(notificationCopy('done', { v: 1, state: 'idle', done: true, agent: 'claude', text: 'π - bow' })).toEqual({
       title: 'claude 已完成',
       text: 'π - bow'
     })
-    expect(toastHeadline('done', { v: 1, state: 'idle', done: true })).toEqual({ title: 'pi 已完成' })
+    expect(notificationCopy('done', { v: 1, state: 'idle', done: true })).toEqual({ title: 'pi 已完成' })
   })
 })

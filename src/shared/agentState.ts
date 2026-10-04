@@ -1,5 +1,5 @@
 /**
- * 「终端里的编码代理(pi)状态」的纯逻辑:**信号解析 + 角标 + 底部居中通知栈的归约**。
+ * 「终端里的编码代理(pi)状态」的纯逻辑:**信号解析 + 角标映射 + 通知文案**。
  *
  * 三段职责(都在这一份里,因为它们共享同一套类型,且都无 electron / DOM / node 依赖,可直接单测):
  *
@@ -10,7 +10,8 @@
  * 2. **降级信号**:pi 自己有一份内建的进度序列(`ESC]9;4;3` 活动 / `ESC]9;4;0` 清除,受 pi 的
  *    `terminal.showTerminalProgress` 控制,默认关)。不装桥接扩展时靠它至少能显示「正在执行」。
  *    **一旦某个会话见过一次 `1337;bow`,就再也不用 9;4** —— 否则桥接说的 `blocked` 会被它盖成 `working`。
- * 3. **角标与通知栈**:状态 → 标签角标 / 通知条目的**纯归约**(定时器与视图都在主进程那一侧)。
+ * 3. **角标与通知文案**:状态 → 标签角标(`badgeOfSignal`)与系统通知的标题/正文(`notificationCopy`)。
+ *   通知的**时机与生命周期**在 `main/agentNotify.ts`(那里持有定时器与 Electron 的 `Notification`)。
  *
  * 为什么用 OSC 而不是 socket / 状态文件:pty 与状态天然是一对一(会话就是 tabId,见终端插件的
  * 「会话按 tabId 绑定」),不引入端口 / 发现 / 清理,也不需要 bow 在别的终端里也认识这套序列
@@ -87,27 +88,8 @@ export interface OscParseResult {
   progress: OscProgressHint | null
 }
 
-/** 主进程 → 通知视图的一条通知 */
-export interface AgentToastItem {
-  id: string
-  tabId: number
-  kind: 'blocked' | 'done'
-  /** 代理名(标题用) */
-  agent: string
-  /** 主标题(bow 自己组装,如「pi 等待确认」) */
-  title: string
-  /** 副标题(对话框标题 / 会话名 / cwd 标签) */
-  text?: string
-  /** 入栈时间(epoch ms) */
-  at: number
-}
-
 /** `done` 角标的存活时长;到点由主进程清掉(避免遗留一个「已完成」钉子) */
 export const AGENT_DONE_BADGE_MS = 10_000
-/** `done` 通知的自动关闭时长(`blocked` 不自动关:它就是要等你看) */
-export const AGENT_DONE_TOAST_MS = 8_000
-/** 通知栈上限(超出丢最旧的) */
-export const MAX_AGENT_TOASTS = 4
 
 const AGENT_STATES: readonly AgentState[] = ['working', 'blocked', 'idle']
 
@@ -242,21 +224,10 @@ export function badgeOfSignal(signal: AgentSignal): AgentBadge | null {
   return signal.done ? 'done' : null
 }
 
-// ---------- ③ 通知栈归约 ----------
+// ---------- ③ 通知文案 ----------
 
-/** 归约动作。`id`/`at` 由调用方给(纯函数里不取时钟、不生成随机数) */
-export type ToastAction =
-  | { type: 'signal'; tabId: number; signal: AgentSignal; id: string; at: number }
-  | { type: 'dismiss'; id: string }
-  | { type: 'tab-closed'; tabId: number }
-
-export interface ToastContext {
-  id: () => string
-  now: () => number
-}
-
-/** 通知标题(文案集中在纯函数里,便于单测与以后换措辞) */
-export function toastHeadline(kind: 'blocked' | 'done', signal: AgentSignal): { title: string; text?: string } {
+/** 系统通知的标题与正文(文案集中在纯函数里,便于单测与以后换措辞) */
+export function notificationCopy(kind: 'blocked' | 'done', signal: AgentSignal): { title: string; text?: string } {
   const agent = signal.agent || 'pi'
   if (kind === 'done') {
     const text = signal.text || signal.title
@@ -265,55 +236,4 @@ export function toastHeadline(kind: 'blocked' | 'done', signal: AgentSignal): { 
   // blocked:`title` 是对话框标题(如「切换到 build？」),`text` 是会话标签;两个都有就都显示
   const text = [signal.title, signal.text].filter((part): part is string => !!part).join(' · ')
   return { title: `${agent} 需要确认`, ...(text ? { text } : {}) }
-}
-
-/**
- * 通知栈的纯归约。规则:
- * - `blocked` → 入栈(**同一标签只留一条**,重复的新对话替换旧的);`done` → 入栈(同样只留一条);
- * - `working` / `idle`(非 done)→ **把该标签的 `blocked` 通知撤掉**(用户答了、agent 继续了),
- *   `done` 通知不受影响(它只是提醒,不该被后续状态立刻抹掉);
- * - `dismiss` / `tab-closed` → 按 id / tabId 移除;
- * - 超过 `MAX_AGENT_TOASTS` → 丢最旧的(新通知比旧的有用)。
- */
-export function reduceToasts(
-  items: readonly AgentToastItem[],
-  action: ToastAction,
-  ctx: ToastContext
-): AgentToastItem[] {
-  if (action.type === 'dismiss') return items.filter((t) => t.id !== action.id)
-  if (action.type === 'tab-closed') return items.filter((t) => t.tabId !== action.tabId)
-
-  const { tabId, signal } = action
-  // 先把「被这次状态作废的旧通知」摘掉,再决定是否入栈
-  const kept = items.filter((t) => {
-    if (t.tabId !== tabId) return true
-    if (signal.state === 'blocked') return t.kind !== 'blocked'
-    if (signal.state === 'working') return t.kind !== 'blocked'
-    // idle
-    return signal.done ? t.kind !== 'done' : t.kind !== 'blocked'
-  })
-
-  if (signal.state === 'blocked') {
-    const head = toastHeadline('blocked', signal)
-    kept.push({ id: ctx.id(), tabId, kind: 'blocked', agent: signal.agent || 'pi', title: head.title, text: head.text, at: ctx.now() })
-  } else if (signal.state === 'idle' && signal.done) {
-    const head = toastHeadline('done', signal)
-    kept.push({ id: ctx.id(), tabId, kind: 'done', agent: signal.agent || 'pi', title: head.title, text: head.text, at: ctx.now() })
-  }
-
-  return kept.length > MAX_AGENT_TOASTS ? kept.slice(kept.length - MAX_AGENT_TOASTS) : kept
-}
-
-/**
- * 某个信号是否让通知栈发生变化。
- * 主进程据此决定要不要真的推给视图(避免每次 `9;4` 心跳 / 重复上报都把视图重画一遍)。
- */
-export function toastsWouldChange(items: readonly AgentToastItem[], action: ToastAction): boolean {
-  if (action.type === 'dismiss') return items.some((t) => t.id === action.id)
-  if (action.type === 'tab-closed') return items.some((t) => t.tabId === action.tabId)
-  const mine = items.filter((t) => t.tabId === action.tabId)
-  const { signal } = action
-  if (signal.state === 'blocked' || (signal.state === 'idle' && signal.done)) return true // 入栈/替换标题
-  if (signal.state === 'working') return mine.some((t) => t.kind === 'blocked')
-  return mine.some((t) => t.kind === 'blocked')
 }

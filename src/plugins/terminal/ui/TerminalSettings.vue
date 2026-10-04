@@ -296,8 +296,8 @@ async function copyWslCommand(): Promise<void> {
       <span class="set-label">Pi 状态联动</span>
       <div class="term-bridge">
         <div class="pbm-tools hint">
-          终端里的 <strong>pi</strong> 会把「正在执行 / 等待你确认 / 已完成」显示成标签角标与窗口底部居中通知
-          (点通知直接进入对应标签)。为此需要把 bow 的状态桥扩展装进 pi 的扩展目录 ——
+          终端里的 <strong>pi</strong> 会把「正在执行 / 等待你确认 / 已完成」显示成标签角标与<strong>系统通知</strong>
+          (点系统通知直接进入对应标签)。为此需要把 bow 的状态桥扩展装进 pi 的扩展目录 ——
           点下面这个按钮就行,装完在 pi 里重开或 <code>/reload</code> 生效。
           不装也有一半:pi 自己在设置里打开 <code>terminal.showTerminalProgress</code> 就只有「正在执行」角标。
         </div>

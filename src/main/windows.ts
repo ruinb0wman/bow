@@ -18,7 +18,6 @@ import type { WebContents } from 'electron'
 import type { TabInfo } from '@shared/types'
 import type { TabIdAllocator, TabManager, TabRecord } from './tabManager'
 import type { OverlayManager } from './overlay'
-import type { ToastManager } from './toasts'
 
 /**
  * 窗口角色。
@@ -38,8 +37,6 @@ export interface WindowContext {
   window: BrowserWindow
   tabs: TabManager
   overlay: OverlayManager
-  /** 底部居中通知的宿主(与 overlay 同级的顶层透明视图,见 main/toasts.ts) */
-  toasts: ToastManager
 }
 
 /** tabId → 所属窗口 + 该标签记录 */
@@ -123,10 +120,9 @@ export class WindowManager implements WindowRegistry {
     window: BrowserWindow,
     tabs: TabManager,
     overlay: OverlayManager,
-    toasts: ToastManager,
     role: WindowRole = 'user'
   ): WindowContext {
-    const ctx: WindowContext = { id: this.nextWindowId++, role, window, tabs, overlay, toasts }
+    const ctx: WindowContext = { id: this.nextWindowId++, role, window, tabs, overlay }
     this.contexts.push(ctx)
     this.lastFocusedId = ctx.id
     window.on('focus', () => {
@@ -142,13 +138,12 @@ export class WindowManager implements WindowRegistry {
     return this.contexts.find((c) => c.id === id) ?? null
   }
 
-  /** 由 webContents 反查窗口:chrome / overlay / 通知视图 / 任意标签视图(含内部页)都认 */
+  /** 由 webContents 反查窗口:chrome / overlay / 任意标签视图(含内部页)都认 */
   byWebContents(wc: WebContents): WindowContext | null {
     for (const ctx of this.contexts) {
       if (ctx.window.isDestroyed()) continue
       if (ctx.window.webContents === wc) return ctx
       if (ctx.overlay.hasWebContents(wc)) return ctx
-      if (ctx.toasts.hasWebContents(wc)) return ctx
       if (ctx.tabs.findTabIdByWebContents(wc) != null) return ctx
     }
     return null

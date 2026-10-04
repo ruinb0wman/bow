@@ -12,7 +12,6 @@ import type {
   TabInfo
 } from '../shared/types'
 import type { PluginInfo } from '../shared/plugins'
-import type { AgentToastItem } from '../shared/agentState'
 import type { TabGroupInfo } from '../shared/types'
 import type { LayoutPreset, PaneDir } from '../shared/split'
 
@@ -20,11 +19,6 @@ export interface PluginHostEvent {
   id: string
   event: string
   args?: unknown
-}
-
-/** 主进程 → 通知视图:当前通知栈(空数组即收起) */
-export interface ToastShowMessage {
-  items: AgentToastItem[]
 }
 
 export interface BrowserAPI {
@@ -95,18 +89,6 @@ export interface BrowserAPI {
    * 结果不走 `onOverlayShow`(重发整套 payload 会重排浮层并抢焦点,见 `main/findBar.ts`)。
    */
   onFindState: (cb: (msg: FindStateMessage) => void) => () => void
-  /**
-   * 以下仅 toast 页面(底部居中通知)使用。
-   * `reportHeight` 是必需的:通知视图**不能铺满窗口**(WebContentsView 没有点击穿透,
-   * 见 main/toasts.ts),主进程按渲染层量出来的高度精确设 bounds。
-   */
-  toasts: {
-    onShow: (cb: (msg: ToastShowMessage) => void) => () => void
-    reportHeight: (height: number) => Promise<boolean>
-    /** 点卡片:进入该通知对应的标签 */
-    activate: (id: string) => Promise<boolean>
-    dismiss: (id: string) => Promise<boolean>
-  }
   // 插件调用面
   plugins: {
     list: () => Promise<PluginInfo[]>
@@ -168,12 +150,6 @@ const api: BrowserAPI = {
   onOverlayShow: (cb) => subscribe('overlay:show', cb),
   onFindState: (cb) => subscribe('find:state', cb),
   overlayEmit: (id, event, args) => ipcRenderer.invoke('ui:overlay-event', { id, event, args }),
-  toasts: {
-    onShow: (cb) => subscribe('toast:show', cb),
-    reportHeight: (height) => ipcRenderer.invoke('toast:height', height),
-    activate: (id) => ipcRenderer.invoke('toast:activate', id),
-    dismiss: (id) => ipcRenderer.invoke('toast:dismiss', id)
-  },
   plugins: {
     list: () => ipcRenderer.invoke('plugins:list'),
     setEnabled: (id, enabled) => ipcRenderer.invoke('plugins:set-enabled', id, enabled),

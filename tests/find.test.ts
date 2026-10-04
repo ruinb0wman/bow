@@ -87,7 +87,7 @@ function makeCtx(): { ctx: WindowContext; overlay: FakeOverlay; tabs: FakeTabs }
   const tabs = new FakeTabs()
   tabs.create('https://example.com/', true)
   const overlay = new FakeOverlay()
-  const ctx = { id: 1, window: {}, tabs, overlay, toasts: {} } as unknown as WindowContext
+  const ctx = { id: 1, window: {}, tabs, overlay } as unknown as WindowContext
   return { ctx, overlay, tabs }
 }
 

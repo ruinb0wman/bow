@@ -85,11 +85,11 @@ export interface PluginServiceApi {
     onChange(cb: (snapshot: McpActivitySnapshot) => void): () => void
   }
   /**
-   * 编码代理(pi 等)状态上报面:**主进程持有落地能力**(标签角标 + 底部居中通知 + 通知视图),
+   * 编码代理(pi 等)状态上报面:**主进程持有落地能力**(标签角标 + 系统通知),
    * 插件只做上报。终端插件在 pty 输出里剥出代理写的 OSC 信号后调用它
    * (见 `@plugins/terminal/main.ts` 与 `@shared/agentState`)。
    *
-   * 为什么不做成内核事件总线:`tabId → 窗口 → 通知宿主` 的查表只有主进程做得了;
+   * 为什么不做成内核事件总线:`tabId → 窗口 → 落地目标(角标 / 通知)` 的查表只有主进程做得了;
    * 这条面与 `service.mcpHttp` / `service.activity` 同构 —— 「资源在核心,插件只做决策」。
    */
   agent: {

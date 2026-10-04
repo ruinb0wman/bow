@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * 「终端里的 AI 代理状态 → 标签角标 + 底部居中通知」的端到端验证:
+ * 「终端里的 AI 代理状态 → 标签角标 + 系统通知」的端到端验证:
  * **真 Electron + 真终端(node-pty)+ 真 OSC 路径,只有 pi 是假的**。
  *
  * 链路:假 pi 往 pty 写 `ESC]1337;bow;{…}BEL` → 终端插件剥序列 + 上报 → 主进程归约
- *      → ① `TabInfo.agent`(标签栏角标)② 底部居中通知视图 → 点击进入对应标签。
+ *      → ① `TabInfo.agent`(标签栏角标)② OS 级系统通知 → 点击进入对应标签。
  *
  * 为什么用假 pi 而不是真 pi:真 pi 要 API key、要联网、每次输出还不一样;而这里要验证的
  * 是**bow 侧**的整条链路(协议 → 角标 → 通知 → 点击),假 pi 只打印那一条序列,覆盖的是真代码路径。
@@ -13,7 +13,10 @@
  * 断言全部走 CDP:
  * - chrome 页面(`window.browserAPI.listTabs()` / 标签栏 DOM)—— 这是角标的权威数据与渲染;
  * - 终端页面(`window.__bowTerminal`)—— 往里敲命令、读回 buffer;
- * - 通知页面(toast.html)—— 卡片文本、高度、点击行为。
+ * - 系统通知 —— 桌面通知无法从 CDP 观察(headless 下甚至可能没有 notification daemon),
+ *   所以 bow 侧带 `BOW_NOTIFY_LOG` 测试缝:每次 show/close 追加一行 JSONL,本脚本读它;
+ *   「点通知」也合成不了(那是 OS 层的事件),改用同一条回调的全局入口 `__bowNotifyClick`
+ *   (同样只在设置了这个环境变量时存在)。
  *
  * 用法(需要先构建过一次:`npm run build`):
  * ```bash
@@ -39,12 +42,12 @@ const fakePi = join(dir, `fake-pi-${run}.mjs`)
 const piAgentDir = join(dir, `pi-agent-${run}`)
 const debugPort = 9700 + (run % 200)
 /**
- * 主进程的 Node inspector 端口(`--inspect`)。**只为读真窗口/真子视图的 bounds** ——
- * 通知视图的屏幕位置在渲染层量不到:toast 页的 `window.screenX/Y` 在 `WebContentsView` 里
- * 返回的是**宿主窗口**的位置(不含子视图偏移,headless 下实测恒等于窗口的 screenX),
- * 所以只能从主进程 `BrowserWindow.contentView.children` 上读 `getBounds()`。
+ * 主进程的 Node inspector 端口(`--inspect`)。系统通知从渲染层观测不到,两条路都走它:
+ * 驱动 `globalThis.__bowNotifyClick`(OS 级点击合成不了),以及读 `BOW_NOTIFY_LOG` 的 JSONL。
  */
 const inspectPort = 9400 + (run % 200)
+/** 系统通知日志(测试缝):每行一条 show/close,见 src/main/systemNotify.ts */
+const notifyLog = join(dir, `notify-${run}.jsonl`)
 const electron = createRequire(import.meta.url)('electron')
 /**
  * 默认用仓库里的 electron 跑 `out/`(开发产物)。设 `BOW_E2E_BIN` 指向打包后的可执行文件时,
@@ -62,6 +65,29 @@ function check(cond, label, detail) {
     failures += 1
     console.error(`✗ ${label}${detail === undefined ? '' : ' → ' + JSON.stringify(detail)}`)
   }
+}
+
+/** 读系统通知日志(测试缝);文件不存在/半行时返回已解析出来的部分 */
+async function readNotices() {
+  try {
+    return readFileSync(notifyLog, 'utf-8')
+      .split('\n')
+      .filter(Boolean)
+      .flatMap((line) => {
+        try {
+          return [JSON.parse(line)]
+        } catch {
+          return []
+        }
+      })
+  } catch {
+    return []
+  }
+}
+
+/** 等一条满足条件的通知日志(show / close) */
+async function waitForNotice(predicate, timeoutMs = 12000) {
+  return waitFor(async () => (await readNotices()).find(predicate) ?? null, timeoutMs)
 }
 
 async function waitFor(predicate, timeoutMs = 12000, stepMs = 150) {
@@ -91,6 +117,7 @@ if (packagedBin && !existsSync(packagedBin)) {
 mkdirSync(dir, { recursive: true })
 rmSync(userdata, { recursive: true, force: true })
 mkdirSync(userdata, { recursive: true })
+rmSync(notifyLog, { force: true })
 
 // 假 pi:把 JSON 原样包成一条 bow 信号打到 stdout(pty 里看到的就是这条序列)
 writeFileSync(
@@ -112,7 +139,12 @@ const child = spawn(
     `--remote-debugging-port=${debugPort}`,
     `--inspect=${inspectPort}`
   ],
-  { cwd: root, env: { ...process.env, BOW_E2E_DIR: dir, PI_CODING_AGENT_DIR: piAgentDir }, stdio: 'ignore' }
+  {
+    cwd: root,
+    // BOW_NOTIFY_LOG 打开系统通知的测试缝(JSONL + __bowNotifyClick),见 src/main/systemNotify.ts
+    env: { ...process.env, BOW_E2E_DIR: dir, PI_CODING_AGENT_DIR: piAgentDir, BOW_NOTIFY_LOG: notifyLog },
+    stdio: 'ignore'
+  }
 )
 
 async function cleanup() {
@@ -244,7 +276,7 @@ async function main() {
   }, 10000)
   check(!!working, 'working:TabInfo.agent 与标签栏角标同时生效', { agent: (await tabById(tabId))?.agent })
 
-  // ---------- 需要确认 → 底部居中通知 ----------
+  // ---------- 需要确认 → 系统通知(blocked) ----------
   await fakePiSend({ state: 'blocked', title: '切换到 build？', text: 'π - e2e' })
   const blockedTab = await waitFor(async () => {
     const tab = await tabById(tabId)
@@ -252,23 +284,18 @@ async function main() {
   }, 10000)
   check(!!blockedTab, 'blocked:角标变成等待确认', blockedTab?.agent)
 
-  const toastTarget = await waitFor(() => findTarget('toast.html'), 10000)
-  check(!!toastTarget, '底部居中通知视图已创建', toastTarget?.url)
-  if (!toastTarget) return
-  const toastEval = (expr) => evalOn(toastTarget.webSocketDebuggerUrl, expr)
+  const blockedNotice = await waitForNotice((n) => n.event === 'show' && n.kind === 'blocked')
+  check(!!blockedNotice, '发出「等待确认」系统通知', blockedNotice)
+  check(blockedNotice?.title === 'pi 需要确认', '通知标题是「pi 需要确认」', blockedNotice?.title)
+  check(String(blockedNotice?.body ?? '').includes('切换到 build？'), '通知正文带上对话框标题', blockedNotice?.body)
+  check(String(blockedNotice?.body ?? '').includes('π - e2e'), '通知正文带上会话标签', blockedNotice?.body)
 
-  const card = await waitFor(async () => {
-    const text = await toastEval("document.querySelector('.toast-card.blocked')?.innerText ?? ''")
-    return text && text.includes('需要确认') ? text : null
-  }, 10000)
-  check(!!card, '通知卡片出现且标题是「需要确认」', card)
-  check(String(card).includes('切换到 build？'), '通知卡片带上对话框标题', card)
+  // 窗内通知视图一整套已经删掉:不该再有任何 toast.html 页面
+  check((await findTarget('toast.html')) === null, '不再有窗内通知视图(toast.html)')
 
-  const height = await toastEval("Math.round(document.querySelector('.toast-stack')?.getBoundingClientRect().height ?? 0)")
-  check(Number(height) > 0, '通知栈量出真实高度(视图 bounds 靠它,不能是 0)', height)
-
-  // ---------- 视图位置:底部 + 水平居中 ----------
-  // 从**主进程**读真 child view 的 bounds(为什么不在渲染层量:见顶部 `inspectPort` 的注释)。
+  // ---------- 点通知 → 进入对应标签 ----------
+  // 「点桌面通知」是 OS 层事件,CDP 合成不了 —— 走 bow 侧暴露的同一条 click 回调
+  // (`__bowNotifyClick` 只在 BOW_NOTIFY_LOG 设置时存在,见 src/main/systemNotify.ts)。
   const mainTarget = async () => {
     try {
       const list = await (await fetch(`http://127.0.0.1:${inspectPort}/json/list`)).json()
@@ -277,57 +304,41 @@ async function main() {
       return null
     }
   }
-  const probe = `(() => { const req = typeof require === 'function' ? require : process.mainModule.require; const e = req('electron'); const w = e.BrowserWindow.getAllWindows()[0]; const v = w.contentView.children.find((c) => (c.webContents?.getURL?.() ?? '').includes('toast.html')); if (!v) return ''; return JSON.stringify({ content: w.getContentSize(), bounds: v.getBounds() }) })()`
-  const hostGeom = await waitFor(async () => {
+  const clickHookReady = await waitFor(async () => {
     const t = await mainTarget()
     if (!t) return null
-    const raw = await evalOn(t.webSocketDebuggerUrl, probe)
-    return raw ? JSON.parse(raw) : null
+    const kind = await evalOn(t.webSocketDebuggerUrl, 'typeof globalThis.__bowNotifyClick')
+    return kind === 'function' ? kind : null
   }, 10000)
-  check(!!hostGeom, '从主进程读到通知视图的真 bounds', hostGeom)
-  if (hostGeom) {
-    const [w, h] = hostGeom.content
-    const b = hostGeom.bounds
-    check(b.width === 360, '通知视图宽 = TOAST_WIDTH(360)', b)
-    check(
-      Math.abs(b.x - Math.max(0, Math.round((w - b.width) / 2))) <= 1,
-      '通知视图水平居中(不是旧的贴右下角)',
-      { 期望x: Math.round((w - b.width) / 2), 实际: b, 窗宽: w }
-    )
-    check(b.y + b.height === h - 12, '通知视图贴底部(距底 12px)', { 实际: b, 窗高: h })
-  }
+  check(clickHookReady === 'function', '主进程暴露了 __bowNotifyClick(测试缝)')
 
-  // ---------- 点通知 → 进入对应标签 ----------
   // 先把活动标签切走,这样「点通知切回来」才是一个可观测的变化
   const other = await chromeEval("window.browserAPI.createTab('about:blank')")
   await sleep(300)
   const activeBefore = (await tabs()).find((t) => t.active)?.id
   check(activeBefore === other?.id, '点击前焦点在另一个标签上', { activeBefore, other: other?.id })
 
-  await toastEval("document.querySelector('.toast-card.blocked').click()")
+  const mainWs = (await mainTarget())?.webSocketDebuggerUrl
+  check(!!mainWs, '拿到主进程 inspector target', mainWs)
+  if (mainWs) await evalOn(mainWs, `globalThis.__bowNotifyClick(${tabId})`)
   const activated = await waitFor(async () => {
     const active = (await tabs()).find((t) => t.active)
     return active?.id === tabId ? active : null
   }, 10000)
   check(!!activated, '点通知后进入对应标签', (await tabs()).find((t) => t.active)?.id)
 
-  const cleared = await waitFor(async () => {
-    const cards = await toastEval("document.querySelectorAll('.toast-card').length")
-    return cards === 0 ? { cards } : null
-  }, 10000)
-  check(cleared?.cards === 0, '点过的等待通知已摘掉')
   // 关键语义:**点通知只 = 「去看一眼」**,不等于用户在终端里回答了弹框 ——
   // 角标必须仍是 blocked(状态只有 pi 自己报出来才算数)。
   check((await tabById(tabId))?.agent === 'blocked', '角标仍停在等待确认(点通知 ≠ 回答弹框)', (await tabById(tabId))?.agent)
 
-  // 真的回答了(pi 报 working)→ 角标回到 working,且等待类通知不该复活
+  // 真的回答了(pi 报 working)→ 角标回到 working,且那条等待通知被撤回(close)
   await fakePiSend({ state: 'working' })
   const resumed = await waitFor(async () => {
     const badge = (await tabById(tabId))?.agent
-    const cards = await toastEval("document.querySelectorAll('.toast-card').length")
-    return badge === 'working' && cards === 0 ? { badge, cards } : null
+    const closed = (await readNotices()).some((n) => n.event === 'close' && n.kind === 'blocked' && n.tabId === tabId)
+    return badge === 'working' && closed ? { badge, closed } : null
   }, 10000)
-  check(!!resumed, '回答后角标回到 working(等待通知不复活)', resumed ?? (await tabById(tabId))?.agent)
+  check(!!resumed, '回答后角标回到 working 且等待通知被撤回', resumed ?? (await tabById(tabId))?.agent)
 
   // ---------- 任务完成 → 通知 + 角标 ----------
   await fakePiSend({ state: 'idle', done: true, text: 'π - e2e' })
@@ -337,28 +348,23 @@ async function main() {
   }, 10000)
   check(!!doneTab, '完成:角标变成已完成(随后由主进程过期)', doneTab?.agent)
 
-  const doneCard = await waitFor(async () => {
-    const text = await toastEval("document.querySelector('.toast-card.done')?.innerText ?? ''")
-    return text && text.includes('已完成') ? text : null
-  }, 10000)
-  check(!!doneCard, '完成通知出现', doneCard)
-  check(String(doneCard).includes('π - e2e'), '完成通知带上会话标签', doneCard)
+  const doneNotice = await waitForNotice((n) => n.event === 'show' && n.kind === 'done')
+  check(!!doneNotice, '发出「已完成」系统通知', doneNotice)
+  check(doneNotice?.title === 'pi 已完成', '完成通知标题是「pi 已完成」', doneNotice?.title)
+  check(String(doneNotice?.body ?? '').includes('π - e2e'), '完成通知带上会话标签', doneNotice?.body)
 
-  // × 能关掉它(自动关闭由单测覆盖,这里只验手动路径)
-  await toastEval("document.querySelector('.toast-card.done .toast-close').click()")
-  const dismissed = await waitFor(async () => (await toastEval("document.querySelectorAll('.toast-card').length")) === 0, 10000)
-  check(dismissed === true, '× 能关掉通知')
-
-  // ---------- 关标签 → 通知与角标一起清掉 ----------
+  // ---------- 关标签 → 角标与在途的等待通知一起清掉 ----------
   await fakePiSend({ state: 'blocked', title: '再确认一次' })
-  await waitFor(async () => ((await toastEval("document.querySelectorAll('.toast-card').length")) ?? 0) > 0, 10000)
+  await waitForNotice((n) => n.event === 'show' && n.kind === 'blocked' && n.body === '再确认一次', 10000)
   await chromeEval(`window.browserAPI.closeTab(${tabId})`)
   const cleaned = await waitFor(async () => {
     const badge = await chromeEval("document.querySelectorAll('.tab-agent').length")
-    const cards = await toastEval("document.querySelectorAll('.toast-card').length")
-    return badge === 0 && cards === 0
+    const closed = (await readNotices()).some(
+      (n) => n.event === 'close' && n.kind === 'blocked' && n.body === '再确认一次'
+    )
+    return badge === 0 && closed
   }, 10000)
-  check(cleaned === true, '关标签后角标与通知都清掉了')
+  check(cleaned === true, '关标签后角标与在途的等待通知都清掉了')
 
   // ---------------------------------------------------------------- 设置页「Pi 状态联动」一键接入
   // 这一段跟 pi 无关:它验的是「点一下真的把文件写进 pi 的扩展目录」(PI_CODING_AGENT_DIR 指向临时目录)

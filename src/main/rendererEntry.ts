@@ -6,7 +6,7 @@
 import { join } from 'node:path'
 import type { WebContents } from 'electron'
 
-export type RendererEntryName = 'index' | 'overlay' | 'settings' | 'terminal' | 'logseq' | 'toast'
+export type RendererEntryName = 'index' | 'overlay' | 'settings' | 'terminal' | 'logseq'
 
 export interface RendererEntry {
   kind: 'url' | 'file'

@@ -1,8 +1,11 @@
 /**
- * AgentNotify:信号 → 角标 + 通知栈 + 三种定时器。
+ * AgentNotify:信号 → 标签角标 + 系统通知。
  *
- * 依赖全部以端口注入(假 resolve / 假通知宿主 / 假时钟),所以这里不需要 electron 与真实窗口。
- * 覆盖的重点是「时序」:done 的过期、blocked 的常驻、关标签时宿主映射已摘掉仍能清通知。
+ * 依赖全部以端口注入(假 resolve / 假通知出口 / 假时钟),所以这里不需要 electron 与真实窗口。
+ * 覆盖的重点是**时机**:done 角标的过期、`blocked` 通知在「代理继续 / 关标签」时被撤回、
+ * 以及「通知只发给存在的标签」。
+ *
+ * 通知文案本身(标题/正文怎么拼)由 `tests/agentState.test.ts` 钉住;这里只断言转发与撤回。
  */
 
 import { describe, expect, it, vi } from 'vitest'
@@ -10,34 +13,41 @@ import { describe, expect, it, vi } from 'vitest'
 vi.mock('electron', async () => ({ app: { getPath: () => '/tmp', getVersion: () => '0.0.0' } }))
 
 const { AgentNotify } = await import('../src/main/agentNotify')
-const { AGENT_DONE_BADGE_MS, AGENT_DONE_TOAST_MS } = await import('../src/shared/agentState')
-type AgentToastItem = import('../src/shared/agentState').AgentToastItem
+const { AGENT_DONE_BADGE_MS } = await import('../src/shared/agentState')
 type AgentBadge = import('../src/shared/agentState').AgentBadge
-type AgentToastPort = import('../src/main/agentNotify').AgentToastPort
+type AgentNotice = import('../src/main/systemNotify').AgentNotice
+type NoticeHandle = import('../src/main/systemNotify').NoticeHandle
+type SystemNotifyPort = import('../src/main/systemNotify').SystemNotifyPort
 
-/** 假通知宿主:记下每次下发的切片 */
-class FakeToasts implements AgentToastPort {
-  private current: AgentToastItem[] = []
-  renders = 0
+/** 假系统通知出口:记下每条 show 与被 close 的句柄下标 */
+class FakeNotify implements SystemNotifyPort {
+  shown: AgentNotice[] = []
+  /** 与 shown 同下标的句柄是否已被 close */
+  closed: boolean[] = []
 
-  items(): readonly AgentToastItem[] {
-    return this.current
+  show(notice: AgentNotice): NoticeHandle {
+    const index = this.shown.push(notice) - 1
+    this.closed[index] = false
+    return {
+      close: () => {
+        this.closed[index] = true
+      }
+    }
   }
 
-  set(next: readonly AgentToastItem[]): void {
-    this.current = [...next]
-    this.renders += 1
+  /** 第 i 条通知是否被撤回 */
+  isClosed(i: number): boolean {
+    return this.closed[i] === true
   }
 
-  snap(): AgentToastItem[] {
-    return [...this.current]
+  kinds(): string[] {
+    return this.shown.map((n) => n.kind)
   }
 }
 
 interface FakeTab {
   badge: AgentBadge | null
   setBadgeCalls: number
-  toasts: FakeToasts
   closed: boolean
 }
 
@@ -70,10 +80,10 @@ function fakeClock() {
 
 function setup(tabs: number[]) {
   const clock = fakeClock()
+  const notify = new FakeNotify()
   const fake = new Map<number, FakeTab>()
-  for (const id of tabs) fake.set(id, { badge: null, setBadgeCalls: 0, toasts: new FakeToasts(), closed: false })
-  let seq = 0
-  const notify = new AgentNotify({
+  for (const id of tabs) fake.set(id, { badge: null, setBadgeCalls: 0, closed: false })
+  const agentNotify = new AgentNotify({
     resolve: (tabId) => {
       const tab = fake.get(tabId)
       if (!tab || tab.closed) return null
@@ -81,128 +91,124 @@ function setup(tabs: number[]) {
         setBadge: (badge) => {
           tab.badge = badge
           tab.setBadgeCalls += 1
-        },
-        toasts: tab.toasts
+        }
       }
     },
-    schedule: clock.schedule,
-    now: clock.now,
-    nextId: () => `n${++seq}`
+    notify,
+    schedule: clock.schedule
   })
-  return { notify, fake, clock, tab: (id: number) => fake.get(id)! }
+  return { agentNotify, fake, clock, notify, tab: (id: number) => fake.get(id)! }
 }
 
 describe('AgentNotify:角标', () => {
   it('blocked / working / idle+done 分别落到角标;idle 清掉角标', () => {
-    const { notify, tab } = setup([1])
-    notify.report({ tabId: 1, v: 1, state: 'working' })
+    const { agentNotify, tab } = setup([1])
+    agentNotify.report({ tabId: 1, v: 1, state: 'working' })
     expect(tab(1).badge).toBe('working')
-    notify.report({ tabId: 1, v: 1, state: 'blocked', title: '确认' })
+    agentNotify.report({ tabId: 1, v: 1, state: 'blocked', title: '确认' })
     expect(tab(1).badge).toBe('blocked')
-    notify.report({ tabId: 1, v: 1, state: 'idle', done: true })
+    agentNotify.report({ tabId: 1, v: 1, state: 'idle', done: true })
     expect(tab(1).badge).toBe('done')
-    notify.report({ tabId: 1, v: 1, state: 'idle' })
+    agentNotify.report({ tabId: 1, v: 1, state: 'idle' })
     expect(tab(1).badge).toBeNull()
   })
 
   it('done 角标自己过期,blocked 不会', () => {
-    const { notify, tab, clock } = setup([1])
-    notify.report({ tabId: 1, v: 1, state: 'idle', done: true })
+    const { agentNotify, tab, clock } = setup([1])
+    agentNotify.report({ tabId: 1, v: 1, state: 'idle', done: true })
     expect(tab(1).badge).toBe('done')
     clock.advance(AGENT_DONE_BADGE_MS - 1)
     expect(tab(1).badge).toBe('done')
     clock.advance(1)
     expect(tab(1).badge).toBeNull()
 
-    notify.report({ tabId: 1, v: 1, state: 'blocked' })
+    agentNotify.report({ tabId: 1, v: 1, state: 'blocked' })
     clock.advance(AGENT_DONE_BADGE_MS * 10)
     expect(tab(1).badge).toBe('blocked')
   })
 
   it('重复同一状态不重复写角标(避免每次心跳都惊动 TabManager)', () => {
-    const { notify, tab } = setup([1])
-    notify.report({ tabId: 1, v: 1, state: 'working' })
+    const { agentNotify, tab } = setup([1])
+    agentNotify.report({ tabId: 1, v: 1, state: 'working' })
     const calls = tab(1).setBadgeCalls
-    notify.report({ tabId: 1, v: 1, state: 'working' })
-    notify.report({ tabId: 1, v: 1, state: 'working' })
+    agentNotify.report({ tabId: 1, v: 1, state: 'working' })
+    agentNotify.report({ tabId: 1, v: 1, state: 'working' })
     expect(tab(1).setBadgeCalls).toBe(calls)
   })
 
-  it('落到不存在的标签不炸也不留状态', () => {
-    const { notify, tab } = setup([1])
-    expect(() => notify.report({ tabId: 99, v: 1, state: 'blocked' })).not.toThrow()
-    expect(notify.list()).toEqual([])
+  it('落到不存在的标签不炸、不发通知、不留状态', () => {
+    const { agentNotify, tab, notify } = setup([1])
+    expect(() => agentNotify.report({ tabId: 99, v: 1, state: 'blocked', title: '确认' })).not.toThrow()
+    expect(notify.shown).toEqual([])
     expect(tab(1).badge).toBeNull()
   })
 })
 
-describe('AgentNotify:通知栈', () => {
-  it('blocked 入栈并下发;working 撤掉它', () => {
-    const { notify, tab } = setup([1])
-    notify.report({ tabId: 1, v: 1, state: 'blocked', title: '切换到 build？' })
-    expect(tab(1).toasts.snap().map((t) => t.kind)).toEqual(['blocked'])
-    expect(tab(1).toasts.snap()[0]?.text).toBe('切换到 build？')
-
-    notify.report({ tabId: 1, v: 1, state: 'working' })
-    expect(tab(1).toasts.snap()).toEqual([])
+describe('AgentNotify:系统通知', () => {
+  it('blocked → 发一条,标题/正文来自 notificationCopy', () => {
+    const { agentNotify, notify } = setup([1])
+    agentNotify.report({ tabId: 1, v: 1, state: 'blocked', title: '切换到 build？', text: 'π - bow - repo' })
+    expect(notify.shown).toEqual([
+      { kind: 'blocked', title: 'pi 需要确认', body: '切换到 build？ · π - bow - repo', tabId: 1 }
+    ])
   })
 
-  it('done 通知自动关闭(到点从栈里消失)', () => {
-    const { notify, tab, clock } = setup([1])
-    notify.report({ tabId: 1, v: 1, state: 'idle', done: true, text: 'π - bow' })
-    expect(tab(1).toasts.snap()).toHaveLength(1)
-    clock.advance(AGENT_DONE_TOAST_MS - 1)
-    expect(tab(1).toasts.snap()).toHaveLength(1)
-    clock.advance(1)
-    expect(tab(1).toasts.snap()).toEqual([])
-    expect(notify.list()).toEqual([])
+  it('同一标签再来一条 blocked:先撤回旧的,再发新的(不堆两条)', () => {
+    const { agentNotify, notify } = setup([1])
+    agentNotify.report({ tabId: 1, v: 1, state: 'blocked', title: '第一个' })
+    agentNotify.report({ tabId: 1, v: 1, state: 'blocked', title: '第二个' })
+    expect(notify.shown).toHaveLength(2)
+    expect(notify.isClosed(0)).toBe(true)
+    expect(notify.isClosed(1)).toBe(false)
+    expect(notify.shown[1]?.body).toBe('第二个')
   })
 
-  it('blocked 不会自动关闭', () => {
-    const { notify, tab, clock } = setup([1])
-    notify.report({ tabId: 1, v: 1, state: 'blocked' })
-    clock.advance(AGENT_DONE_TOAST_MS * 20)
-    expect(tab(1).toasts.snap()).toHaveLength(1)
+  it('blocked → working:撤回那条等待通知(用户已经在终端里答完了)', () => {
+    const { agentNotify, notify } = setup([1])
+    agentNotify.report({ tabId: 1, v: 1, state: 'blocked', title: '确认' })
+    agentNotify.report({ tabId: 1, v: 1, state: 'working' })
+    expect(notify.shown).toHaveLength(1)
+    expect(notify.isClosed(0)).toBe(true)
   })
 
-  it('dismiss 关掉通知并取消它的自动关闭(不会关两次)', () => {
-    const { notify, tab, clock } = setup([1])
-    notify.report({ tabId: 1, v: 1, state: 'idle', done: true })
-    const id = notify.list()[0]!.id
-    notify.dismiss(id)
-    expect(tab(1).toasts.snap()).toEqual([])
-    const renders = tab(1).toasts.renders
-    clock.advance(AGENT_DONE_TOAST_MS * 2)
-    expect(tab(1).toasts.renders).toBe(renders)
+  it('idle(非 done)也撤回 blocked,但自己不弹通知', () => {
+    const { agentNotify, notify } = setup([1])
+    agentNotify.report({ tabId: 1, v: 1, state: 'blocked' })
+    agentNotify.report({ tabId: 1, v: 1, state: 'idle' })
+    expect(notify.kinds()).toEqual(['blocked'])
+    expect(notify.isClosed(0)).toBe(true)
   })
 
-  it('关标签:即便此时 byTabId 已查不到,也能把通知从那个窗口摘掉', () => {
-    const { notify, tab } = setup([1, 2])
-    notify.report({ tabId: 1, v: 1, state: 'blocked' })
-    notify.report({ tabId: 2, v: 1, state: 'blocked' })
-    expect(tab(1).toasts.snap()).toHaveLength(1)
-
-    // 模拟 TabManager.close():先让 resolve 失效,再发 tab-closed
-    tab(1).closed = true
-    notify.tabClosed(1)
-    expect(notify.list().map((t) => t.tabId)).toEqual([2])
-    expect(tab(1).toasts.snap()).toEqual([])
-    expect(tab(2).toasts.snap()).toHaveLength(1)
+  it('idle + done → 发 done 通知(不等于是 blocked,也不撤回别的标签的)', () => {
+    const { agentNotify, notify } = setup([1, 2])
+    agentNotify.report({ tabId: 1, v: 1, state: 'blocked' })
+    agentNotify.report({ tabId: 2, v: 1, state: 'idle', done: true, text: 'π - bow' })
+    expect(notify.kinds()).toEqual(['blocked', 'done'])
+    expect(notify.shown[1]).toEqual({ kind: 'done', title: 'pi 已完成', body: 'π - bow', tabId: 2 })
+    expect(notify.isClosed(0)).toBe(false)
   })
 
-  it('关标签同时取消该标签的 done 定时器(不再触碰已关的标签)', () => {
-    const { notify, tab, clock } = setup([1])
-    notify.report({ tabId: 1, v: 1, state: 'idle', done: true })
-    tab(1).closed = true
-    notify.tabClosed(1)
-    const badgeCalls = tab(1).setBadgeCalls
+  it('没有 blocked 在途时收到 working 不会瞎 close', () => {
+    const { agentNotify, notify } = setup([1])
+    agentNotify.report({ tabId: 1, v: 1, state: 'working' })
+    expect(notify.shown).toEqual([])
+    expect(notify.closed).toEqual([])
+  })
+
+  it('关标签:撤回 blocked 通知,并取消该标签的角标定时器', () => {
+    const { agentNotify, tab, clock, notify } = setup([1, 2])
+    agentNotify.report({ tabId: 1, v: 1, state: 'blocked' })
+    agentNotify.report({ tabId: 2, v: 1, state: 'idle', done: true })
+    expect(tab(2).badge).toBe('done')
+
+    // 模拟 TabManager.close():先摘 record 再发 tab-closed(这里直接发事件看清理结果)
+    const badgeCalls = tab(2).setBadgeCalls
+    agentNotify.tabClosed(1)
+    agentNotify.tabClosed(2)
+
+    expect(notify.isClosed(0)).toBe(true)
+    // 定时器被取消:到点不会再写角标(否则 resolve(2) 仍会命中,调用数会涨)
     clock.advance(AGENT_DONE_BADGE_MS * 2)
-    expect(tab(1).setBadgeCalls).toBe(badgeCalls)
-  })
-
-  it('多标签各自成条,栈上限 4', () => {
-    const { notify } = setup([1, 2, 3, 4, 5])
-    for (const id of [1, 2, 3, 4, 5]) notify.report({ tabId: id, v: 1, state: 'blocked' })
-    expect(notify.list().map((t) => t.tabId)).toEqual([2, 3, 4, 5])
+    expect(tab(2).setBadgeCalls).toBe(badgeCalls)
   })
 })
