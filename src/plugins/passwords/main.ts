@@ -26,6 +26,7 @@ import {
   originOf,
   sortEntries,
   toMeta,
+  type ExportBackupResult,
   type PasswordEntry,
   type PasswordSettings
 } from './shared'
@@ -46,6 +47,7 @@ import {
   buildPickerScript,
   type PickerCandidate
 } from './scripts'
+import { dateStamp, writeToDownloads } from '../../main/plugins/exportFile'
 
 /** 主密码最短长度(创建 / 修改时校验) */
 const MIN_MASTER_LENGTH = 6
@@ -515,6 +517,15 @@ function createPasswordsPlugin(): PluginMain {
         failedUnlocks = 0
         emitState()
         return { ok: true }
+      })
+
+      // 导出整库密文(VaultFile 原样):不含任何明文条目,锁定时也可用;仍需主密码才能恢复
+      ctx.ipc.handle('exportBackup', (): ExportBackupResult => {
+        if (!isInitialized(vault())) return { ok: false, error: '尚未创建密码库' }
+        return writeToDownloads(
+          `bow-passwords-backup-${dateStamp()}.json`,
+          JSON.stringify(vault(), null, 2)
+        )
       })
 
       // ---------- 快捷键与标签事件 ----------

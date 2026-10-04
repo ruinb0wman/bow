@@ -21,6 +21,7 @@ import { isInternalUrl } from '@shared/internalPages'
 import { isHttpUrl } from '@shared/url'
 import { scoreFields } from '@shared/suggest'
 import { textContent } from '../../main/plugins/mcpResult'
+import { dateStamp, writeToDownloads, type ExportWriteResult } from '../../main/plugins/exportFile'
 import type { PluginContext, PluginMain } from '../../main/plugins/types'
 
 interface AddInput {
@@ -108,6 +109,10 @@ const plugin: PluginMain = {
       return { ok: true }
     })
     ctx.ipc.handle('findByUrl', (url: string): FlatBookmark[] => findByUrl(store.get(), url))
+    // 导出整棵树(无损,等于 bookmarks.json 的内容)到 bow 下载目录
+    ctx.ipc.handle('export', (): ExportWriteResult =>
+      writeToDownloads(`bow-bookmarks-${dateStamp()}.json`, JSON.stringify(store.get(), null, 2))
+    )
 
     ctx.suggest.register({
       id: 'bookmarks',

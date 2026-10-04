@@ -4,11 +4,12 @@
  * 「修改主密码」需要已解锁;「清空密码库」在锁定时也能用(它是唯一的逃生口)。
  */
 import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { Lock, Trash2 } from 'lucide-vue-next'
+import { Download, Lock, Trash2 } from 'lucide-vue-next'
 import {
   AUTO_LOCK_OPTIONS,
   CLIPBOARD_CLEAR_OPTIONS,
   normalizeSettings,
+  type ExportBackupResult,
   type OkResult,
   type PasswordSettings,
   type PasswordStatus
@@ -21,6 +22,8 @@ const oldMaster = ref('')
 const newMaster = ref('')
 const confirmMaster = ref('')
 const wipeArmed = ref(false)
+const backupArmed = ref(false)
+const backupPath = ref('')
 const notice = ref('')
 const error = ref('')
 const unsubs: Array<() => void> = []
@@ -82,6 +85,19 @@ async function wipe(): Promise<void> {
   }
   await refresh()
   flash('密码库已清空')
+}
+
+/** 导出整库密文到 bow 下载目录;已初始化即可用(锁定时也行 —— 导出物不含明文) */
+async function exportBackup(): Promise<void> {
+  error.value = ''
+  const res = await api.plugins.invoke<ExportBackupResult>('passwords', 'exportBackup')
+  backupArmed.value = false
+  if (!res.ok) {
+    error.value = res.error || '导出失败'
+    return
+  }
+  backupPath.value = res.path || ''
+  flash('加密备份已导出')
 }
 
 onMounted(() => {
@@ -159,6 +175,22 @@ onBeforeUnmount(() => {
     </div>
     <div v-if="status?.locked" class="pw-settings-hint">密码库已锁定,先解锁才能修改主密码。</div>
 
+    <div class="section-title">备份</div>
+    <div class="set-row">
+      <span class="set-label">导出加密备份</span>
+      <template v-if="backupArmed">
+        <span class="pw-settings-hint">
+          导出的是整库密文(与 passwords.json 内容一致),不会泄露明文;恢复仍需主密码。
+        </span>
+        <button class="btn primary" @click="exportBackup"><Download :size="12" />确认导出</button>
+        <button class="btn" @click="backupArmed = false">取消</button>
+      </template>
+      <button v-else class="btn" :disabled="!status?.initialized" @click="backupArmed = true">
+        <Download :size="12" />导出…
+      </button>
+    </div>
+    <div v-if="backupPath" class="pw-settings-hint">已导出:<code>{{ backupPath }}</code></div>
+
     <div class="section-title">危险操作</div>
     <div class="set-row">
       <span class="set-label">清空密码库</span>
@@ -173,7 +205,8 @@ onBeforeUnmount(() => {
     <div v-if="error" class="pw-settings-error">{{ error }}</div>
     <div class="pw-settings-hint">
       密码库是 <code>passwords.json</code>(密文,salt 与 KDF 参数为明文),存放在浏览器数据目录;
-      整份复制就是备份。<strong>主密码忘记后无法恢复。</strong>
+      用上面的「导出加密备份」把整库密文写进 bow 下载目录,手工整份复制也可以。
+      <strong>主密码忘记后无法恢复。</strong>
     </div>
     <div v-if="notice" class="pw-settings-notice">{{ notice }}</div>
   </section>

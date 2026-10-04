@@ -85,6 +85,11 @@ export interface SingleEntryResult extends OkResult {
   entry?: PasswordEntry
 }
 
+/** 导出加密备份的返回体(path 仅在成功时给出) */
+export interface ExportBackupResult extends OkResult {
+  path?: string
+}
+
 /** 「从当前页面保存」读回的字段(密码值只在这条通路上跨到渲染层) */
 export interface ReadPageFieldsResult extends OkResult {
   tabId?: number

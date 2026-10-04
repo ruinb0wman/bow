@@ -14,6 +14,7 @@ import type { TabInfo } from '../src/shared/types'
 const writeText = vi.fn()
 const readText = vi.fn(() => '')
 const clearClipboard = vi.fn()
+const writeToDownloads = vi.fn((name: string) => ({ ok: true, path: '/tmp/' + name }))
 
 vi.mock('electron', () => ({
   clipboard: {
@@ -21,6 +22,12 @@ vi.mock('electron', () => ({
     readText: () => readText(),
     clear: () => clearClipboard()
   }
+}))
+
+// 导出落盘由 exportFile 的专门用例覆盖;这里只断言「传了什么内容」
+vi.mock('../src/main/plugins/exportFile', () => ({
+  dateStamp: () => '2026-10-04',
+  writeToDownloads: (...args: unknown[]) => writeToDownloads(...(args as [string, string]))
 }))
 
 const { default: plugin } = await import('../src/plugins/passwords/main')
@@ -146,6 +153,7 @@ beforeEach(() => {
   writeText.mockClear()
   readText.mockClear()
   clearClipboard.mockClear()
+  writeToDownloads.mockClear()
 })
 
 describe('密码插件', () => {
@@ -162,6 +170,7 @@ describe('密码插件', () => {
         'beginFill',
         'changeMaster',
         'copy',
+        'exportBackup',
         'fillEntry',
         'getEntry',
         'getSettings',
@@ -335,5 +344,46 @@ describe('密码插件', () => {
     call(rec, 'setup', 'master-pass')
     expect(call(rec, 'wipe')).toEqual({ ok: true })
     expect(call(rec, 'status')).toMatchObject({ initialized: false, locked: true, count: 0 })
+  })
+
+  it('exportBackup:未初始化时拒绝,不写文件', () => {
+    const rec = record()
+    plugin.activate(fakeCtx(rec))
+    expect(call(rec, 'exportBackup')).toEqual({ ok: false, error: '尚未创建密码库' })
+    expect(writeToDownloads).not.toHaveBeenCalled()
+  })
+
+  it('exportBackup:导出整库密文,不含明文密码', () => {
+    const rec = record()
+    plugin.activate(fakeCtx(rec))
+    call(rec, 'setup', 'master-pass')
+    call(rec, 'save', { origin: SITE, username: 'alice', password: 's3cret' })
+
+    expect(call<{ ok: boolean; path?: string }>(rec, 'exportBackup').ok).toBe(true)
+    expect(writeToDownloads).toHaveBeenCalledTimes(1)
+    const [name, content] = writeToDownloads.mock.calls[0] as [string, string]
+    expect(name).toBe('bow-passwords-backup-2026-10-04.json')
+    expect(content).not.toContain('s3cret')
+    const parsed = JSON.parse(content) as {
+      version: number
+      kdf: unknown
+      verifier: unknown
+      data: { iv: string; tag: string; ct: string }
+    }
+    expect(parsed.version).toBe(1)
+    expect(parsed.kdf).toBeTruthy()
+    expect(parsed.verifier).toBeTruthy()
+    expect(typeof parsed.data.ct).toBe('string')
+  })
+
+  it('exportBackup:锁定后仍可导出(导出物是密文,不需要密钥)', () => {
+    const rec = record()
+    plugin.activate(fakeCtx(rec))
+    call(rec, 'setup', 'master-pass')
+    call(rec, 'save', { origin: SITE, username: 'alice', password: 's3cret' })
+    call(rec, 'lock')
+
+    expect(call<{ ok: boolean }>(rec, 'exportBackup').ok).toBe(true)
+    expect(writeToDownloads).toHaveBeenCalledTimes(1)
   })
 })
