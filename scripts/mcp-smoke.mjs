@@ -93,6 +93,8 @@ assert(names.includes('browser_navigate') && names.includes('browser_screenshot'
 assert(names.includes('browser_wait'), '等待工具 browser_wait 已注册')
 // 插件贡献的工具应随插件激活一并注册(书签插件 / 设备检查插件)
 assert(names.includes('browser_add_bookmark'), '书签插件已贡献 MCP 工具')
+// 笔记插件:关系图谱工具应在册(它需要选了图才有数据,冒烟只验注册面)
+assert(names.includes('browser_logseq_graph'), '笔记插件已注册 browser_logseq_graph')
 // 番茄钟插件:4 个工具都应在册(只验注册面,行为由单测覆盖)
 for (const pomoTool of ['browser_pomo_status', 'browser_pomo_start', 'browser_pomo_pause', 'browser_pomo_skip']) {
   assert(names.includes(pomoTool), `番茄钟插件已注册 ${pomoTool}`)

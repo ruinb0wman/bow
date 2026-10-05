@@ -11,9 +11,11 @@ import { describe, expect, it } from 'vitest'
 import {
   backlinksOf,
   buildIndex,
+  graphOf,
   indexStats,
   isHidden,
   journalDays,
+  localGraph,
   MAX_INDEX_FILES,
   parseIndexedFile,
   refsOfText,
@@ -274,5 +276,118 @@ describe('搜索与解析', () => {
     expect(stats.files).toBe(5)
     expect(stats.blocks).toBe(7)
     expect(stats.days).toBe(2)
+  })
+})
+
+describe('关系图谱', () => {
+  /** 用给定文件拼一份索引(与 `scanGraph` 同一套解析,只是不碰磁盘) */
+  function indexOf(entries: Array<{ rel: string; raw: string }>): GraphIndex {
+    return buildIndex({
+      root: ROOT,
+      config: DEFAULT_GRAPH_CONFIG,
+      format: compileDateFormat(DEFAULT_GRAPH_CONFIG.fileFormat),
+      files: entries.map((entry) =>
+        parseIndexedFile({
+          path: `${ROOT}/${entry.rel}`,
+          rel: entry.rel,
+          mtimeMs: 1,
+          raw: entry.raw,
+          format: compileDateFormat(DEFAULT_GRAPH_CONFIG.fileFormat),
+          isJournal: entry.rel.startsWith('journals/')
+        })
+      )
+    })
+  }
+
+  it('节点 = 文件,边 = 引用:无向去重、weight 累加、日志带日期、孤立页 degree 0', async () => {
+    const { index } = await build()
+    const graph = graphOf(index)
+    expect(graph.nodes).toHaveLength(5)
+    expect(graph.links).toHaveLength(5)
+    expect(graph.missingRefs).toBe(0)
+
+    const byTitle = new Map(graph.nodes.map((node) => [node.title, node]))
+    expect(byTitle.get('Cardinality')?.degree).toBe(3)
+    expect(byTitle.get('数据库')?.degree).toBe(3)
+    expect(byTitle.get('2026-09-20')?.degree).toBe(2)
+    expect(byTitle.get('2026-09-20')?.day).toBe('2026-09-20')
+    expect(byTitle.get('Cardinality')?.day).toBe(null)
+    expect(byTitle.get('忽略')?.degree).toBe(0)
+
+    // cardinality ↔ 数据库 两边都引用了对方:只画一条边,weight = 2
+    const pair = graph.links.find(
+      (link) =>
+        (link.source.includes('cardinality') && link.target.includes('数据库')) ||
+        (link.source.includes('数据库') && link.target.includes('cardinality'))
+    )
+    expect(pair?.weight).toBe(2)
+    // 自环不存在
+    expect(graph.links.some((link) => link.source === link.target)).toBe(false)
+  })
+
+  it('自环丢弃;被引用但未创建的页面不建节点,只计入 missingRefs', () => {
+    const index = indexOf([
+      { rel: 'pages/a.md', raw: '- [[a]] 自引用\n- 见 [[ghost]] 与 [[b]]\n' },
+      { rel: 'pages/b.md', raw: '- 回 [[a]]\n' }
+    ])
+    const graph = graphOf(index)
+    expect(graph.nodes.map((node) => node.id).sort()).toEqual(['pages/a.md', 'pages/b.md'])
+    expect(graph.links).toHaveLength(1)
+    // a → b 与 b → a 各一次:无向边累加 weight
+    expect(graph.links[0].weight).toBe(2)
+    expect(graph.missingRefs).toBe(1)
+  })
+
+  it('别名与显示名共享同一节点(title:: 与文件名不同时不会分裂)', () => {
+    const index = indexOf([
+      { rel: 'pages/enter-top-props.md', raw: 'title:: EnterTopProps\n- 甲\n' },
+      { rel: 'pages/ref.md', raw: '- 见 [[enter-top-props]]\n' }
+    ])
+    const graph = graphOf(index)
+    expect(graph.nodes).toHaveLength(2)
+    expect(graph.links).toHaveLength(1)
+    expect(graph.missingRefs).toBe(0)
+  })
+
+  it('localGraph:按跳数 BFS,只保留两端都入选的边,degree 保留全图的值', () => {
+    const index = indexOf([
+      { rel: 'pages/a.md', raw: '- [[b]]\n' },
+      { rel: 'pages/b.md', raw: '- [[c]]\n' },
+      { rel: 'pages/c.md', raw: '- [[d]]\n' },
+      { rel: 'pages/d.md', raw: '- 尾巴\n' }
+    ])
+    const graph = graphOf(index)
+    const one = localGraph(graph, 'pages/a.md', 1)
+    expect(one.nodes.map((node) => node.id).sort()).toEqual(['pages/a.md', 'pages/b.md'])
+    expect(one.links).toHaveLength(1)
+    expect(one.nodes.find((node) => node.id === 'pages/b.md')?.degree).toBe(2) // 全图 degree,不是子图的 1
+
+    const two = localGraph(graph, 'pages/a.md', 2)
+    expect(two.nodes.map((node) => node.id).sort()).toEqual(['pages/a.md', 'pages/b.md', 'pages/c.md'])
+    expect(two.links).toHaveLength(2)
+  })
+
+  it('localGraph:中心不在图里(还没落盘的新页)→ 空图;depth 夹紧', () => {
+    const index = indexOf([
+      { rel: 'pages/a.md', raw: '- [[b]]\n' },
+      { rel: 'pages/b.md', raw: '- x\n' }
+    ])
+    const graph = graphOf(index)
+    expect(localGraph(graph, 'pages/nope.md', 1).nodes).toEqual([])
+    // depth 0 / 负数被夹到 1,超大被夹到 3
+    expect(localGraph(graph, 'pages/a.md', 0).nodes).toHaveLength(2)
+    expect(localGraph(graph, 'pages/a.md', 99).nodes).toHaveLength(2)
+  })
+
+  it('tooLarge 的索引照常产出图谱(由调用方提示可能不全)', async () => {
+    const io = memIo(
+      Object.fromEntries(
+        Array.from({ length: MAX_INDEX_FILES + 10 }, (_, i) => [`/graph/pages/p${i}.md`, { content: '- [[p0]]\n', mtimeMs: 1 }])
+      )
+    )
+    const index = await scanGraph(io, ROOT, DEFAULT_GRAPH_CONFIG, null)
+    const graph = graphOf(index)
+    expect(graph.tooLarge).toBe(true)
+    expect(graph.nodes.length).toBe(MAX_INDEX_FILES)
   })
 })

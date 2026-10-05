@@ -394,3 +394,137 @@ export function refsOfText(text: string): string[] {
   const { pages, tags } = refsOfTokens(tokenizeInline(text))
   return [...new Set([...pages, ...tags].map(pageKey).filter(Boolean))]
 }
+
+// ---------- 关系图谱(索引的只读派生) ----------
+//
+// 节点 = 索引里的文件(日志 + 页面);边 = 文件之间的 `[[双链]]` / `#标签` 引用,且**目标文件已存在**。
+// 被引用但还没创建的页面**不建节点**(否则图谱会被一堆空节点撑爆),只累计 `missingRefs` 报个数量。
+// 边按无向去重(同一对文件互相引用只画一条),`weight` 记两个块之间引用次数的总和。
+// 这两条与反向链接面板同一取舍:自己引用自己不算边。
+
+export interface GraphNode {
+  /** 节点 id = 文件的图内相对路径(`journals/2026_09_20.md`)—— 稳定、唯一 */
+  id: string
+  /** 显示名(`title::` 优先,否则文件名解码;日志是 `YYYY-MM-DD`) */
+  title: string
+  /** 日志才有;页面为 null */
+  day: string | null
+  /** 不同邻居数(节点大小用它,而不是 weight:一条强引用不该把节点撑大) */
+  degree: number
+}
+
+export interface GraphLink {
+  source: string
+  target: string
+  /** 同一对文件被引用的次数(块级 refs 累加) */
+  weight: number
+}
+
+export interface GraphData {
+  nodes: GraphNode[]
+  links: GraphLink[]
+  /** 被引用、但目标页还没创建的不同页面数 */
+  missingRefs: number
+  /** 索引本身不完整(文件数 ≥ `MAX_INDEX_FILES`),图谱据此提示可能不全 */
+  tooLarge: boolean
+}
+
+/**
+ * 把索引里的引用解析成一张关系图谱。
+ *
+ * 目标页解析复用索引已有的两条路:`byTitle`(显示名,含日志)`byStem`(文件名别名,仅页面)——
+ * 与 `resolvePage()` 同义,所以 `title::` 与文件名不同的页不会在图谱里分裂成两个节点。
+ */
+export function graphOf(index: GraphIndex): GraphData {
+  const weights = new Map<string, GraphLink>()
+  const neighbors = new Map<string, Set<string>>()
+  const missing = new Set<string>()
+
+  const link = (a: string, b: string): void => {
+    const [source, target] = a < b ? [a, b] : [b, a]
+    const key = `${source}\u0000${target}`
+    const hit = weights.get(key)
+    if (hit) hit.weight++
+    else weights.set(key, { source, target, weight: 1 })
+    for (const [from, to] of [
+      [source, target],
+      [target, source]
+    ] as const) {
+      const set = neighbors.get(from)
+      if (set) set.add(to)
+      else neighbors.set(from, new Set([to]))
+    }
+  }
+
+  for (const file of index.files) {
+    for (const block of file.blocks) {
+      for (const ref of block.refs) {
+        const target = (index.byTitle.get(ref) ?? index.byStem.get(ref))?.rel
+        if (!target) {
+          missing.add(ref)
+          continue
+        }
+        if (target === file.rel) continue
+        link(file.rel, target)
+      }
+    }
+  }
+
+  return {
+    nodes: index.files.map((file) => ({
+      id: file.rel,
+      title: file.title,
+      day: file.day,
+      degree: neighbors.get(file.rel)?.size ?? 0
+    })),
+    links: [...weights.values()],
+    missingRefs: missing.size,
+    tooLarge: index.tooLarge
+  }
+}
+
+/**
+ * 局部图谱:从 `centerId` 出发、沿边双向 BFS `depth` 跳(1..3)。
+ *
+ * `degree` 保留**全图**的值(节点的「分量」不该因为在局部视图里变小而缩水);
+ * 只保留两端都入选的边。`centerId` 不在图里(例如正在编辑一个还没落盘的页面)时返回空图。
+ */
+export function localGraph(data: GraphData, centerId: string, depth = 1): GraphData {
+  const hops = Math.max(1, Math.min(3, Math.trunc(depth) || 1))
+  if (!data.nodes.some((node) => node.id === centerId)) {
+    return { nodes: [], links: [], missingRefs: 0, tooLarge: data.tooLarge }
+  }
+
+  const adjacency = new Map<string, Set<string>>()
+  const push = (from: string, to: string): void => {
+    const set = adjacency.get(from)
+    if (set) set.add(to)
+    else adjacency.set(from, new Set([to]))
+  }
+  for (const link of data.links) {
+    push(link.source, link.target)
+    push(link.target, link.source)
+  }
+
+  const seen = new Set<string>([centerId])
+  let frontier = [centerId]
+  for (let step = 0; step < hops; step++) {
+    const next: string[] = []
+    for (const id of frontier) {
+      for (const neighbor of adjacency.get(id) ?? []) {
+        if (seen.has(neighbor)) continue
+        seen.add(neighbor)
+        next.push(neighbor)
+      }
+    }
+    frontier = next
+    if (frontier.length === 0) break
+  }
+
+  return {
+    nodes: data.nodes.filter((node) => seen.has(node.id)),
+    links: data.links.filter((link) => seen.has(link.source) && seen.has(link.target)),
+    missingRefs: 0,
+    tooLarge: data.tooLarge
+  }
+}

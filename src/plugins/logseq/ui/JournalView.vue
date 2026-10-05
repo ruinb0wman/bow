@@ -14,7 +14,7 @@
  * 页面拦不住它,所以只能把窗口压小 —— 这是 README 里写明的代价。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { CalendarDays, ChevronLeft, ChevronRight, FolderOpen, RefreshCw, Search, Star, X } from 'lucide-vue-next'
+import { CalendarDays, ChevronLeft, ChevronRight, FolderOpen, Network, RefreshCw, Search, Star, X } from 'lucide-vue-next'
 import { LOGSEQ_URL } from '@shared/internalPages'
 import type { PaneDir } from '@shared/split'
 import {
@@ -57,9 +57,10 @@ import {
   type ParsedFile,
   type SaveResult
 } from '@plugins/logseq/shared'
-import type { Backlinks, PageHit } from '@plugins/logseq/graph'
+import type { Backlinks, GraphData, GraphNode, PageHit } from '@plugins/logseq/graph'
 import BlockRow from './BlockRow.vue'
 import BacklinksPanel from './BacklinksPanel.vue'
+import GraphView from './GraphView.vue'
 
 const api = window.browserAPI
 
@@ -120,6 +121,13 @@ const externalChanged = ref(false)
 
 const links = ref<Backlinks | null>(null)
 const linksLoading = ref(false)
+
+// ---------- 关系图谱 ----------
+/** 图谱浮层开着 = 吃掉页面的键位(见 `onWindowKeydown`),由浮层自己处理 Esc */
+const graphOpen = ref(false)
+const graphData = ref<GraphData | null>(null)
+const graphLoading = ref(false)
+let graphTimer: number | null = null
 /**
  * 剪贴板操作的结果提示。**刻意独立于 `message`**:`doSave()` 成功时会 `message.value = ''`,
  * 而复制失败往往就在一次输入之后 —— 写进 `message` 的错就那时被下一次保存静默冲掉了。
@@ -817,6 +825,49 @@ async function openPage(name: string, newPane = false): Promise<void> {
   await openView({ kind: 'page', name: trimmed })
 }
 
+// ---------- 关系图谱 ----------
+
+/** 打开图谱浮层:先把待保存的排干(主进程索引在 `savePage` 里同步更新),拿到的才是最新结构 */
+async function openGraph(): Promise<void> {
+  await saveNow()
+  graphLoading.value = true
+  try {
+    graphData.value = await invoke<GraphData>('graph')
+    graphOpen.value = true
+  } catch (e) {
+    message.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    graphLoading.value = false
+  }
+}
+
+function closeGraph(): void {
+  graphOpen.value = false
+}
+
+/** 图谱开着时,别的工具改了图(如 Logseq 里新建 `[[链接]]`)→ 防抖重取 */
+function scheduleGraphRefresh(): void {
+  if (graphTimer != null) clearTimeout(graphTimer)
+  graphTimer = window.setTimeout(() => {
+    graphTimer = null
+    void (async () => {
+      if (!graphOpen.value) return
+      try {
+        graphData.value = await invoke<GraphData>('graph')
+      } catch {
+        // 图谱刷新失败保持旧数据,不打断正在看的图
+      }
+    })()
+  }, 250)
+}
+
+/** 点节点 = 打开那一页(日志走日志视图,页面走页面视图);顺带关掉浮层 */
+function onGraphOpenPage(node: GraphNode): void {
+  graphOpen.value = false
+  if (node.day) void openView({ kind: 'journal', day: node.day })
+  else void openPage(node.title)
+}
+
 async function goDay(delta: number): Promise<void> {
   await saveNow()
   await openView({ kind: 'journal', day: shiftDay(view.value.kind === 'journal' ? view.value.day : todayDay(), delta) })
@@ -901,6 +952,8 @@ async function switchGraph(path: string): Promise<void> {
 // ---------- 键位 ----------
 
 function onWindowKeydown(event: KeyboardEvent): void {
+  // 图谱浮层开着时页面不抢键位(浮层自己处理 Esc / 0 / f)
+  if (graphOpen.value) return
   // 有块选区时选区键位优先(Delete / Ctrl+C / Ctrl+X / Tab / Esc)
   if (selection.value && handleSelectionKey(event)) return
   const mod = event.ctrlKey || event.metaKey
@@ -942,6 +995,8 @@ function subscribe(): void {
         return
       }
       if (payload.event !== LOGSEQ_EVENT.graphChanged) return
+      // 图谱开着:图变了就重取(与当前页是否重载无关)
+      scheduleGraphRefresh()
       if (!meta.value) return
       const args = payload.args as { paths?: string[] } | undefined
       const paths = args?.paths ?? []
@@ -1022,6 +1077,20 @@ function exposeDebugHandle(): void {
     get rawLineCount() {
       return rawLineCount.value
     },
+    get graphOpen() {
+      return graphOpen.value
+    },
+    get graphStats() {
+      return graphData.value
+        ? {
+            nodes: graphData.value.nodes.length,
+            links: graphData.value.links.length,
+            missingRefs: graphData.value.missingRefs
+          }
+        : null
+    },
+    openGraph,
+    closeGraph,
     /** E2E:强制让复制失败(验证「复制没成功就不删块」;详见 `forceCopyFailure` 的注释) */
     forceCopyFailure(value: boolean) {
       forceCopyFailure = value
@@ -1064,6 +1133,7 @@ onBeforeUnmount(() => {
   if (saveTimer != null) clearTimeout(saveTimer)
   if (searchTimer != null) clearTimeout(searchTimer)
   if (clipboardTimer != null) clearTimeout(clipboardTimer)
+  if (graphTimer != null) clearTimeout(graphTimer)
   delete (window as unknown as Record<string, unknown>).__bowLogseq
 })
 
@@ -1170,6 +1240,9 @@ watch(
               </li>
             </ul>
           </span>
+          <button class="icon" title="关系图谱" :disabled="graphLoading" @click="openGraph">
+            <Network :size="15" />
+          </button>
           <button class="icon" :title="`图目录:${graphState?.graphPath ?? ''}`" @click="pickGraph">
             <FolderOpen :size="15" />
           </button>
@@ -1243,6 +1316,15 @@ watch(
         <span v-if="message" class="chip error">{{ message }}</span>
       </div>
     </template>
+
+    <GraphView
+      v-if="graphOpen && graphData"
+      :data="graphData"
+      :center-id="meta?.rel ?? null"
+      :center-title="meta?.title ?? ''"
+      @close="closeGraph"
+      @open-page="onGraphOpenPage"
+    />
   </div>
 </template>
 

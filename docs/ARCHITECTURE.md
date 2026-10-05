@@ -79,8 +79,8 @@ src/
     adb.ts | targets.ts | cdp.ts          设备检查插件的 I/O 层(spawn / 转发池 / CDP 客户端:含事件订阅与 Input.* 操作;新文件名须登记到 tsconfig.node.json 的 include)
     scripts.ts                            设备检查插件的注入脚本(点定位 / 聚焦全选;纯字符串)
     relay.ts                              设备检查插件的「剥 Origin」TCP 中继(前端能连上设备的唯一原因;新文件名须登记到 tsconfig.node.json 的 include)
-    format.ts | graph.ts                  笔记插件的 Logseq 文件格式解析 / 索引与反链(纯逻辑,主进程与渲染层共用;
-                                          这两个文件名也要登记到 tsconfig 的 include)
+    format.ts | graph.ts | graphForce.ts   笔记插件的 Logseq 文件格式解析 / 索引与反链 / 图谱到 force-graph 的纯胶水(纯逻辑,主进程与渲染层共用;
+                                          这几个文件名也要登记到 tsconfig 的 include。图谱的布局与渲染是唯一引第三方库 `force-graph` 的地方)
     registration.ts | linuxDesktop.ts | windowsRegistry.ts   平台实现 / 注册计划(新文件须登记到 tsconfig.node.json 的 include)
   preload/index.ts              contextBridge 暴露 window.browserAPI
   renderer/
@@ -528,7 +528,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `default-browser` | — | ui | `status` `register` `unregister` `openSettings` | — | — | — | — | — | — | 无(状态现读系统:Linux 读 `mimeapps.list`;Windows 先按 UserChoice 主键→备用键→`Software\Classes` 默认值读“记录”,再用 PowerShell 调 shell 的 `AssocQueryString` 拿“**实际生效者**”,两者不一致时以实际为准并标注记录已失效) |
 | `device-inspect` | — | ui, mcp | `list` `open` `getSettings` `setSettings` `checkAdb` `connect` `pair` `cleanupForwards` `rawAdb` | `device_list_targets` `device_inspect` `device_snapshot` `device_tap` `device_type` `device_press_key` `device_scroll` `device_console` `device_eval` `device_screenshot` `device_connect` | — | — | — | — | — | `device-inspect.json`(adb 命令 / 前端策略 / 端口转发记录) |
 | `terminal` | — | ui | `getSettings` `setSettings` `listCandidates` `attach` `write` `resize` `detach` | — | — | — | — | — | on `tab:closed`(按 tabId 回收 shell);emit `data` `exit` `settings-changed` `session-closed` | `terminal.json`(字体/字号/滚动缓冲 + shell 配置列表) |
-| `logseq` | — | ui | `getState` `pickGraph` `setGraph` `rebuildIndex` `getSettings` `setSettings` `toggleFavorite` `readJournal` `readPage` `listJournals` `listPages` `backlinks` `listTemplates` `savePage` `attach` `setView` `openInNewPane` | — | — | — | — | — | on `tab:closed`(按 tabId 丢视图状态);emit `graph-changed` `settings-changed` `favorites-changed` | `logseq.json`(图目录 + 最近图 + 正文字号 + 每个图的收藏) |
+| `logseq` | — | ui, mcp | `getState` `pickGraph` `setGraph` `rebuildIndex` `getSettings` `setSettings` `toggleFavorite` `readJournal` `readPage` `listJournals` `listPages` `backlinks` `graph` `listTemplates` `savePage` `attach` `setView` `openInNewPane` | `browser_logseq_graph` | — | — | — | — | on `tab:closed`(按 tabId 丢视图状态);emit `graph-changed` `settings-changed` `favorites-changed` | `logseq.json`(图目录 + 最近图 + 正文字号 + 每个图的收藏) |
 | `downloads` | — | ui, mcp | `list` `pause` `resume` `cancel` `retry` `remove` `clear` `openFile` `showInFolder` `getSettings` `setSettings` `pickDirectory` `revealDir` | `browser_list_downloads` `browser_download` | — | — | — | — | emit `changed` | `downloads.json`(记录)+ `downloads-settings.json`(目录 / 询问 / 保留条数) |
 | `quark` | — | ui | `listFiles` `pushAria2` `getSettings` `setSettings` `testAria2` | —(不贡献 MCP 工具) | — | —(按需 `pages.execute`,不注入常驻脚本) | — | — | — | `quark.json`(UA / Cookie 域名白名单 / aria2 RPC) |
 | `passwords` | — | ui, shortcut | `status` `setup` `unlock` `lock` `list` `getEntry` `save` `remove` `copy` `readPageFields` `fillEntry` `beginFill` `changeMaster` `getSettings` `setSettings` `wipe` `exportBackup` | —(刻意不贡献 MCP 工具:与 AI 隔离) | — | —(按需 `pages.execute` 注入探测 / 下拉 / 填入脚本,不注入常驻脚本) | — | `Ctrl/Cmd+Shift+P` | emit `state-changed` `settings-changed` `open-panel` | `passwords.json`(AES-256-GCM 密文)+ `passwords-settings.json`(自动锁定 / 剪贴板 / 子域匹配);`exportBackup` 只写**密文副本**到 bow 下载目录 |
@@ -558,7 +558,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 `SLOT_PLUGIN_ORDER.toolbar = ['bookmarks','downloads','mcp-http','terminal','logseq','passwords','pomo']`;
 `addressbar-trailing` 为空(保持注册顺序)。未列出的插件排在已列出者之后。
 
-**笔记插件(`bow://logseq`)的五条不变式**(它是唯一直接读写用户仓库外文件的插件,改它之前请务必看这几条,
+**笔记插件(`bow://logseq`)的六条不变式**(它是唯一直接读写用户仓库外文件的插件,改它之前请务必看这几条,
 细节与取舍见 `.pi/plans/2026-09-20-logseq-plugin/plan.md`):
 
 | 不变式 | 为什么 | 钉在哪里 |
@@ -568,6 +568,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | 只写图目录内 `journals/`+`pages/` 下的 `.md`(「`logseq/config.edn` 永不写回」) | 与 Logseq 共用同一个图,越界写入是**用户的笔记**而不是浏览器数据 | `main.ts` 的 `assertWritable()` + `tests/logseqPlugin.test.ts` |
 | 行级标记也只是渲染:`matchLineMark` 的标记原文 + 行内 token 拼接 === 整行原文 | 标题/复选框/引用/列表/围栏行不改写文件;`analyzeBlockLines` 顺便给每行算出 textarea 全局偏移(点击落行尾)。**表格行是例外**:`mark.raw` = 整行、`tokens` 为空(与 `hr` 同款),单元格另放 `mark.cells`(`tokensToRaw(cell.tokens) === cell.text`) | `format.ts` 的 `matchLineMark` / `analyzeBlockLines` / `tableCellsFor` + `tests/logseqFormat.test.ts` |
 | **绝不静默覆盖**:认页按「显示名 → 日期 → **文件名词干别名**」三条路(`resolvePage`);编辑器以为不存在的文件(`exists:false`)在保存时如果已经出现,一律报冲突 | 用文件名打开一个 `title::` 与文件名不同的页时,旧行为会把它当成新页 —— 而新页路径**就是那个已存在的文件**,第一次保存就把用户的笔记清空(实测过)。别名把这条路堵死,`expectMissing` 守住「打开之后才出现」的竞态(如 Logseq 先建了今日日志) | `graph.ts` 的 `byStem`/`resolvePage` + `main.ts` 的 `savePage(expectMissing)` + `tests/logseqGraph.test.ts` / `tests/logseqPlugin.test.ts` |
+| **关系图谱是索引的只读派生**:`graphOf(index)` / `localGraph(...)` 只读内存索引产出节点与边,不碰 fs;点击节点(或它右边的名字框)只发 `open-page` 事件,由正常打开页面路径处理。布局/绘制/命中全交给 `force-graph`(Canvas + `d3-force`),我们只喂绘制回调与 `open-page` | 图谱只是一个「看图」入口,任何写盘都走既有的 `savePage` 校验(`assertWritable` + 冲突检测)。**首次 `zoomToFit` 必须等 `onEngineTick`**:布局跑在 `kapsule` 的 debounce update 里,抢在前面会拿 NaN 坐标算出 NaN 变换(整张图随后都画不出来,悬停/点击全落空) | `graph.ts` 的 `graphOf`/`localGraph` + `graphForce.ts` + `ui/GraphView.vue` + `main.ts` 的 `graph` IPC / `browser_logseq_graph` + `tests/logseqGraph.test.ts` / `tests/logseqGraphForce.test.ts` |
 
 ### 5.9 内核事件总线(全部事件名)
 
@@ -627,18 +628,20 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `browser_screenshot` | tabId, fullPage | fullPage falsy | **image content**(`image/png`);失败才是 text |
 | `browser_get_info` | tabId | — | `{ok,info:TabInfo}`(info 带 `windowId`) |
 
-插件工具 19 个:`browser_add_bookmark` `browser_list_bookmarks`(书签)、
+插件工具 20 个:`browser_add_bookmark` `browser_list_bookmarks`(书签)、
 `device_list_targets` `device_inspect` `device_snapshot` `device_tap` `device_type` `device_press_key`
 `device_scroll` `device_console` `device_eval` `device_screenshot` `device_connect`(设备检查)、
 `browser_list_downloads` `browser_download`(下载)、
-`browser_pomo_status` `browser_pomo_start` `browser_pomo_pause` `browser_pomo_skip`(番茄钟)
-—— 共 19 个,合计 **38** 个工具。
+`browser_pomo_status` `browser_pomo_start` `browser_pomo_pause` `browser_pomo_skip`(番茄钟)、
+`browser_logseq_graph`(笔记的关系图谱,只读)
+—— 共 20 个,合计 **39** 个工具。
 
 静态计数来源:`CORE_MCP_TOOL_NAMES`(19)+ `ctx.mcp.tool(...)` 的调用点
 (`bookmarks/main.ts:137,165`、
 `device-inspect/main.ts:451,493,510,531,554,574,612,642,666,698,731`、
 `downloads/main.ts:500,529`、
-`pomo/main.ts:229,238,249,260`)。
+`pomo/main.ts:229,238,249,260`、
+`logseq/main.ts:703`)。
 ⚠️ 实际工具面**随插件启停变化**:停用 device-inspect 就少 11 个,停用 downloads 就少 2 个。
 
 ⚠️ 插件工具的 schema **不做 strict 校验**(走 `kernel.mcp` 声明快照),未知参数会被静默丢弃。
@@ -1052,13 +1055,14 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
   ⚠️ 给主进程加新的 `tabs.*` / `wc.*` 调用时**必须同步补假实现**,否则测试会红得莫名其妙。
 - `tests/mcpServer.test.ts`(861 行)用 `InMemoryTransport` + 真实 `McpServer`/`Client` 握手,
   覆盖 instructions 下发、工具面与 schema、`waitUntil` 语义、失败一律 `isError`、内部页面边界、插件工具错误传播。
-- **当前基线(2026-10-03 复测,含番茄钟插件)**:`bun run test` → **60 个文件 / 1217 个用例全绿**,约 9s。
-  (本次 +2 文件 / +28 例:`pomoShared.test.ts` 17 例钉状态机 / 跨天 / 夹紧,`pomoPlugin.test.ts` 11 例用假时钟 + 假通知钉阶段转移 / 重启恢复 / MCP 返回体。)
+- **当前基线(2026-10-05 复测,含关系图谱)**:`bun run test` → **64 个文件 / 1235 个用例全绿**,约 9s。
+  (2026-10-05:图谱布局换成 `force-graph`,删 `logseqGraphLayout.test.ts`(−10 例)、新增 `logseqGraphForce.test.ts`(+9 例:节点/边映射、`title` 字段、跨刷新复用同一批节点对象、标签可见性与盒子几何)。
+  更早一次 +1 文件 / +18 例:`logseqGraphLayout.test.ts` 10 例钉布局的确定性 / 收敛 / 规模保护,`logseqGraph.test.ts` +6 例钉 `graphOf` / `localGraph`,`logseqPlugin.test.ts` +2 例钉 `graph` IPC 与新 MCP 工具 `browser_logseq_graph`。)
   (2026-09-25 → 2026-10-02 期间 `mcpHttp.test.ts` 的「DNS rebinding 防护:非白名单 Host 被拒」
   一直失败:那是**测试自己**的问题 —— Node ≥ 24 的 `http.request` 会在客户端就拒绝「`Host` 与连接
   地址不符」的请求,伪造的 Host 根本发不出去;已于 2026-10-03 改用 `createConnection` 钉回环端口
   修好,并加了对照组断言。服务端的 Host 校验一直是对的。)
-  60 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
+  64 是 `tests/**/*.test.ts` 的文件数;`tests/` 下另有 3 个**测试替身**(不是测试):`fakeTabs.ts`、
   `fakeWc.ts`、`fakeKernel.ts`。
 - ⚠️ **`.vue` 组件不在 `tsc` 的类型检查范围内**(`npm run typecheck` 只跑 `.ts`):组件里「导入了不存在的
   符号」这类错误只有 `npm run build`(rollup)才会报。改渲染层之后**必须跑一次 build** ——
@@ -1083,16 +1087,17 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 平台预设 / spawn 参数 / 环境变量清洗 / 回放缓冲 / PATH 查找 / 参数文本 / 复制粘贴键位)、
 `downloadsShared`(33,下载记录的纯逻辑:设置归一 / 动作可用性 / 启动归一 / 裁剪排序 / 重名去重 / 格式化)。合计 **713**。
 
-笔记插件(`bow://logseq`)另加 4 个文件 / 157 例,外加 `internalPages` 的 2 例:
+笔记插件(`bow://logseq`)另加 5 个文件 / 186 例,外加 `internalPages` 的 2 例:
 
 | 测试文件 | 行数 | 用例 | 钉住的是什么 |
 | --- | --- | --- | --- |
 | `logseqFormat.test.ts` | 427 | 35 | **字节保真**(`serialize(parse(raw)) === raw`,含 CRLF / 无尾换行 / 空文件 / 4 空格缩进)、块树与属性行、**渲染零丢字**(行内 token、行级标记的 `mark.raw` 拼接 === 原文)、**表格判据与单元格偏移/对齐**(含 Logseq 真实形态 `\|-\|-\|`)与源码区间 |
 | `logseqShared.test.ts` | 817 | 83 | 日期 ↔ 文件名词干(moment 方言整条回落)、页面名 ↔ 文件名(`:triple-lowbar`)、`config.edn` 键值、模板变量、**每个编辑命令的整份文件输出**(含多行劈块、**块首回车前插空块 + Backspace 合并往返 / 顶层空块自删**、`toggleTaskMarker`、多块选区的删/缩/反缩/复制、**按 `-` 行粘贴拆块**:嵌套还原 / 非 `-` 行归上一块 / 光标处劈开 / 空块顶替 / 缩进归一 / 复制→粘贴往返)、`display → set` 恒等 |
-| `logseqGraph.test.ts` | 278 | 18 | 索引(mtime 增量 / `:hidden` 三种写法 / **文件名词干别名 `byStem` 只收页面**)、反链排序与「不算自己的反链」、搜索、**页面名别名解析**(`title::` 与文件名不同时两个名字都命中)、日期列表 |
-| `logseqPlugin.test.ts` | 537 | 33 | **真实临时目录**:原子写不留 `.tmp`、越界路径被拒、只写 `journals/`+`pages/`、mtime 冲突不覆盖、**`expectMissing` 拒绝静默覆盖**、**用文件名打开 `title::` 不同的页拿到磁盘内容**、模板只在第一次编辑落盘、视图状态按 tabId |
+| `logseqGraph.test.ts` | 393 | 24 | 索引(mtime 增量 / `:hidden` 三种写法 / **文件名词干别名 `byStem` 只收页面**)、反链排序与「不算自己的反链」、搜索、**页面名别名解析**(`title::` 与文件名不同时两个名字都命中)、日期列表、**关系图谱**(边无向去重 + weight 累加 / 自环丢弃 / 未创建页只计入 `missingRefs` / 别名不分裂节点 / `localGraph` 跳数与子图边 / 中心不存在返回空图) |
+| `logseqPlugin.test.ts` | 591 | 35 | **真实临时目录**:原子写不留 `.tmp`、越界路径被拒、只写 `journals/`+`pages/`、mtime 冲突不覆盖、**`expectMissing` 拒绝静默覆盖**、**用文件名打开 `title::` 不同的页拿到磁盘内容**、模板只在第一次编辑落盘、视图状态按 tabId、**`graph` IPC 与 `browser_logseq_graph` 返回体** |
+| `logseqGraphForce.test.ts` | 127 | 9 | 关系图谱 → `force-graph` 的纯胶水:**`title` 必须进节点对象**(旧版漏它 → 标签全画成 `undefined`)/ 同 id 复用同一批节点对象(过滤与刷新不丢位置)/ 悬停与放大时的标签可见性 / 标签盒子几何(绘制与命中共用)/ `withAlpha` 只认 hex |
 
-**合计 1026**。
+**合计 1025**。
 
 设备检查插件的三个测试文件(它们不在上表里:代码量不大,但每一条都在钉外部格式):
 

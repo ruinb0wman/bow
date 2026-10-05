@@ -26,6 +26,7 @@ type GraphState = import('../src/plugins/logseq/shared').GraphState
 type SaveResult = import('../src/plugins/logseq/shared').SaveResult
 type LogseqClientSettings = import('../src/plugins/logseq/shared').LogseqClientSettings
 type LogseqView = import('../src/plugins/logseq/shared').LogseqView
+type GraphData = import('../src/plugins/logseq/graph').GraphData
 
 interface Harness {
   handlers: Map<string, (...args: any[]) => unknown>
@@ -33,6 +34,8 @@ interface Harness {
   settings: { value: Record<string, unknown> }
   /** 插件广播出去的事件(`context.ipc.emit`):用来钉「自己写的文件不能触发重载」 */
   pluginEvents: Array<{ event: string; args: unknown }>
+  /** 插件注册的 MCP 工具(名字 + 处理器) */
+  mcpTools: Array<{ name: string; handler: (args: Record<string, unknown>) => unknown }>
 }
 
 function harness(): Harness {
@@ -43,6 +46,7 @@ function harness(): Harness {
     emitEvent: (name: string, payload?: unknown) => subscriptions.get(name)?.(payload),
     settings: { value: {} as Record<string, unknown> },
     pluginEvents: [] as Array<{ event: string; args: unknown }>,
+    mcpTools: [] as Array<{ name: string; handler: (args: Record<string, unknown>) => unknown }>,
     // 插件只把 storage 当 JsonStore 用;这里给一份内存实现(set/setRaw 的语义与真的一致)
     storage: () => ({
       get: () => state.settings.value,
@@ -72,7 +76,11 @@ function harness(): Harness {
       emit: () => {}
     },
     suggest: { register: () => {} },
-    mcp: { tool: () => {} },
+    mcp: {
+      tool: (name: string, _config: unknown, handler: (args: Record<string, unknown>) => unknown) => {
+        state.mcpTools.push({ name, handler })
+      }
+    },
     net: { onBeforeRequest: () => {}, onBeforeSendHeaders: () => {}, onHeadersReceived: () => {} },
     content: { inject: () => {}, refresh: () => {} },
     pages: { activeTabId: () => null, focus: () => {}, execute: async () => ({}), openDevToolsTab: () => 0 },
@@ -533,5 +541,51 @@ describe('页面偏好(字号 / 收藏)', () => {
     const bad = await call<{ favorites: LogseqView[]; on: boolean }>('toggleFavorite', { kind: 'nope' })
     expect(bad.on).toBe(false)
     expect(bad.favorites).toEqual([{ kind: 'page', name: 'cardinality' }])
+  })
+})
+
+describe('关系图谱', () => {
+  const mcpTool = (name: string): { name: string; handler: (args: Record<string, unknown>) => unknown } => {
+    const tool = h.mcpTools.find((item) => item.name === name)
+    if (!tool) throw new Error(`没有注册 MCP 工具:${name}`)
+    return tool
+  }
+  const toolJson = (result: unknown): any =>
+    JSON.parse((result as { content: Array<{ text: string }> }).content[0].text)
+
+  it('graph IPC:节点/边来自真实文件,无向边累加 weight', async () => {
+    // 日志 → cardinality,cardinality → 日志:同一对文件两次引用,只一条边 weight=2
+    write(join(graph, 'pages', 'cardinality.md'), 'title:: Cardinality\n- 估行数 [[2026-09-19]]\n')
+    await call('rebuildIndex')
+    const data = await call<GraphData>('graph')
+    expect(data.nodes.map((node) => node.title).sort()).toEqual(['2026-09-19', 'Cardinality'])
+    expect(data.links).toHaveLength(1)
+    expect(data.links[0].weight).toBe(2)
+    expect(data.missingRefs).toBe(0)
+  })
+
+  it('MCP browser_logseq_graph:在册;全图统计 / 局部邻域 / 未知页面优雅失败', async () => {
+    expect(h.mcpTools.map((tool) => tool.name)).toContain('browser_logseq_graph')
+    write(join(graph, 'pages', 'cardinality.md'), 'title:: Cardinality\n- 估行数 [[2026-09-19]]\n')
+    await call('rebuildIndex')
+
+    const summary = toolJson(await mcpTool('browser_logseq_graph').handler({}))
+    expect(summary.ok).toBe(true)
+    expect(summary.nodes).toBe(2)
+    expect(summary.links).toBe(1)
+    expect(summary.journals).toBe(1)
+    expect(summary.top[0].degree).toBeGreaterThan(0)
+
+    // limit 夹紧:只给 1 个 top 节点
+    expect(toolJson(await mcpTool('browser_logseq_graph').handler({ limit: 1 })).top).toHaveLength(1)
+
+    const local = toolJson(await mcpTool('browser_logseq_graph').handler({ node: 'Cardinality' }))
+    expect(local.ok).toBe(true)
+    expect(local.center.title).toBe('Cardinality')
+    expect(local.neighbors.map((node: { title: string }) => node.title)).toEqual(['2026-09-19'])
+
+    const missing = toolJson(await mcpTool('browser_logseq_graph').handler({ node: '没有这个页' }))
+    expect(missing.ok).toBe(false)
+    expect(missing.error).toContain('页面不存在')
   })
 })

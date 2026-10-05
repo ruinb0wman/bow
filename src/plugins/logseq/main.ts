@@ -54,17 +54,22 @@ import {
 import {
   backlinksOf,
   buildIndex,
+  graphOf,
   indexStats,
   journalDays,
+  localGraph,
   MAX_INDEX_FILES,
   parseIndexedFile,
   resolvePage,
   scanGraph,
   searchPages,
+  type GraphData,
   type GraphIndex,
   type GraphIo,
   type IndexedFile
 } from './graph'
+import { textContent } from '../../main/plugins/mcpResult'
+import { z } from 'zod'
 
 /** watcher 防抖:Logseq 保存时常常连着好几个事件 */
 const WATCH_DEBOUNCE_MS = 250
@@ -72,6 +77,12 @@ const WATCH_DEBOUNCE_MS = 250
 const SELF_WRITE_MS = 3000
 /** 模板目录(Logseq 约定:图根下的 templates/) */
 const TEMPLATES_DIR = 'templates'
+
+/** MCP 参数里的整数夹紧(非数字/缺省 → fallback;越界 → 夹到区间) */
+function clampInt(value: unknown, fallback: number, min: number, max: number): number {
+  const n = typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : fallback
+  return Math.max(min, Math.min(max, n))
+}
 
 interface GraphRuntime {
   root: string
@@ -550,6 +561,15 @@ function createLogseqPlugin(): PluginMain {
     return base
   }
 
+  /**
+   * 关系图谱 = 索引的只读派生(见 `graph.ts` 的 `graphOf`)。
+   * IPC 与 MCP 工具共用这一个入口 —— 两边就不会各自实现一份「解析引用」的逻辑。
+   */
+  async function currentGraph(): Promise<GraphData | null> {
+    const index = runtime?.index ?? (await ensureIndex())
+    return index ? graphOf(index) : null
+  }
+
   // ---------- 生命周期 ----------
 
   return {
@@ -557,10 +577,10 @@ function createLogseqPlugin(): PluginMain {
       id: 'logseq',
       name: '笔记',
       description:
-        '兼容 Logseq 的极简笔记页(bow://logseq):日志 + 双向链接 + 反链 + 实时 markdown + 日志模板;直接读写你已有的 Logseq 文件图',
+        '兼容 Logseq 的极简笔记页(bow://logseq):日志 + 双向链接 + 反链 + 关系图谱 + 实时 markdown + 日志模板;直接读写你已有的 Logseq 文件图',
       version: '1.0.0'
     },
-    capabilities: ['ui'],
+    capabilities: ['ui', 'mcp'],
 
     activate(ctx: PluginContext): void {
       context = ctx
@@ -642,6 +662,9 @@ function createLogseqPlugin(): PluginMain {
         if (!index || typeof name !== 'string') return { total: 0, groups: [] }
         return backlinksOf(index, name)
       })
+      ctx.ipc.handle('graph', async (): Promise<GraphData> =>
+        (await currentGraph()) ?? { nodes: [], links: [], missingRefs: 0, tooLarge: false }
+      )
       ctx.ipc.handle('listTemplates', async () => ({ names: await templates() }))
 
       // ---------- 写 ----------
@@ -672,6 +695,67 @@ function createLogseqPlugin(): PluginMain {
         const id = Number(tab?.id)
         if (Number.isInteger(id)) sessions.delete(id)
       })
+
+      // ---------- MCP 工具 ----------
+      //
+      // 只读:把当前图的节点/边(以及某个页面的局部邻域)喂给 AI。输出**有界**(`limit`),
+      // 否则大图一次就把上下文灌满。没有选图/页面不存在都优雅返回 `{ok:false}`,不上抛。
+      ctx.mcp.tool(
+        'browser_logseq_graph',
+        {
+          description:
+            '查看笔记(bow://logseq 的 Logseq 文件图)的关系图谱:节点 = 页面/日志,边 = `[[双链]]` / `#标签` 引用。只给 node 时返回那个页面的 1~3 跳邻域,不给则返回全图统计 + 连接最多的页面。只读,不改文件。',
+          inputSchema: {
+            node: z.string().optional().describe('页面/日志名(显示名或文件名);给了它就只查它的局部邻域'),
+            depth: z.number().optional().describe('局部邻域的跳数,1~3,默认 1'),
+            limit: z.number().optional().describe('返回的节点上限,默认 30,上限 200'),
+            includeJournals: z.boolean().optional().describe('是否包含日志节点,默认 true')
+          }
+        },
+        async (args) => {
+          const data = await currentGraph()
+          if (!data) return textContent({ ok: false, error: '还没有选择图目录' })
+          const limit = clampInt(args.limit, 30, 1, 200)
+          const includeJournals = args.includeJournals !== false
+          const nodeName = typeof args.node === 'string' ? args.node.trim() : ''
+
+          if (!nodeName) {
+            const nodes = data.nodes.filter((node) => includeJournals || node.day === null)
+            const ids = new Set(nodes.map((node) => node.id))
+            const links = data.links.filter((link) => ids.has(link.source) && ids.has(link.target))
+            const top = [...nodes]
+              .sort((a, b) => b.degree - a.degree || a.title.localeCompare(b.title))
+              .slice(0, limit)
+              .map((node) => ({ title: node.title, degree: node.degree, day: node.day }))
+            return textContent({
+              ok: true,
+              nodes: nodes.length,
+              links: links.length,
+              journals: nodes.filter((node) => node.day !== null).length,
+              orphans: nodes.filter((node) => node.degree === 0).length,
+              missingRefs: data.missingRefs,
+              tooLarge: data.tooLarge,
+              top
+            })
+          }
+
+          const index = runtime?.index ?? (await ensureIndex())
+          const hit = index ? resolvePage(index, nodeName) : null
+          if (!hit) return textContent({ ok: false, error: `页面不存在:${nodeName}` })
+          const local = localGraph(data, hit.rel, clampInt(args.depth, 1, 1, 3))
+          const center = data.nodes.find((node) => node.id === hit.rel) ?? null
+          const neighbors = local.nodes
+            .filter((node) => node.id !== hit.rel && (includeJournals || node.day === null))
+            .sort((a, b) => b.degree - a.degree || a.title.localeCompare(b.title))
+          return textContent({
+            ok: true,
+            center: center ? { title: center.title, degree: center.degree, day: center.day } : null,
+            total: neighbors.length,
+            truncated: neighbors.length > limit,
+            neighbors: neighbors.slice(0, limit).map((node) => ({ title: node.title, degree: node.degree, day: node.day }))
+          })
+        }
+      )
 
       onBeforeQuit = (): void => {
         void closeRuntime()
