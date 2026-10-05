@@ -29,6 +29,7 @@ npm run test:mcp:http  # 真机冒烟测试(连已常驻的 HTTP 浏览器)
 npm run test:e2e:device  # 设备检查的假手机 E2E(真 Electron + 真 MCP,不需要真机/显示环境)
 npm run test:e2e:agent   # 代理状态 E2E(假 pi 往 pty 打 OSC → 角标 / 系统通知 / 点击进标签)
 npm run test:e2e:quark   # 夸克网盘插件的离线 E2E(假夸克服务器 + 假 aria2 RPC,不需要夸克账号,需要 openssl)
+npm run test:e2e:tabid   # 长按 Shift 的 tabId 徽标 E2E(真 Electron:裸 Shift 链路 + 徽标几何 + 复制)
 npm run pi:install-status   # 把状态桥扩展装进 pi(~/.pi/agent/extensions/),终端里的 pi 才有完整状态联动
 node scripts/open-bow.mjs http --dry-run   # 只看 HTTP 模式将注入的环境变量与端点
 npm run mcp:install -- --help   # 把浏览器 MCP 写进 pi 的配置(幂等、可回滚)
@@ -120,6 +121,7 @@ node scripts/dist.mjs -- --win portable # 试别的 target
 `browser_new_tab` 可用 `windowId` 指定窗口;`browser_switch_tab` 只在 agent 窗口之间切换后续默认窗口 ——
 指向用户窗口时只激活那个标签,不改默认窗口、也不抢焦点(注:Wayland 下窗口管理器可能拒绝「提到前台」的焦点请求)。
 响应顶层的 `mcpWindowId` 就是省略 `tabId` 时会作用的窗口(还没创建时为 `null`),`focusedWindowId` 仅表示你在看哪个窗口。
+**手上拿不到 tabId 时**:按住 `Shift` 约 0.2s,当前标签组每个窗格正中央会浮出 `tabId N` 徽标,点一下就复制(见下方「手动使用快捷键」)。
 
 ## 设为默认浏览器 / 打开本地文件
 
@@ -418,6 +420,11 @@ npm run test:mcp:http
 - `Ctrl+J`:打开 / 关闭**下载面板**(再按一次关;**终端页除外** —— 那里 `Ctrl+J` 是 shell 的 accept-line,
   等价于回车)。代价与 `Ctrl+←/→` 同类:网页里的编辑器(Jupyter、网页版 vim 等)拿不到这个组合
 - `Ctrl+数字`:`Ctrl+1..8` 切到标签栏第 n 项(一个分屏组只算一项)、`Ctrl+9` 取最后一项
+- **按住 `Shift`(约 0.2s)**:当前标签组的每个窗格正中央浮出 `tabId N` 徽标(**只显示当前组**:不分屏时一个、
+  分屏时每个窗格各一个),**点徽标把纯数字 id 复制到剪贴板** —— 直接贴给 MCP 的 `tabId` 参数用(见上方「MCP」一节)。
+  短按 `Shift`(在页面里打大写字母)不会显示;松开 `Shift`、按其它键、窗口失焦或缩放都会收起。
+  代价:徽标要浮在页面之上(`WebContentsView` 没有点击穿透),所以 **bounds 只紧包徽标本身** ——
+  按住期间只有徽标那一小块(不分屏时是页面正中央约 `108×46`)会吃掉鼠标事件,页面其余部分照常可点、可滚
 - `Ctrl+←` / `Ctrl+→`:后退 / 前进(**聚焦的那个窗格**的历史,与 `Ctrl+W` 同口径;焦点不在任何窗格时作用于活动标签)
   —— 除**终端页**与 **macOS** 外,任何焦点下都接管(含地址栏、设置页、笔记页、DevTools 前端),
   所以网页输入框里的「按词移动光标」让位(与 `Ctrl+Shift+方向` 分屏同一类代价);

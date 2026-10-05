@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { historyHotkeyEnabled, isDevToolsHotkey, matchHotkey, matchSplitHotkey, matchTabHotkey, releasesToTerminal, shouldTakeSplitHotkey, switchIndexForDigit } from '../src/shared/shortcuts'
+import { historyHotkeyEnabled, isDevToolsHotkey, matchHotkey, matchRevealModifier, matchSplitHotkey, matchTabHotkey, releasesToTerminal, shouldTakeSplitHotkey, switchIndexForDigit } from '../src/shared/shortcuts'
 import type { KeyInputLike } from '../src/shared/shortcuts'
 
 function input(patch: Partial<KeyInputLike> = {}): KeyInputLike {
@@ -462,5 +462,39 @@ describe('shouldTakeSplitHotkey 分屏快捷键接管判据', () => {
 
   it('null(地址栏 / 浮层 / 别的窗口)→ 不接管', () => {
     expect(shouldTakeSplitHotkey(null)).toBe(false)
+  })
+})
+
+describe('matchRevealModifier 长按 Shift 识别', () => {
+  const shift = (patch: Partial<KeyInputLike> = {}): KeyInputLike =>
+    input({ key: 'Shift', code: 'ShiftLeft', control: false, shift: true, isAutoRepeat: false, ...patch })
+
+  it('纯 Shift 的 keyDown → show', () => {
+    expect(matchRevealModifier(shift())).toBe('show')
+  })
+
+  it('带 Ctrl / Alt / Meta 的 Shift 是组合键的一半 → 不改变状态', () => {
+    expect(matchRevealModifier(shift({ control: true }))).toBe(null)
+    expect(matchRevealModifier(shift({ alt: true }))).toBe(null)
+    expect(matchRevealModifier(shift({ meta: true }))).toBe(null)
+  })
+
+  it('Shift 的 keyUp → hide', () => {
+    expect(matchRevealModifier(shift({ type: 'keyUp' }))).toBe('hide')
+  })
+
+  it('别的键的 keyUp 不改变状态(Shift+click 时不至于反复闪)', () => {
+    expect(matchRevealModifier(input({ key: 'a', code: 'KeyA', type: 'keyUp' }))).toBe(null)
+  })
+
+  it('任何别的键的 keyDown → hide(Shift+字母 / Shift+方向键 都不算长按)', () => {
+    expect(matchRevealModifier(input({ key: 'a', code: 'KeyA' }))).toBe('hide')
+    expect(matchRevealModifier(input({ key: 'ArrowLeft', code: 'ArrowLeft' }))).toBe('hide')
+    expect(matchRevealModifier(input({ key: 'l', code: 'KeyL', control: true }))).toBe('hide')
+  })
+
+  it('自动重复的 Shift / 输入法组合中 → 不改变状态', () => {
+    expect(matchRevealModifier(shift({ isAutoRepeat: true }))).toBe(null)
+    expect(matchRevealModifier(shift({ isComposing: true }))).toBe(null)
   })
 })

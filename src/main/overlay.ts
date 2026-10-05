@@ -4,13 +4,17 @@
  *
  * 布局位(placement):
  * - full:铺满整个窗口(modal 弹层,遮罩盖住 chrome + 页面);
- * - below-chrome:页面区条带(地址栏建议下拉),不遮工具栏/标签栏,始终可点。
+ * - below-chrome:页面区条带(地址栏建议下拉),不遮工具栏/标签栏,始终可点;
+ * - page-top-right:页面区右上角的小矩形(页内查找条),bounds 精算;
+ * - panes:包住长按 Shift 显示的 tabId 徽标的那块小矩形(几何在 `@shared/tabIdBadge`)。
+ *   **不接管键盘焦点**(`show()` 的 focus 只给 full / find)——按住 Shift 时打字/终端输入照常进页面。
  */
 
 import { BrowserWindow, WebContentsView } from 'electron'
 import type { WebContents } from 'electron'
 import { join } from 'node:path'
 import type { OverlayContent, OverlayContentId, OverlayPlacement, OverlayShowMessage, SuggestPayload } from '@shared/types'
+import type { TabIdsPayload } from '@shared/tabIdBadge'
 import { findBarRect } from '@shared/find'
 import { rendererEntry } from './rendererEntry'
 import { log, logError } from './logger'
@@ -104,6 +108,12 @@ export class OverlayManager {
       this.view.setBounds(
         findBarRect({ windowWidth: w, windowHeight: h, chromeHeight: this.tabs.getChromeHeight() })
       )
+      return
+    }
+    if (this.current.placement === 'panes') {
+      // 同理必须紧包徽标:几何已经在 @shared/tabIdBadge 里夹进过窗口,这里直接用。
+      const bounds = (this.current.payload as TabIdsPayload | undefined)?.bounds
+      this.view.setBounds(bounds ?? { x: 0, y: 0, width: w, height: h })
       return
     }
     const bandY = this.bandTopOf()

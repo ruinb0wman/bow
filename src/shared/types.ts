@@ -2,6 +2,7 @@
 
 import type { LayoutPreset, PaneBox, Rect } from './split'
 import type { AgentBadge } from './agentState'
+import type { TabIdsPayload } from './tabIdBadge'
 
 export interface TabInfo {
   id: number
@@ -82,17 +83,20 @@ export type SuggestionKind = 'search' | 'history' | 'bookmark'
  * - `full` = 全窗遮罩(modal);
  * - `below-chrome` = 页面区条带(不遮工具栏/标签栏,全宽带);
  * - `page-top-right` = 页面区右上角的小矩形(页内查找条)。**bounds 恰好包住内容** ——
- *   `WebContentsView` 没有点击穿透,铺满就会把页面点击吃掉,所以几何要精算(见 `@shared/find`)。
+ *   `WebContentsView` 没有点击穿透,铺满就会把页面点击吃掉,所以几何要精算(见 `@shared/find`);
+ * - `panes` = 包住一组小徽标的矩形(长按 Shift 的 tabId 徽标)。**同样紧包** —— 几何在
+ *   `@shared/tabIdBadge`,bounds 由徽标中心点算出;它不接管键盘焦点,只拦住那一小块鼠标事件。
  */
-export type OverlayPlacement = 'full' | 'below-chrome' | 'page-top-right'
+export type OverlayPlacement = 'full' | 'below-chrome' | 'page-top-right' | 'panes'
 
 /**
  * 核心 Overlay 内容标识(渲染层组件注册表的 key)。
  * 约定:`suggest` = 地址栏建议下拉;`confirm-close` = 关闭窗口确认(多标签时);
  * `split-menu` = 分屏下拉面板(工具栏按钮触发);`find` = 页内查找条(`Ctrl+F`);
+ * `tab-ids` = 长按 Shift 时浮在页面上的 tabId 徽标(主进程直接打开,chrome 不管);
  * 设置等浏览器自有页面已改为内部标签页(bow://settings),不再占用浮层。
  */
-export type CoreOverlayContentId = 'suggest' | 'confirm-close' | 'split-menu' | 'find'
+export type CoreOverlayContentId = 'suggest' | 'confirm-close' | 'split-menu' | 'find' | 'tab-ids'
 
 /** 插件浮层 id 约定:`plugin:<pluginId>:<panelId>` */
 export type PluginOverlayContentId = `plugin:${string}`
@@ -153,6 +157,7 @@ export interface OverlayContentMap {
   'confirm-close': CloseConfirmPayload
   'split-menu': SplitMenuPayload
   find: FindPayload
+  'tab-ids': TabIdsPayload
 }
 
 export type OverlayPayload<K extends OverlayContentId> = K extends keyof OverlayContentMap

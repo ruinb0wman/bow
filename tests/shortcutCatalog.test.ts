@@ -55,11 +55,31 @@ describe('设置页快捷键清单', () => {
     expect(has(['Ctrl', 'F'])).toBe(true)
     expect(has(['Ctrl', 'Shift', 'E'])).toBe(true)
     expect(has(['Ctrl', 'Shift', 'I'])).toBe(true)
+    expect(has(['Shift'])).toBe(true)
     expect(has(['Alt', 'F4'])).toBe(true)
   })
 
   it('平台受限条目单独标注(macOS 的 Ctrl+←/→)', () => {
     const back = allItems().find(({ item }) => item.keys.join('+') === 'Ctrl+← / →' && item.label.includes('后退'))
     expect(back?.item.platformNote).toContain('macOS')
+  })
+
+  it('展示文案是纯文本(设置页是直接插值,不渲染 Markdown/代码)', () => {
+    // 写 note 时很容易顺手带 `**加粗**` 或 `` `code` `` —— 在设置页会原样显示出来。
+    const texts: Array<[string, string | undefined]> = []
+    for (const g of SHORTCUT_GROUPS) {
+      texts.push([`${g.id}/label`, g.label], [`${g.id}/hint`, g.hint])
+      for (const item of g.items) {
+        texts.push([`${g.id}/${item.label}/label`, item.label])
+        texts.push([`${g.id}/${item.label}/note`, item.note])
+        texts.push([`${g.id}/${item.label}/platformNote`, item.platformNote])
+        for (const k of item.keys) texts.push([`${g.id}/${item.label}/key`, k])
+        for (const alt of item.alternatives ?? []) for (const k of alt) texts.push([`${g.id}/${item.label}/alt`, k])
+      }
+    }
+    for (const [where, text] of texts) {
+      expect(text ?? '', where).not.toContain('**')
+      expect(text ?? '', where).not.toContain('`')
+    }
   })
 })

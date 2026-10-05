@@ -261,6 +261,34 @@ export function matchHotkey(input: KeyInputLike, spec: HotkeySpec): boolean {
 }
 
 /**
+ * 「长按 Shift 显示 tabId」的按住时长:短暂 Shift(打大写字母、`Shift+字母`)不该触发。
+ * 计时本身在主进程(`tabShortcuts.ts`),这里只放常量,便于单测与调参时一处改。
+ */
+export const REVEAL_HOLD_MS = 200
+
+/** 长按 Shift 的信号:`show` = 开始计时(已过 `REVEAL_HOLD_MS` 才显示);`hide` = 立刻收起;`null` = 不改变状态 */
+export type RevealSignal = 'show' | 'hide' | null
+
+/**
+ * 长按 Shift 识别(只由主进程的 `before-input-event` 调用,延迟计时在 `tabShortcuts.ts`):
+ * - 纯 Shift 的 keyDown(不带 Ctrl/Alt/Meta)→ `'show'`;
+ * - Shift 的 keyUp、或**任何别的键**的 keyDown → `'hide'` —— 所以 `Shift+字母`/`Shift+方向键`
+ *   不会把标签栏变成「按住 Shift」;`Shift+click` 不产生 keyDown,揭示态得以保留到鼠标操作完;
+ * - 带 Ctrl/Alt/Meta 的 Shift(组合键的一半)、自动重复、输入法组合中 → `null`(状态不变)。
+ *
+ * ⚠️ 调用方**不要** preventDefault:Shift 必须照常进页面(打大写、选文字都靠它)。
+ * 已知不生效的场景:部分输入法把单按 Shift 当「中/英切换」吃掉(`isComposing` 会挡住)。
+ */
+export function matchRevealModifier(input: KeyInputLike): RevealSignal {
+  if (input.isComposing) return null
+  if (input.type === 'keyUp') return input.key === 'Shift' ? 'hide' : null
+  if (input.type !== 'keyDown' || input.isAutoRepeat) return null
+  if (input.key !== 'Shift') return 'hide'
+  // 只认「纯 Shift」:Ctrl/Alt/Meta 同时按着的是组合键的一半,不是长按
+  return input.control || input.meta || input.alt ? null : 'show'
+}
+
+/**
  * 第 digit 项 → 下标:1..8 取第 digit 项;9 取最后一项(Chrome 惯例);越界/空列表返回 null。
  * 注意这里传的是**标签栏项数**(= 标签组数,一个分屏组只算一项),不是标签页数。
  */

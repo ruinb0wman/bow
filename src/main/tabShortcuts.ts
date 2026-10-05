@@ -3,6 +3,10 @@
  * 保证页面/地址栏/弹层任何焦点下 Ctrl+T / Ctrl+Shift+T / Ctrl+W / Ctrl+L / Ctrl+Shift+L / Ctrl+Shift+E /
  * Ctrl+R / Ctrl+J / Ctrl+←/→ / Ctrl+数字 / Ctrl+, 均可生效。
  *
+ * 另有一件不属于快捷键的事也挂在这里:**长按 Shift 显示当前标签组各窗格的 tabId**
+ * (`matchRevealModifier` → 200ms 计时 → 交给 Overlay 的 `panes` 浮层,见下方 `showReveal`)。
+ * 同一条路的原因一样:页面是独立 WebContentsView,只有主进程能看到「页面里有焦点时的 Shift」。
+ *
  * 背景:标签页是独立 WebContentsView,按键事件只进入当前聚焦的 webContents,
  * 渲染层 keydown 在页面聚焦时收不到按键,因此必须在主进程拦截。
  * 策略与 devtools.ts 相同:先于任何窗口/视图创建注册,覆盖全部 webContents。
@@ -14,7 +18,9 @@
 
 import { app } from 'electron'
 import {
+  REVEAL_HOLD_MS,
   historyHotkeyEnabled,
+  matchRevealModifier,
   matchSplitHotkey,
   matchTabHotkey,
   releasesToTerminal,
@@ -23,10 +29,12 @@ import {
 } from '@shared/shortcuts'
 import { TERMINAL_URL, parseInternalUrl } from '@shared/internalPages'
 import { isDevToolsFrontendUrl } from '@shared/devtools'
+import { tabIdBadgeLayout } from '@shared/tabIdBadge'
+import type { TabIdBadgeCenter } from '@shared/tabIdBadge'
 import type { TabInfo } from '@shared/types'
 import type { TabManager } from './tabManager'
 import type { PluginKernel } from './plugins/kernel'
-import type { WindowManager } from './windows'
+import type { WindowContext, WindowManager } from './windows'
 import { CLOSE_CONFIRM_OVERLAY_ID } from './closeConfirm'
 import { openFind } from './findBar'
 import { log } from './logger'
@@ -58,6 +66,76 @@ export function focusAddressBar(tabs: TabManager): void {
   wc.send('chrome:focus-address')
 }
 
+// ---------- 长按 Shift:显示当前标签组各窗格的 tabId ----------
+
+/** 待显示的计时器(`REVEAL_HOLD_MS` 后才算「长按」,打大写字母时的瞬间 Shift 不会闪出徽标) */
+let revealTimer: ReturnType<typeof setTimeout> | null = null
+/** 已经被揭示的那个窗口(徽标只可能同时出现在一个窗口里) */
+let revealCtx: WindowContext | null = null
+/** 揭示期间挂上的三个监听(窗口缩放 / 分屏变化 / 窗口失焦)的卸载器 */
+let revealOff: (() => void) | null = null
+
+/** 活动组的窗格中心(窗口内容坐标)。非活动组 `listGroups()` 给的 `panes` 是空数组。 */
+function activePaneCenters(tabs: TabManager): TabIdBadgeCenter[] {
+  const panes = tabs.listGroups().find((g) => g.panes.length > 0)?.panes ?? []
+  return panes.map((p) => ({
+    tabId: p.tabId,
+    x: p.rect.x + p.rect.width / 2,
+    y: p.rect.y + p.rect.height / 2
+  }))
+}
+
+/**
+ * 把徽标浮层显示(或刷新)到该窗口;没有可显示的内容 / 已有别的浮层打开时返回 false。
+ * 几何由 `@shared/tabIdBadge` 纯函数算(bounds 紧包徽标,别让浮层吃掉页面点击)。
+ */
+function showReveal(ctx: WindowContext): boolean {
+  if (ctx.window.isDestroyed()) return false
+  // 已经有别的浮层(建议下拉 / 分屏面板 / 页内查找条 / 插件面板)时不抢它
+  if (ctx.overlay.isOpen && ctx.overlay.currentId !== 'tab-ids') return false
+  const [w, h] = ctx.window.getContentSize()
+  const payload = tabIdBadgeLayout(activePaneCenters(ctx.tabs), w, h)
+  if (!payload) return false
+  revealCtx = ctx
+  ctx.overlay.show({ id: 'tab-ids', placement: 'panes', payload })
+  log('长按 Shift:显示 tabId 徽标', payload.badges.map((b) => b.tabId).join(','))
+  // 每次刷新都重挂一遍监听(旧的先摘):`refresh` 是每次新造的闭包,不摘会越挂越多;
+  // 也顺便保证「上一个窗口已关、revealOff 还指着它」时不会漏挂新窗口的监听。
+  revealOff?.()
+  // 窗口缩放 / 分屏变化 → 窗格几何变了,重新取数重算(而不是留一堆错位的徽标);
+  // 窗口失焦 → 立刻收起(失焦后 Shift 的 keyUp 根本不会到达主进程)。
+  const refresh = (): void => {
+    if (!showReveal(ctx)) clearReveal()
+  }
+  const onBlur = (): void => clearReveal()
+  ctx.window.on('resize', refresh)
+  ctx.tabs.on('groups-changed', refresh)
+  ctx.window.on('blur', onBlur)
+  revealOff = () => {
+    ctx.window.off('resize', refresh)
+    ctx.tabs.off('groups-changed', refresh)
+    ctx.window.off('blur', onBlur)
+  }
+  return true
+}
+
+/** 收起徽标(并撤掉计时器与监听)。可重复调用。 */
+function clearReveal(): void {
+  revealOff?.()
+  revealOff = null
+  if (revealTimer != null) {
+    clearTimeout(revealTimer)
+    revealTimer = null
+  }
+  const target = revealCtx
+  revealCtx = null
+  // 只关自己那一份:期间若有别的浮层(插件面板等)顶掉了它,别把人家的面板关了
+  if (target && !target.window.isDestroyed() && target.overlay.currentId === 'tab-ids') {
+    target.overlay.show(null)
+    log('长按 Shift:收起 tabId 徽标')
+  }
+}
+
 /**
  * 安装 Tab 快捷键。必须在创建任何窗口/视图之前调用(与 setupDevTools 相同约束);
  * windows/kernel 通过惰性取值,按键事件只会在窗口加载完成后到达,此时实例已就绪。
@@ -78,6 +156,21 @@ export function setupTabShortcuts(getWindows: () => WindowManager, getKernel: ()
        * (只认这一个弹层,不禁其它 full 弹层如书签面板)。
        */
       const closeConfirmOpen = (): boolean => overlay.currentId === CLOSE_CONFIRM_OVERLAY_ID
+
+      // 长按 Shift → 显示当前标签组各窗格的 tabId(`matchRevealModifier` 对 Ctrl+Shift+X 这类组合返回 null)。
+      // ⚠️ 不 preventDefault:Shift 要照常进页面(打大写 / 选文字)。
+      const reveal = matchRevealModifier(input)
+      if (reveal === 'hide') {
+        clearReveal()
+      } else if (reveal === 'show') {
+        if (revealTimer != null) clearTimeout(revealTimer)
+        revealTimer = setTimeout(() => {
+          revealTimer = null
+          // 到点时窗口已失焦 / 有全窗弹层 → 不显示(失焦后也不会再有 keyUp 来收它)
+          if (!ctx.window.isFocused() || overlay.isFullOpen) return
+          if (!showReveal(ctx)) clearReveal()
+        }, REVEAL_HOLD_MS)
+      }
 
       const hk = matchTabHotkey(input)
       if (hk) {

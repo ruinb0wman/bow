@@ -206,14 +206,17 @@ Electron 的合成顺序:`contentView` 的子视图按加入顺序从底到顶;*
 
 - chrome 的高度由渲染层实测后经 `ui:chrome-height` 上报 → `TabManager.setChromeHeight()` → `layout()`。
   `App.vue` 用 `ResizeObserver` + `window.resize` 双重触发,并在挂载后 300ms 补一次。
-- `OverlayManager.layout()` 的三种 placement:
+- `OverlayManager.layout()` 的四种 placement:
   - `full`:铺满窗口 `{0,0,w,h}`,聚焦接管(modal);
   - `below-chrome`:从 `bandTopOf()` 起到底部。`bandTopOf()` 取
     `min(chromeHeight, ceil(payload.rect.y + rect.height))`——即「绝不上盖工具栏,但尽量贴住地址栏底边」。
     **假设工具栏是 chrome 的最后一行**;将来加书签栏这种整行,这里要回退成 `chromeHeight`;
   - `page-top-right`:页面区右上角的小矩形(页内查找条),bounds 由 `@shared/find` 的 `findBarRect()`
     精算 —— `WebContentsView` **没有点击穿透**,铺满会把右半页的点击全吃掉(见 §3 开头表与 §13 第 3 条)。
-    打开与关闭时都接管/归还键盘焦点(`content.id === 'find'` 与 `full` 同一处理)。
+    打开与关闭时都接管/归还键盘焦点(`content.id === 'find'` 与 `full` 同一处理);
+  - `panes`:**紧包一组小徽标**的小矩形(长按 `Shift` 的 `tabId` 徽标,见 §7.2),bounds 由
+    `@shared/tabIdBadge` 的 `tabIdBadgeLayout()` 从各窗格中心算出(同样夹进窗口)。
+    与 `find` 相反:它**不接管键盘焦点** —— 揭示徽标时打字/终端输入照常进页面。
 - `raise()` 由 `tabs.on('tabs-changed')` 触发:新标签视图会盖住已开浮层,所以每次标签增删都要重新置顶。
 - **标签组(标签栏的一项 = 一个组)**:一个组是一棵**二叉嵌套分屏树**(`shared/split.ts` 的 `LayoutNode`:
   叶子是标签,`split` 节点带 `axis`(row=左右 / column=上下)与 `ratio`)。`TabManager` 持有
@@ -823,8 +826,13 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
   → `main/agentNotify.ts` → `TabManager.setAgentState` → `tab:updated` → 这里。
 - 标签关闭兜底:关掉最后一个标签时自动补一个 `about:blank`(与 `tabShortcuts.ts` 的 close 分支一致)。
 
-`OverlayApp.vue`:注册表 = 核心 `{suggest: SuggestPanel, 'split-menu': SplitMenu, 'confirm-close': CloseConfirmModal, find: FindBar}` + 已启用插件的 `overlays`;
+`OverlayApp.vue`:注册表 = 核心 `{suggest: SuggestPanel, 'split-menu': SplitMenu, 'confirm-close': CloseConfirmModal, find: FindBar, 'tab-ids': TabIdsOverlay}` + 已启用插件的 `overlays`;
 组件契约 = `payload` prop + `band-top` prop + `overlay-event` emit。
+**长按 `Shift` 的 tabId 徽标**(`tab-ids`,owner 是**主进程**而不是 chrome):`main/tabShortcuts.ts` 的
+`matchRevealModifier()` 认裸 `Shift` 的 keyDown,过 `REVEAL_HOLD_MS`(200ms)后把**活动组**各窗格中心
+交给 `@shared/tabIdBadge` 算好 bounds/payload → `overlay.show({id:'tab-ids', placement:'panes'})`;
+松开 `Shift` / 按别的键 / 窗口失焦 / 缩放 / 分屏变化都会收起或重算。组件在徽标上自己写剪贴板
+(读回核对)并短暂显示「已复制」。
 `ModalShell.vue` 用模块级 `MODAL_STACK` 保证只有栈顶弹层响应 Esc(必须是模块级 —— `<script setup>` 顶层每实例执行一次)。
 
 ### 7.3 设置页
@@ -1005,6 +1013,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `npm run test:e2e:device` | 设备检查插件的**假手机** E2E:真 Electron + 真 MCP + 真 TCP/WS,只有 adb 与设备端是假的(不需要真机,也不需要显示环境) |
 | `npm run test:e2e:quark` | 夸克网盘插件的**离线** E2E:用 `--host-resolver-rules` 把 `pan/drive-pc.quark.cn` 指到本机一个 HTTPS 假服务器(自签证书 + `--ignore-certificate-errors`),再起一个假 aria2 JSON-RPC 服务器,于是「读页面 → 取直链 → 推 aria2」整条链路在真 Electron 里跑一遍,并断言**两端真正收到了什么**(接口的 UA/登录态/无 `Origin`;aria2 header 的 UA/Referer 与 Cookie 白名单边界)。页面用 MCP 核心工具打开,插件 IPC 用 `--remote-debugging-port` 在 chrome 页面 target 上调 `plugins.invoke`。不需要夸克账号,只需要 openssl |
 | `npm run test:e2e:agent` | 代理状态的 E2E:假 pi(只往 pty 打一条 `1337;bow` 信号)走真终端 → 断言标签栏角标、系统通知的标题/正文(桌面通知观察不到,靠 `BOW_NOTIFY_LOG` 的 JSONL)、代理继续时那条通知被撤回、点通知进入对应标签(OS 点击合成不了,走 `__bowNotifyClick`)、点通知≠回答弹框、关标签后清理,并断言 `toast.html` 不存在;后半段还验设置页「Pi 状态联动」的一键接入(写/删真实文件到临时 `PI_CODING_AGENT_DIR`);在 Linux 上另验「WSL2 提醒不出现」(`status.wsl` 不存在——那段提醒只在 Windows 上给,免得误导)。`BOW_E2E_BIN=dist/linux-unpacked/bow` 可改验打包版(确认源码能从 asar 里读到)。Linux 缺 `libasound.so.2` 时不需要 root:从镜像的 `extra.db` 查出 `alsa-lib` 的包名,下下来 `bsdtar -xf` 到**持久目录**(如 `~/.cache/bow-alsa` —— 放 `/tmp` 会被清掉),再 `LD_LIBRARY_PATH=<解包的 usr/lib>`(与 README 的 `SMOKE_LD_LIBRARY_PATH` 同一招) |
+| `npm run test:e2e:tabid` | 长按 Shift 的 tabId 徽标 E2E:真 Electron + CDP —— 在**页面 target** 上发裸 `Shift` 的 `rawKeyDown`(验证修饰键确实会触发主进程 `before-input-event`)、短按 60ms 不显示、长按后 overlay target 里出现徽标、浮层视图尺寸 = 紧包 bounds、徽标几何 = 窗格中心、点一下 `readClipboardText()` 拿到纯数字 id、松开后消失、已有浮层时不抢;再分屏一次验「每个窗格各一个徽标」 |
 | `npm run mcp` / `mcp:http` | 经 `open-bow.mjs` 以 stdio / HTTP 模式启动 |
 | `npm run mcp:install [-- …]` | 把 MCP 配置 + skill 写进 pi(幂等、可回滚、非 JSON 直接中止) |
 | `npm run pi:install-status [-- …]` | 把状态桥扩展写进 `~/.pi/agent/extensions/bow-agent-state.ts`(幂等;`--dry-run` / `--print` / `--uninstall` / `--force` / `--extension-dir`)。目标文件带 `managed by bow` 标记:没有该标记且存在时拒写(不覆盖别人的扩展) |
@@ -1026,6 +1035,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `e2e-quark-headers.mjs` | 夸克插件的离线 E2E(自签 HTTPS 假夸克服务器 + 假 aria2 JSON-RPC 服务器 + 隔离 `--user-data-dir`)。它**自己 spawn Electron**(不经 `open-bow.mjs`),因为 `host-resolver-rules` 的值里含空格,而 `BOW_ELECTRON_ARGS` 是按空格切分的 |
 | `install-pi-agent-state.mjs` | 写 pi 的状态桥扩展;源是仓库里的 `integrations/pi/bow-agent-state.ts`(单文件、无运行时依赖,jiti 直接跑)。未安装时的降级:只有「正在执行」角标(靠 pi 内建的 `terminal.showTerminalProgress`)。打包后的应用里**没有这个脚本**:设置页的一键接入走 `src/plugins/terminal/piBridge.ts`(同一套规则,不变式由 `tests/piBridgeExtension.test.ts` 钉住) |
 | `e2e-agent-status.mjs` | 代理状态 E2E:不装 MCP、不用真 pi,全程 CDP —— chrome target 开终端页、终端页 `window.__bowTerminal.send` 敲命令、主进程 inspector target 驱动 `__bowNotifyClick` 并读 `BOW_NOTIFY_LOG`、设置页 target 点一键接入的按钮 |
+| `e2e-tab-id-reveal.mjs` | 长按 Shift 的 tabId 徽标 E2E(见上表);几何常量**独立写死**在脚本里(真机断言不该跟 `@shared/tabIdBadge` 共用一份数) |
 | `cors-test-server.mjs` / `cors-probe.html` | CORS 插件的人工验证环境 |
 | `fetch-northbound.mjs` | 外网连通性探测 |
 
