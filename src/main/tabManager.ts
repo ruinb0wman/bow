@@ -13,6 +13,7 @@ import {
   focusedTabId,
   groupTabIds,
   insertIndexAfterGroup,
+  moveTabGroup,
   neighborGroupIdAfterRemoval,
   newTabGroup,
   removeTabFromGroups,
@@ -833,6 +834,21 @@ export class TabManager extends EventEmitter {
     if (focus == null) return null
     this.activate(focus)
     return this.getActiveTabInfo()
+  }
+
+  /**
+   * 拖动排序:把某个组挪到 `toIndex`(标签栏顺序 = `groups` 数组顺序),返回是否真的动了。
+   * 只改数组顺序 —— 几何与可见性只跟**活动组**有关、与顺序无关,所以不用 `layout()`;
+   * 但标签栏吃 `groups:changed`,重排后必须 `publishGroups()`。
+   * `Ctrl+数字` / 新标签的插入位置都读这份顺序,自动跟着变。
+   */
+  moveGroup(groupId: number, toIndex: number): boolean {
+    const next = moveTabGroup(this.groups, groupId, toIndex)
+    if (next === this.groups) return false
+    this.groups = next
+    this.publishGroups()
+    log('标签组排序', groupId, '→', toIndex)
+    return true
   }
 
   /**

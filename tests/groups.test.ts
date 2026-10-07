@@ -8,6 +8,7 @@ import {
   focusedTabId,
   groupTabIds,
   insertIndexAfterGroup,
+  moveTabGroup,
   neighborGroupIdAfterRemoval,
   newTabGroup,
   removeTabFromGroups,
@@ -229,5 +230,41 @@ describe('neighborGroupIdAfterRemoval', () => {
   it('连续移除多个时跳过它们', () => {
     const groups = [solo(1, 10), solo(2, 30), solo(3, 40), solo(4, 50)]
     expect(neighborGroupIdAfterRemoval(groups, [2, 3])).toBe(4)
+  })
+})
+
+describe('moveTabGroup', () => {
+  it('往后挪:组的树与焦点原样跟着走', () => {
+    const groups = [g(1, row(leaf(10), leaf(11)), 11), solo(2, 30), solo(3, 40)]
+    const next = moveTabGroup(groups, 1, 1)
+    expect(next.map((x) => x.id)).toEqual([2, 1, 3])
+    expect(next[1]).toBe(groups[0]) // 同一个组对象,不是重建
+    expect(next[1].tree).toEqual(row(leaf(10), leaf(11)))
+    expect(next[1].focus).toBe(11)
+  })
+
+  it('往前挪', () => {
+    const groups = [solo(1, 10), solo(2, 30), solo(3, 40)]
+    expect(moveTabGroup(groups, 3, 0).map((x) => x.id)).toEqual([3, 1, 2])
+  })
+
+  it('下标越界 → 夹到两端', () => {
+    const groups = [solo(1, 10), solo(2, 30), solo(3, 40)]
+    expect(moveTabGroup(groups, 1, 99).map((x) => x.id)).toEqual([2, 3, 1])
+    expect(moveTabGroup(groups, 3, -5).map((x) => x.id)).toEqual([3, 1, 2])
+    expect(moveTabGroup(groups, 2, 1.7).map((x) => x.id)).toEqual([1, 2, 3]) // 小数先截断成 1 = 原位
+  })
+
+  it('组不存在 / 目标就是当前下标 → 原样返回同一个引用(靠它跳过重发事件)', () => {
+    const groups = [solo(1, 10), solo(2, 30)]
+    expect(moveTabGroup(groups, 42, 0)).toBe(groups)
+    expect(moveTabGroup(groups, 2, 1)).toBe(groups)
+    expect(moveTabGroup([], 1, 0)).toEqual([])
+  })
+
+  it('单元素数组怎么挪都不动', () => {
+    const groups = [solo(1, 10)]
+    expect(moveTabGroup(groups, 1, 0)).toBe(groups)
+    expect(moveTabGroup(groups, 1, 5)).toBe(groups)
   })
 })

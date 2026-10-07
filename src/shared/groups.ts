@@ -138,6 +138,22 @@ export function insertIndexAfterGroup(groups: readonly TabGroup[], afterGroupId:
 }
 
 /**
+ * 拖动排序:把某个组挪到 `toIndex`(标签栏顺序 = 数组顺序,`toIndex` 是**结果数组里的最终下标**)。
+ * 下标夹进 `[0, length-1]`;组不存在 / 目标与当前一致时**原样返回入参**(调用方靠引用相等跳过重发事件)。
+ * 参数不声明 `readonly` 就是为了这条同引用契约 —— 调用方拿到同一个数组时不该再改它。
+ */
+export function moveTabGroup(groups: TabGroup[], groupId: number, toIndex: number): TabGroup[] {
+  const from = groups.findIndex((g) => g.id === groupId)
+  if (from < 0) return groups
+  const to = Math.max(0, Math.min(groups.length - 1, Math.trunc(toIndex)))
+  if (to === from) return groups
+  const next = [...groups]
+  const [moved] = next.splice(from, 1)
+  next.splice(to, 0, moved)
+  return next
+}
+
+/**
  * 关掉/移除一个组之后该激活谁:优先**后一个**,没有就前一个(都按移除前的顺序算)。
  * `removedIds` 是本轮被移除的组 id(可能不止一个)。
  */

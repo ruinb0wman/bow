@@ -56,6 +56,8 @@ export interface BrowserAPI {
   splitPane: (dir: PaneDir) => Promise<TabGroupInfo[]>
   resizePane: (dir: PaneDir) => Promise<TabGroupInfo[]>
   groupsUngroup: () => Promise<TabGroupInfo[]>
+  // 拖动排序:把某个组挪到标签栏的最终下标(顺序只在内存,不落盘)
+  groupsMove: (groupId: number, toIndex: number) => Promise<TabGroupInfo[]>
   // 保存的分屏布局(只存结构;套用时在新标签组里开)
   getLayouts: () => Promise<LayoutPreset[]>
   saveLayout: (name?: string) => Promise<LayoutPreset[]>
@@ -141,6 +143,7 @@ const api: BrowserAPI = {
   splitPane: (dir) => ipcRenderer.invoke('groups:split', dir),
   resizePane: (dir) => ipcRenderer.invoke('groups:resize', dir),
   groupsUngroup: () => ipcRenderer.invoke('groups:ungroup'),
+  groupsMove: (groupId, toIndex) => ipcRenderer.invoke('groups:move', groupId, toIndex),
   getLayouts: () => ipcRenderer.invoke('layouts:list'),
   saveLayout: (name) => ipcRenderer.invoke('layouts:save', name),
   applyLayout: (id) => ipcRenderer.invoke('layouts:apply', id),

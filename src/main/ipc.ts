@@ -126,6 +126,16 @@ export function registerIpc(windows: WindowManager, kernel: PluginKernel): void 
     ctxOf(e)?.tabs.ungroupActive()
     return ctxOf(e)?.tabs.listGroups() ?? []
   })
+  // 拖动排序:渲染层把「被拖的组 + 结果数组里的最终下标」报上来,主进程重排后回推 groups:changed。
+  // 组 id 不存在 / 下标越界都由 moveTabGroup 兜住(夹紧、no-op),这里只做类型检查。
+  ipcMain.handle('groups:move', (e, groupId?: unknown, toIndex?: unknown) => {
+    const ctx = ctxOf(e)
+    if (ctx) {
+      if (typeof groupId === 'number' && typeof toIndex === 'number') ctx.tabs.moveGroup(groupId, toIndex)
+      return ctx.tabs.listGroups()
+    }
+    return []
+  })
 
   // ---------- 保存的分屏布局(split-layouts.json;只存结构,套用时开新标签组) ----------
   const listLayouts = (): LayoutPreset[] => normalizeLayoutPresets(getLayoutsStore().get())

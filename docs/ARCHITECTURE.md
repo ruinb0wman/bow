@@ -232,6 +232,8 @@ Electron 的合成顺序:`contentView` 的子视图按加入顺序从底到顶;*
   ④`Ctrl+Shift+方向` 分屏时**每次都嵌套一层**(新窗格吃掉被分窗格一半),`Alt+Shift+方向` 从叶子
   **由内向外**找第一层「轴与箭头一致」的分隔条,把它**朝箭头方向**推一步(只动最内层;`ratio` 夹到
   `RATIO_MIN..RATIO_MAX`,夹紧就不再向外找)。
+  **数组顺序 = 标签栏顺序**:拖动排序(`moveTabGroup`,夹紧/no-op 返回同引用)只改这个数组;
+  `Ctrl+1..9`(`tabShortcuts.ts` 读 `listGroups()`)与「新标签插在活动组后面」都跟着它走。
   组变化通过 `groups-changed` 事件 → `groups:changed` 通道只发给 chrome(面板数据由 chrome 组装下发)。
 
 ### overlay 的两种消息流(别搞混)
@@ -748,7 +750,7 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | 设置 | `getSettings()` `setSettings(patch)` |
 | 窗口 | `minimize()` `maximize()` `closeWindow()` `reportChromeHeight(h)` |
 | 剪贴板 | `readClipboardText()` `writeClipboardText(text)`(走主进程 Electron `clipboard`,避开 renderer 侧的 secure context / 权限差异) |
-| 标签组 | `getGroups()` `groupsActivate(groupId)` `splitPane(dir)` `resizePane(dir)` `groupsUngroup()`(后两条键盘入口在主进程,IPC 是渲染层兜底与 E2E 入口) |
+| 标签组 | `getGroups()` `groupsActivate(groupId)` `groupsMove(groupId,toIndex)` `splitPane(dir)` `resizePane(dir)` `groupsUngroup()`(`split`/`resize` 的键盘入口在主进程,IPC 是渲染层兜底与 E2E 入口;`groupsMove` 是标签栏拖动排序) |
 | 分屏布局 | `getLayouts()` `saveLayout(name?)` `applyLayout(id)` `deleteLayout(id)`(只存结构;套用 = 在当前组后面新开一个标签组) |
 | 浮层 | `showOverlay(content\|null)` `onOverlayEvent(cb)` `onOverlayShow(cb)` `overlayEmit(id,event,args)` |
 | 插件 | `plugins.list()` `setEnabled(id,enabled)` `invoke(id,method,…args)` `overlayEvent(overlayId,event,args)` `suggest(input)` `onChanged(cb)` `onEvent(cb)` |
@@ -775,6 +777,12 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
   `toPlainRows()` 深拷贝的原因是 **IPC 结构化克隆不能传 Vue 响应式代理**(分屏面板的 layouts 同理)。
 - **标签栏按组渲染**:一项 = 一个组(`v-for="g in groups"`);多窗格组里**只有聚焦窗格**显示 `.tab-title`,
   其余窗格渲染 `.tab-pane-icon`(字母头像,点击切过去、中键关掉);`×` / 中键点项体 / `Ctrl+W` 都只关**聚焦那个窗格**。
+- **标签栏拖动排序 = 指针手势 + 实时排序**(不用 HTML5 拖拽:原生拖拽会话能被拖出窗口,而这里明确
+  **不允许拖出去开新窗口**)。`pointerdown` 起手(不在 `×` / 窗格图标上起;`setPointerCapture` +
+  `pointermove/up/cancel/blur` 收尾),越过邻项**中线**就 `groupsMove(id, k)` 一次;
+  顺序真源依然是主进程的 `groups`(渲染层**不另存一份临时顺序**),所以丢事件 / 松手在窗口外都不会留下不一致。
+  没有 ghost / 插入指示线 —— 项本身就在实时让位,拖过的那项 `opacity: .5`。拖后那次补发的 `click` 靠 `dragMoved` 吞掉
+  (否则松手会把被拖的标签激活)。
   分隔条是 `v-for="d in activeGroupDividers"` 的 `.split-divider`,坐标直接吃主进程回传的 `dividers`(不重算)。
   聚焦窗格的高亮边框同源:`.split-focus-bar` 由 `focusRingBars(paneRect, area)`(`shared/split.ts` 的纯函数)现算 ——
   它**只产出有空间的边**,所以需要空间。中间那几条边由 4px 缝隙给;外圈四条边由 `geometryOf()` 给:
@@ -927,6 +935,7 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `groups:split` | `PaneDir` | `TabGroupInfo[]`(在聚焦窗格上分屏并新建空白标签;键盘入口在主进程,这条供渲染层兜底与 E2E) |
 | `groups:resize` | `PaneDir` | `TabGroupInfo[]`(把聚焦窗格最内层同轴的分隔条朝该方向推一步;夹紧或无同轴祖先时不变) |
 | `groups:ungroup` | — | `TabGroupInfo[]`(把当前组的 N 个窗格拆成相邻 N 个单标签组) |
+| `groups:move` | groupId, toIndex | `TabGroupInfo[]`(拖动排序:把某组挪到结果数组的最终下标;夹紧 / no-op 在 `moveTabGroup`) |
 | `layouts:list` | — | `LayoutPreset[]`(已归一化) |
 | `layouts:save` | name? | `LayoutPreset[]`(当前组 ≥2 窗格才存;名字默认「布局 N」) |
 | `layouts:apply` | id | `TabGroupInfo[]`(在当前组后面新开一个标签组) |
@@ -1093,9 +1102,9 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 其余:`ua`(5)、`pluginMatch`(13)、`settingsNav`(4)、`shortcutCatalog`(6)、`modalStack`(3)、`bundleScan`(6)、
 `localFile`(6)、`navInput`(9)、`openArgs`(14)、
 `defaultBrowser`(60)、`closeConfirm`(6)、`split`(61,嵌套分屏树 / 几何 / 原地换叶子 / 布局形状与归一化 / 聚焦窗格边框条)、
-`groups`(26,树版组记账 + 原地换叶子)、`terminalShared`(39,纯逻辑:设置规范化 /
+`groups`(31,树版组记账 + 原地换叶子 + 拖动排序)、`terminalShared`(39,纯逻辑:设置规范化 /
 平台预设 / spawn 参数 / 环境变量清洗 / 回放缓冲 / PATH 查找 / 参数文本 / 复制粘贴键位)、
-`downloadsShared`(33,下载记录的纯逻辑:设置归一 / 动作可用性 / 启动归一 / 裁剪排序 / 重名去重 / 格式化)。合计 **713**。
+`downloadsShared`(33,下载记录的纯逻辑:设置归一 / 动作可用性 / 启动归一 / 裁剪排序 / 重名去重 / 格式化)。合计 **718**。
 
 笔记插件(`bow://logseq`)另加 5 个文件 / 186 例,外加 `internalPages` 的 2 例:
 

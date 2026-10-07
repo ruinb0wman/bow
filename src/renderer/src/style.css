@@ -315,6 +315,12 @@ select:focus {
 }
 
 /* ---------- 标签组(分屏) ---------- */
+/* 拖动排序中:被拖的那一项半透明(顺序本身就是实时重排的,不需要 ghost / 插入指示线) */
+.tab.tab-dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+
 /* 多窗格组:聚焦窗格的名字 + 其余窗格的图标,所以要比普通标签宽一些 */
 .tab.group-split {
   min-width: 160px;

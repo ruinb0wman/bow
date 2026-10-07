@@ -278,6 +278,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   unsubs.forEach((u) => u())
+  endDrag() // 窗口级指针监听不跟着组件卸载走
 })
 
 // ---------- 标签操作 ----------
@@ -368,6 +369,75 @@ function handleSplitMenuEvent(ev: OverlayEvent): void {
 
 async function activateTab(id: number): Promise<void> {
   await api.activateTab(id)
+}
+
+// ---------- 标签栏拖动排序 ----------
+/**
+ * 用指针手势而不是 HTML5 拖拽:原生拖拽会话能被拖出窗口,而本功能明确**不允许**「拖出去开新窗口」
+ * (跨窗口拖标签在 multi-window 一期就列为不做);指针方案还能随时收手,也不受 `-webkit-app-region: drag` 干扰。
+ * 顺序真源仍是主进程:每越过一个邻项的中线就发一次 IPC,主进程重排后回推 `groups:changed` ——
+ * 渲染层不另存一份「临时顺序」,所以松手/丢事件都不会留下对不上的状态。
+ */
+const draggingGroupId = ref<number | null>(null)
+/** 本次手势按下后是否真的拖动过:PointerUp 之后浏览器还会补一次 click,得凭它吞掉 */
+let dragMoved = false
+let dragStartX = 0
+const DRAG_THRESHOLD = 4
+
+function onTabPointerdown(g: TabGroupInfo, e: PointerEvent): void {
+  if (e.button !== 0) return
+  // 关闭按钮 / 组内非聚焦窗格图标各有自己的点击语义,不在它们身上起拖
+  if ((e.target as HTMLElement).closest('.tab-close, .tab-pane-icon')) return
+  draggingGroupId.value = g.id
+  dragMoved = false
+  dragStartX = e.clientX
+  // 接管指针:拖到窗口外(页面区)也能收到 pointerup,不至于留下拖拽态
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  window.addEventListener('pointermove', onDragMove)
+  window.addEventListener('pointerup', endDrag)
+  window.addEventListener('pointercancel', endDrag)
+  window.addEventListener('blur', endDrag)
+}
+
+/** 指针 x → 目标下标:排在「中线在指针左边」的所有**其它**项之后(只用别人的中线,手感才不抖) */
+function dropIndexFor(draggedId: number, x: number): number | null {
+  const els = Array.from(chromeRoot.value?.querySelectorAll<HTMLElement>('.tabstrip-left .tab') ?? [])
+  // DOM 还没跟上数据(IPC 回来的那一帧)不算,免得多发一次 IPC
+  if (els.length !== groups.value.length) return null
+  let k = 0
+  for (let i = 0; i < els.length; i += 1) {
+    if (groups.value[i].id === draggedId) continue
+    const r = els[i].getBoundingClientRect()
+    if (x > r.left + r.width / 2) k += 1
+  }
+  return Math.min(k, groups.value.length - 1)
+}
+
+function onDragMove(e: PointerEvent): void {
+  const id = draggingGroupId.value
+  if (id == null) return
+  if (!dragMoved && Math.abs(e.clientX - dragStartX) < DRAG_THRESHOLD) return
+  dragMoved = true
+  const to = dropIndexFor(id, e.clientX)
+  const cur = groups.value.findIndex((g) => g.id === id)
+  // 每一帧 mousemove 不该都发 IPC:位置没变就什么都不做
+  if (to == null || cur < 0 || to === cur) return
+  void api.groupsMove(id, to)
+}
+
+function endDrag(): void {
+  draggingGroupId.value = null
+  window.removeEventListener('pointermove', onDragMove)
+  window.removeEventListener('pointerup', endDrag)
+  window.removeEventListener('pointercancel', endDrag)
+  window.removeEventListener('blur', endDrag)
+  // 不清 dragMoved:紧随其后的那次 click 要靠它吞掉(下一个 pointerdown 才复位)
+}
+
+/** 拖过之后浏览器仍会补一次 click:吞掉它,否则松手会把被拖的标签激活 */
+function onTabClick(g: TabGroupInfo): void {
+  if (dragMoved) return
+  void activateTab(focusedTabId(g))
 }
 
 // ---------- 导航 ----------
@@ -624,9 +694,11 @@ onBeforeUnmount(() => {
           :class="{
             active: isGroupActive(g),
             crashed: groupCrashed(g),
-            'group-split': isSplitGroup(g)
+            'group-split': isSplitGroup(g),
+            'tab-dragging': draggingGroupId === g.id
           }"
-          @click="activateTab(focusedTabId(g))"
+          @pointerdown="onTabPointerdown(g, $event)"
+          @click="onTabClick(g)"
           @auxclick="(e) => { if (e.button === 1) closeTab(focusedTabId(g)) }"
         >
           <Columns2 v-if="isSplitGroup(g)" class="tab-split-icon" :size="11" />
