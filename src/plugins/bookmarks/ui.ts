@@ -1,6 +1,7 @@
 import StarButton from './ui/StarButton.vue'
 import BookmarksButton from './ui/BookmarksButton.vue'
 import BookmarksModal from './ui/BookmarksModal.vue'
+import BookmarksSettings from './ui/BookmarksSettings.vue'
 
 export default {
   id: 'bookmarks',
@@ -8,5 +9,6 @@ export default {
     'addressbar-trailing': [StarButton],
     toolbar: [BookmarksButton]
   },
-  overlays: [{ id: 'plugin:bookmarks:panel', component: BookmarksModal, placement: 'full' as const }]
+  overlays: [{ id: 'plugin:bookmarks:panel', component: BookmarksModal, placement: 'full' as const }],
+  settingsSections: [BookmarksSettings]
 }

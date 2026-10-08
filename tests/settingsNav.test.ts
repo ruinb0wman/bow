@@ -24,7 +24,7 @@ describe('设置页侧栏导航', () => {
       item({ id: 'bookmarks', hasSections: false }),
       item({ id: 'history', name: '浏览历史', core: true }),
       item({ id: 'cors', name: 'CORS 放行' }),
-      item({ id: 'quark', name: '夸克网盘', enabled: false })
+      item({ id: 'demo', name: '示例插件', enabled: false })
     ])
     expect(nav.map((i) => i.id)).toEqual([
       SETTINGS_GENERAL_ID,

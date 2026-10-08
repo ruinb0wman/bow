@@ -1,6 +1,6 @@
 # MCP Browser — AI 可操纵的简易 Electron 浏览器
 
-多标签页浏览器:地址栏搜索(输历史/书签实时模糊建议)、浏览历史、书签(文件夹分组、可导出 JSON)、下载管理(工具栏面板:记录 / 暂停恢复 / 重新下载 / 取消)、页内查找(`Ctrl+F`:高亮 + `n/m` 计数 + 上下一个)、设置页(内部标签页 `bow://settings`)、终端(内部标签页 `bow://terminal`,连本机 shell,并会把终端里 pi 的执行 / 等待确认 / 完成状态显示成**标签角标**与**系统通知**)、笔记(内部标签页 `bow://logseq`,直接读写你已有的 Logseq 文件图,含关系图谱)、密码(主密码解锁的本地密码库与登录页填充,可导出加密备份)、番茄钟(工具栏倒计时按钮 + 下拉面板,专注 / 休息计时,阶段结束弹系统通知、响提示音并让按钮闪烁);内置 **MCP 服务器(stdio)**,AI 编码工具(pi / Claude Code / Cursor 等)可以实时操纵这个浏览器:导航、搜索、点击、输入、滚动、切换标签、截图、读取页面快照、下载文件。
+多标签页浏览器:地址栏搜索(输历史/书签实时模糊建议)、浏览历史、书签(文件夹分组、可在设置页导入/导出 JSON)、下载管理(工具栏面板:记录 / 暂停恢复 / 重新下载 / 取消)、页内查找(`Ctrl+F`:高亮 + `n/m` 计数 + 上下一个)、设置页(内部标签页 `bow://settings`)、终端(内部标签页 `bow://terminal`,连本机 shell,并会把终端里 pi 的执行 / 等待确认 / 完成状态显示成**标签角标**与**系统通知**)、笔记(内部标签页 `bow://logseq`,直接读写你已有的 Logseq 文件图,含关系图谱)、密码(主密码解锁的本地密码库与登录页填充,可导入/导出加密备份)、番茄钟(工具栏倒计时按钮 + 下拉面板,专注 / 休息计时,阶段结束弹系统通知、响提示音并让按钮闪烁);内置 **MCP 服务器(stdio)**,AI 编码工具(pi / Claude Code / Cursor 等)可以实时操纵这个浏览器:导航、搜索、点击、输入、滚动、切换标签、截图、读取页面快照、下载文件。
 
 ## 技术栈
 
@@ -28,7 +28,6 @@ npm run test:mcp   # 真机冒烟测试(自己拉起浏览器)
 npm run test:mcp:http  # 真机冒烟测试(连已常驻的 HTTP 浏览器)
 npm run test:e2e:device  # 设备检查的假手机 E2E(真 Electron + 真 MCP,不需要真机/显示环境)
 npm run test:e2e:agent   # 代理状态 E2E(假 pi 往 pty 打 OSC → 角标 / 系统通知 / 点击进标签)
-npm run test:e2e:quark   # 夸克网盘插件的离线 E2E(假夸克服务器 + 假 aria2 RPC,不需要夸克账号,需要 openssl)
 npm run test:e2e:tabid   # 长按 Shift 的 tabId 徽标 E2E(真 Electron:裸 Shift 链路 + 徽标几何 + 复制)
 npm run pi:install-status   # 把状态桥扩展装进 pi(~/.pi/agent/extensions/),终端里的 pi 才有完整状态联动
 node scripts/open-bow.mjs http --dry-run   # 只看 HTTP 模式将注入的环境变量与端点
@@ -380,7 +379,7 @@ npm run test:mcp:http
 | `browser_pomo_skip` | 跳过当前阶段进入下一阶段(跳过不增加今日完成数)(由「番茄钟」插件提供) |
 | `browser_logseq_graph {node?, depth?, limit?, includeJournals?}` | 笔记(`bow://logseq` 的 Logseq 文件图)的关系图谱:不给 `node` 返回全图统计 + 连接最多的页面,给了就返回那个页面的 1~3 跳邻域(默认 1 跳)。只读(由「笔记」插件提供) |
 
-> 夸克网盘插件**不贡献 MCP 工具** —— 它只在夸克个人网盘页的工具栏按钮里提供一个面板(见下文)。
+> 插件导出的文件落在 bow 下载目录,见「数据存储」一节。
 
 典型 AI 工作流:`browser_new_tab`/`browser_navigate`(已等到加载完成)→ `browser_wait` 等目标元素渲染出来 → `browser_snapshot` 找到结果链接的选择器 → `browser_click` → `browser_screenshot` 确认 → `browser_type`/`browser_click` 填表。
 
@@ -433,9 +432,9 @@ npm run test:mcp:http
 - `Ctrl+Shift+←/→/↑/↓`:在**聚焦的窗格**上分屏(新窗格开一个空白标签并聚焦它,方向 = 新窗格的位置);
   `Alt+Shift+←/→/↑/↓`:把聚焦窗格**最内层那条分隔条朝该方向推一步**(推离窗格 = 它变大,推向窗格 = 它变小;
   长按可连续调整)
-  —— 这两个组合在**普通网页标签**、**终端页**(`bow://terminal`)与**手机调试的 DevTools 前端标签**上接管 ——
+  —— 这两个组合在**普通网页标签**、**终端页**(`bow://terminal`)与**手机调试的 DevTools 前端标签**上由主进程接管 ——
   终端窗格里也能就地分屏 / 调大小,手机 DevTools 窗格里也能(它没有 preload,页面自己调不了 `splitPane`);
-  地址栏、设置页里的它们保持原样(按词选择 / 前端自己的快捷键)。代价见下方「标签组与分屏」
+  地址栏里保持原样(按词选择),**设置页与笔记页由页面自己调 IPC**(输入框里仍是按词选择)。代价见下方「标签组与分屏」
 - 终端页(`bow://terminal`)里:`Ctrl+L`(清屏)、`Ctrl+R`(反向历史搜索)、`Ctrl+F`(按字符前进)、`Ctrl+←/→`(按词移动)**归 shell**;**`Ctrl+W` 不再归 shell** —— 它照常关掉聚焦的那个终端窗格;
   `Ctrl+C` **有选中内容就复制**(不打扰 shell)、没有选中才照常发给 shell 当中断信号;`Ctrl+V` 粘贴
   (`Ctrl+Shift+C` / `Ctrl+Shift+V` 是同一套动作的备用组合;都走主进程剪贴板,不依赖渲染层的敏感上下文/权限)
@@ -502,7 +501,7 @@ npm run test:mcp:http
   所以网页里的 `<input>` / `<textarea>` 也拿不到这两个组合(主进程无法同步得知「当前焦点是不是可编辑元素」);
   终端里 shell 以及 vim / tmux 这类程序也收不到它们(xterm 原本会把它们编成 CSI 序列送进 pty);
   手机 DevTools 内部输入框(Styles / Console 提示)里的 `Ctrl+Shift+方向` 按词选择也让位给分屏
-  (DevTools 里的 `Alt+Shift+方向` 本来没有绑定)。地址栏、设置页不受影响。
+  (DevTools 里的 `Alt+Shift+方向` 本来没有绑定)。地址栏不受影响(设置页与笔记页由页面自己调 IPC,输入框里仍是按词选择)。
 - MCP 工具签名不变:`browser_close_tab {tabId}` 关的是**一个标签**(节点塌缩,不会整组消失);
   `browser_list_tabs` 的每一项带 `groupId`,可以据此看出哪几个标签同组。
 
@@ -680,7 +679,7 @@ npm run test:mcp:http
 
 ## 数据存储
 
-- 书签(「书签」插件):`<userData>/bookmarks.json`
+- 书签(「书签」插件):`<userData>/bookmarks.json`;「设置页 → 书签」可把整棵树导出成 JSON / 从 JSON **整树替换**导入
 - 浏览历史(「浏览历史」插件,默认保留最近 500 条,可在「设置页 → 浏览历史」调整,按 URL 去重):`<userData>/history.json`;保留条数配置:`<userData>/history-settings.json`
 - CORS 放行配置(「CORS 放行」插件,首次启动从 `settings.json` 迁移):`<userData>/cors.json`
 - 设备检查(「设备检查」插件):`<userData>/device-inspect.json` —— 只存 adb 命令、前端来源策略与**端口转发记录**(转发登记在 adb server 里,bow 被强杀后靠这份记录在下次启动时回收)
@@ -688,7 +687,7 @@ npm run test:mcp:http
 - 笔记(「笔记」插件):`<userData>/logseq.json` —— 存**图目录 / 最近图 / 正文字号 / 每个图的收藏**;笔记内容本身就在你的 Logseq 图里,不另存一份
 - 下载(「下载」插件):`<userData>/downloads.json` —— 下载记录(文件名 / 网址 / 保存路径 / 状态 / 进度 / 是否可续传);设置(保存目录 / 是否询问 / 保留条数)在同目录的 `downloads-settings.json`。**删除记录不会删文件**
 - 番茄钟(「番茄钟」插件):`<userData>/pomo.json` —— 设置(各阶段时长 / 长休轮数 / 自动开始 / 通知与提示音)与运行状态(阶段 / `running` / `endsAt` / 本轮计数 / 今日完成数);**只在状态转换时写入,不逐秒写盘**
-- 插件导出的文件(书签 JSON、密码库加密备份):**bow 下载目录**(= 下载插件设置里的保存目录,空则系统下载目录);同名自动加 ` (1)`,**不进下载记录列表**
+- 插件导入 / 导出的文件(书签 JSON、密码库加密备份 / 导入前的自动备份):**bow 下载目录**(= 下载插件设置里的保存目录,空则系统下载目录);同名自动加 ` (1)`,**不进下载记录列表**
 - 插件启停状态(内核):`<userData>/plugins.json`
 - 核心设置(默认搜索引擎/主页):`<userData>/settings.json`
 - 保存的分屏布局(只存结构):`<userData>/split-layouts.json`
@@ -700,9 +699,9 @@ npm run test:mcp:http
 左侧导航固定为「常规 / 快捷键 / 插件管理」+ 每个*已启用且提供设置分区*的插件各一项,右侧内容全宽渲染,**所有设置即时保存**(没有保存/取消按钮)。
 
 - **常规**:默认搜索引擎、主页(主页留空视为放弃修改并回填已存值)。分屏布局改在工具栏的「分屏」面板里保存/套用/删除。
-- **快捷键**:按分类列出全部键位(标签 / 地址栏与导航 / 分屏与布局 / 视图与面板 / 终端 / 笔记 / 窗口),纯参考清单、**不注册任何热键**;macOS 上的 `⌘` 差异与平台受限组合(`Ctrl+←/→`)在条目里单独注明。
+- **快捷键**:按分类列出全部键位(标签 / 地址栏与导航 / 分屏与布局 / 视图与面板 / 终端 / 笔记 / 窗口),纯参考清单、**不注册任何热键**;macOS 上的 `⌘` 差异与平台受限组合(`Ctrl+←/→`)在条目里单独注明。`Ctrl+Shift+方向` 分屏 / `Alt+Shift+方向` 调大小**在设置页里也管用**(由页面自己调 IPC;输入框里仍是按词选择)。
 - **插件管理**:运行时启停(立即生效并持久化)、能力标签、核心提示;有设置分区的插件可一键跳到对应分区。
-- **插件设置**:CORS 放行 / 浏览历史 / 终端 / 笔记 / 下载 / 番茄钟 等分区直接内联展示(取消旧版的嵌套弹窗)。
+- **插件设置**:CORS 放行 / 浏览历史 / **书签**(导入导出) / 终端 / 笔记 / 下载 / **密码**(加密备份的导出与导入) / 番茄钟 等分区直接内联展示(取消旧版的嵌套弹窗)。
   「终端」分区里有 shell 配置与外观,还有 **Pi 状态联动** —— 点一下把状态桥扩展装进 pi(或卸载),
   装完终端里的 pi 就会把「执行中 / 等待确认 / 已完成」显示成标签角标与系统通知(见「终端」一节);
   如果你的终端配置里有 `wsl.exe`(bow 在 Windows、pi 在 WSL2),这一段还会多出一条
@@ -715,7 +714,7 @@ npm run test:mcp:http
 
 ## 插件体系
 
-书签、历史、CORS 放行、MCP HTTP 服务、默认浏览器、设备检查、终端、笔记、下载、夸克网盘、密码、番茄钟都是内置插件。插件是**仓库内编译期模块**(无动态代码执行),
+书签、历史、CORS 放行、MCP HTTP 服务、默认浏览器、设备检查、终端、笔记、下载、密码、番茄钟都是内置插件。插件是**仓库内编译期模块**(无动态代码执行),
 可在「设置页 → 插件管理」里运行时启停(无需重启),状态持久化到 `plugins.json`;停用时内核自动回收其 IPC、
 建议源、MCP 工具、网络钩子与已注入 CSS。
 
@@ -768,37 +767,6 @@ MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生
 - **重启浏览器后,上次没下完的记录会显示「已中断」**,只能「重新下载」(跨会话续传要记录更多握手信息,
   这一版刻意不做);删除记录**不会**删磁盘上的文件。
 
-### 夸克网盘插件
-
-在 `pan.quark.cn` 的个人网盘页,工具栏会出现一个云朵按钮(其他页面上置灰)。点开面板:
-列出**当前目录**的文件、勾选后一键**推送到 aria2**。插件不贡献 MCP 工具 —— 它只有界面。
-
-**它怎么拿到直链**:冒充夸克官方 PC 客户端(专用 User-Agent)调它自己的
-`drive-pc.quark.cn/1/clouddrive/file/download` 接口,响应里的 `download_url` 就是 CDN 直链;
-下载时还必须带同一个 UA。登录态直接复用 bow 的 cookie 域罐(所以**要先在 bow 里登录夸克**),
-插件不接触你的密码,也不保存任何凭据。
-
-**推送怎么落地**:把直链与三个请求头(UA / Referer / Cookie)交给
-**aria2 的 JSON-RPC `aria2.addUri`**(设置页可配域名 / 端口 / 路径 / 令牌 / 保存目录)。
-为什么不是 bow 自己的下载器:aria2 是独立进程,拿不到浏览器的 cookie 域罐,
-而夸克直链离开这套请求头就下不动 —— 干脆把「拿链接」与「下载」分开,下载交给专业的那个。
-
-几条要知道的限制与排障:
-
-- **必须有一个活着的、已登录的夸克标签页**:直链要从该页的 React 状态里读;
-- **分享页(`/s/xxx`)不支持**,只做个人网盘页;
-- 面板只列出**页面当前已加载**的那一页文件(夸克自己滚动加载更多之后,点「刷新」即可);
-- 取不到直链时先在面板里看错误文案:`31001` = 需要登录,`23018` = 游客可获取大小超限;
-  仍然不行就打开面板的「诊断」区,把原始响应体一并带上;
-- **UA 是整套方案的命门**,而且是可改的设置项:夸克升级客户端导致失效时,到「设置 → 夸克网盘」
-  把新版客户端的 UA 贴进去即可,不用等插件更新;
-- **Cookie 只发给白名单域名**(默认 `quark.cn` / `uc.cn`,留空 = 不传)。
-  aria2 会跟着重定向跳跑,而直链有时落在别的域名上;空白名单最安全但大文件很可能 403 ——
-  面板「诊断」区会显示真实域名,把它加进白名单即可;
-- 设置页的「测试连接」会调 `aria2.getVersion`,先确认 aria2 开着 RPC(`--enable-rpc`)再推。
-
-⚠️ 这类工具处于「个人自用 vs 服务条款」的灰色地带,且会用到你已登录的账号;请自行判断是否使用。
-
 ### 密码插件
 
 工具栏的钥匙按钮或 `Ctrl+Shift+P`:在登录页按需注入一个页内下拉(匹配到多个账号时)或直接填入;
@@ -810,6 +778,9 @@ MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生
 **主进程内存**里,面板只按需取单条。「设置页 → 密码」可改自动锁定时间、剪贴板清除秒数、子域匹配,
 以及修改主密码 / 清空密码库。**忘记主密码无法恢复** —— 「设置页 → 密码 → 备份」的「导出加密备份」会把
 整库**密文**写进 bow 下载目录(锁定时也能用,导出物不含明文;恢复仍需主密码),手工整份复制 `passwords.json` 同样可行。
+同一处的「导入加密备份」用来**换库 / 恢复**:它会先校验文件形状,再**整库替换**(当前库已初始化时会先把当前库
+导出一份 `bow-passwords-preimport-<日期>.json` 到下载目录,那一步失败就中止导入),导入后密码库是**锁定的**,
+得用**备份自己的那个主密码**解锁 —— 导入全程不解密、也不需要当前主密码。
 
 几条要知道的边界:
 
@@ -1006,7 +977,7 @@ BOW_E2E_BIN=dist/linux-unpacked/bow npm run test:e2e:agent                      
 脚本点侧栏进分区、点「安装」→ 断言文件真的落盘且带 `managed by bow` 标记 → 点「卸载」→ 断言文件没了。
 `BOW_E2E_BIN` 指向打包后的可执行文件时,额外验一遍「源码能从 `app.asar` 里读到」(就靠 `build.files` 里的 `integrations`)。
 
-与设备/夸克 E2E 一样:独立 userData + 独立调试端口,不会碰你正在跑的 bow。
+与设备 E2E 一样:独立 userData + 独立调试端口,不会碰你正在跑的 bow。
 
 > Linux 上 Electron 报 `libasound.so.2: cannot open shared object file` 时**不需要 root**:
 > `ldd node_modules/electron/dist/electron | grep 'not found'` 先确认只缺这一个,去镜像的 `extra.db`
@@ -1021,30 +992,6 @@ BOW_E2E_BIN=dist/linux-unpacked/bow npm run test:e2e:agent                      
 > ```
 > 然后用 `LD_LIBRARY_PATH=$HOME/.cache/bow-alsa/usr/lib npm run test:e2e:agent`。
 > `test:mcp` / `test:e2e:device` 同理(那个脚本自己认 `SMOKE_LD_LIBRARY_PATH`)。
-
-## 夸克网盘插件的离线 E2E
-
-```bash
-npm run build && npm run test:e2e:quark   # 需要 openssl;不需要夸克账号,也不需要显示环境
-```
-
-它把 `pan.quark.cn` / `drive-pc.quark.cn` 两个域名用 Chromium 的
-`--host-resolver-rules` 指到本机一个 HTTPS 假服务器(自签证书 + `--ignore-certificate-errors`),
-再起一个假的 aria2 JSON-RPC 服务器,假页面里伪造一条 React fiber 链供插件读取。
-页面用 MCP 的核心工具(`browser_navigate`)打开;插件不再贡献 MCP 工具,所以插件 IPC 改用
-bow 自己的 `--remote-debugging-port` 在 chrome 页面的 target 上 `Runtime.evaluate` 调
-`window.browserAPI.plugins.invoke(...)`(与 `e2e-device-inspect.mjs` 读 `getGroups()` 同一手法):
-
-```
-假夸克页(React fiber) → quark 插件 listFiles → 假 /file/download 接口
-  → 插件用 JSON-RPC aria2.addUri 推给假 aria2
-```
-
-断言里最关键的是**两端真正收到了什么**:取直链接口上的伪装 UA、cookie 域罐登录态、
-以及**没有** `Origin`(带它 `net.fetch` 必 `ERR_FAILED`);交给 aria2 的 `header` 数组里的
-UA / Referer,以及**白名单边界** —— 直链在 `quark.cn` 下才带 Cookie,落在第三方 CDN 上绝不带。
-这些全是真 Electron 行为(真 cookie 域罐、真 HTTPS、真 `net.fetch`),单测(假 electron)永远发现不了,
-所以单独用一个脚本钉住。
 
 ## 无需显示环境的部分
 

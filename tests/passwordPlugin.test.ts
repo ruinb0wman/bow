@@ -15,6 +15,7 @@ const writeText = vi.fn()
 const readText = vi.fn(() => '')
 const clearClipboard = vi.fn()
 const writeToDownloads = vi.fn((name: string) => ({ ok: true, path: '/tmp/' + name }))
+let picked: { canceled: boolean; path?: string; text?: string; error?: string } = { canceled: true }
 
 vi.mock('electron', () => ({
   clipboard: {
@@ -28,6 +29,11 @@ vi.mock('electron', () => ({
 vi.mock('../src/main/plugins/exportFile', () => ({
   dateStamp: () => '2026-10-04',
   writeToDownloads: (...args: unknown[]) => writeToDownloads(...(args as [string, string]))
+}))
+
+// 导入的「选文件 + 读文件」在主进程侧共享工具里;mock 它就不必 mock node:fs
+vi.mock('../src/main/plugins/pickJsonFile', () => ({
+  pickJsonFile: async () => picked
 }))
 
 const { default: plugin } = await import('../src/plugins/passwords/main')
@@ -154,6 +160,7 @@ beforeEach(() => {
   readText.mockClear()
   clearClipboard.mockClear()
   writeToDownloads.mockClear()
+  picked = { canceled: true }
 })
 
 describe('密码插件', () => {
@@ -174,6 +181,7 @@ describe('密码插件', () => {
         'fillEntry',
         'getEntry',
         'getSettings',
+        'importBackup',
         'list',
         'lock',
         'readPageFields',
@@ -385,5 +393,115 @@ describe('密码插件', () => {
 
     expect(call<{ ok: boolean }>(rec, 'exportBackup').ok).toBe(true)
     expect(writeToDownloads).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('密码库导入(整库替换)', () => {
+  /** 造一份「另一个主密码」的备份(走真 createVault,形状才与真实备份一致) */
+  async function makeBackup(master: string): Promise<string> {
+    const { createVault } = await import('../src/plugins/passwords/vault')
+    return JSON.stringify(createVault(master, []).file, null, 2)
+  }
+
+  it('未创建密码库时也能导入(换机器 / 重装后的恢复通路)', async () => {
+    const rec = record()
+    plugin.activate(fakeCtx(rec))
+    picked = { canceled: false, path: '/tmp/b.json', text: await makeBackup('from-backup') }
+
+    const res = await call<{ ok: boolean; path?: string; backupPath?: string }>(rec, 'importBackup')
+    expect(res).toMatchObject({ ok: true, path: '/tmp/b.json' })
+    expect(res.backupPath).toBeUndefined()
+    // 当前库本来就未初始化 → 不该有「导入前备份」
+    expect(writeToDownloads).not.toHaveBeenCalled()
+    expect(call(rec, 'status')).toMatchObject({ initialized: true, locked: true })
+  })
+
+  it('已初始化时:先把当前库导出一份,再覆盖', async () => {
+    const rec = record()
+    plugin.activate(fakeCtx(rec))
+    call(rec, 'setup', 'master-pass')
+    call(rec, 'save', { origin: SITE, username: 'alice', password: 's3cret' })
+
+    picked = { canceled: false, path: '/tmp/b.json', text: await makeBackup('from-backup') }
+    const res = await call<{ ok: boolean; backupPath?: string }>(rec, 'importBackup')
+    expect(res.ok).toBe(true)
+    expect(res.backupPath).toBe('/tmp/bow-passwords-preimport-2026-10-04.json')
+    expect(writeToDownloads).toHaveBeenCalledTimes(1)
+
+    // 导入后强制锁定,旧条目不可读
+    expect(call(rec, 'status')).toMatchObject({ locked: true })
+    expect(call(rec, 'list')).toMatchObject({ ok: false })
+    // 旧主密码不再能解锁,备份自己的主密码可以
+    expect((await call<{ ok: boolean }>(rec, 'unlock', 'master-pass')).ok).toBe(false)
+    expect((await call<{ ok: boolean }>(rec, 'unlock', 'from-backup')).ok).toBe(true)
+  })
+
+  it('导入前备份失败 → 中止,当前库一点不动', async () => {
+    const rec = record()
+    plugin.activate(fakeCtx(rec))
+    call(rec, 'setup', 'master-pass')
+    call(rec, 'save', { origin: SITE, username: 'alice', password: 's3cret' })
+    writeToDownloads.mockReturnValueOnce({ ok: false, error: 'EACCES' })
+
+    picked = { canceled: false, path: '/tmp/b.json', text: await makeBackup('from-backup') }
+    expect(await call(rec, 'importBackup')).toEqual({
+      ok: false,
+      error: '导入前备份当前密码库失败,已中止:EACCES'
+    })
+    // 原库照旧:还是老主密码、条目还在
+    expect((await call<{ ok: boolean }>(rec, 'unlock', 'master-pass')).ok).toBe(true)
+    expect(call<{ ok: boolean; entries?: unknown[] }>(rec, 'list').entries).toHaveLength(1)
+  })
+
+  it('取消文件选择框 / 坏文件:什么都不做', async () => {
+    const rec = record()
+    plugin.activate(fakeCtx(rec))
+    call(rec, 'setup', 'master-pass')
+
+    picked = { canceled: true }
+    expect(await call(rec, 'importBackup')).toEqual({ ok: false, canceled: true })
+
+    picked = { canceled: false, path: '/tmp/b.json', text: '{ 不是 json' }
+    expect(await call(rec, 'importBackup')).toMatchObject({ ok: false })
+
+    // 形状不对(缺 data)/ 版本不对 / KDF 参数过大 → 一律拒绝,且不写文件
+    const withData = JSON.parse(await makeBackup('m')) as Record<string, unknown>
+    for (const bad of [
+      { version: 1, kdf: withData.kdf, verifier: null, data: null },
+      { version: 2, kdf: withData.kdf, verifier: withData.verifier, data: withData.data },
+      {
+        version: 1,
+        kdf: { algo: 'scrypt', salt: 'x', N: 1 << 20, r: 8, p: 1, keyLen: 32 },
+        verifier: { iv: 'a', tag: 'b', ct: 'c' },
+        data: { iv: 'a', tag: 'b', ct: 'c' }
+      },
+      {
+        version: 1,
+        kdf: { algo: 'scrypt', salt: 'x', N: 1 << 15, r: 8, p: 1, keyLen: 32 },
+        verifier: { iv: 'a', tag: '', ct: 'c' },
+        data: { iv: 'a', tag: 'b', ct: 'c' }
+      }
+    ]) {
+      picked = { canceled: false, path: '/tmp/b.json', text: JSON.stringify(bad) }
+      expect(await call(rec, 'importBackup')).toMatchObject({ ok: false })
+    }
+
+    expect(writeToDownloads).not.toHaveBeenCalled()
+    expect((await call<{ ok: boolean }>(rec, 'unlock', 'master-pass')).ok).toBe(true)
+  })
+
+  it('导入后库里的密文与备份逐字一致(只换文件,不改密文)', async () => {
+    const rec = record()
+    plugin.activate(fakeCtx(rec))
+    const text = await makeBackup('from-backup')
+    picked = { canceled: false, path: '/tmp/b.json', text }
+    await call(rec, 'importBackup')
+
+    // 用 exportBackup 读回「现在库里是什么」:应与导入的备份一致
+    expect(call<{ ok: boolean }>(rec, 'exportBackup').ok).toBe(true)
+    const [name, content] = writeToDownloads.mock.calls[0] as [string, string]
+    expect(name).toBe('bow-passwords-backup-2026-10-04.json')
+    expect(JSON.parse(content)).toEqual(JSON.parse(text))
+    expect(call(rec, 'status')).toMatchObject({ initialized: true, locked: true, count: 0 })
   })
 })

@@ -3,6 +3,7 @@ import {
   addBookmark,
   addFolder,
   flattenToSingleLevel,
+  normalizeImportedTree,
   updateNode,
   removeNode,
   moveNode,
@@ -194,5 +195,83 @@ describe('一级目录迁移 flattenToSingleLevel', () => {
       }
     ]
     expect(flattenToSingleLevel(tree)).toEqual([{ id: 'f1', type: 'folder', title: 'A', children: [] }])
+  })
+})
+
+describe('normalizeImportedTree 导入校验', () => {
+  it('根不是数组 → null(调用方据此报「不是书签树」)', () => {
+    expect(normalizeImportedTree(null)).toBeNull()
+    expect(normalizeImportedTree({})).toBeNull()
+    expect(normalizeImportedTree('[]')).toBeNull()
+  })
+
+  it('空数组是合法输入(等于清空)', () => {
+    expect(normalizeImportedTree([])).toEqual({ tree: [], dropped: 0, reissued: 0 })
+  })
+
+  it('合法树原样保留,空标题书签用 url 兜底', () => {
+    const raw = [
+      { id: 'b1', type: 'bookmark', title: 'A', url: 'https://a.com' },
+      { id: 'b2', type: 'bookmark', title: '  ', url: 'https://b.com' },
+      { id: 'b3', type: 'bookmark', title: '内部页', url: 'bow://settings' },
+      { id: 'f1', type: 'folder', title: '夹', children: [{ id: 'b4', type: 'bookmark', title: 'C', url: 'https://c.com' }] }
+    ]
+    const res = normalizeImportedTree(raw)
+    expect(res).toMatchObject({ dropped: 0, reissued: 0 })
+    expect(res?.tree[1]).toEqual({ id: 'b2', type: 'bookmark', title: 'https://b.com', url: 'https://b.com' })
+    expect(res?.tree[3]).toMatchObject({ id: 'f1', type: 'folder', children: [{ id: 'b4' }] })
+  })
+
+  it('结构不合法的节点 / 非 http(s)·bow:// 的 url 被丢弃并计数', () => {
+    const res = normalizeImportedTree([
+      null,
+      42,
+      { id: 'b1', type: 'bookmark', title: '好', url: 'https://a.com' },
+      { id: 'b2', type: 'bookmark', title: 'ftp', url: 'ftp://b.com' },
+      { id: 'b3', type: 'bookmark', title: 'javascript', url: 'javascript:alert(1)' },
+      { id: 'x', type: 'widget', title: '未知类型' },
+      { id: 'b4', type: 'bookmark', title: '没有 url' }
+    ])
+    expect(res?.dropped).toBe(6)
+    expect(res?.tree).toHaveLength(1)
+  })
+
+  it('id 缺失 / 重复 / 非字符串 → 重新发放(保证 move/remove 定位唯一)', () => {
+    const res = normalizeImportedTree([
+      { id: 'dup', type: 'bookmark', title: '1', url: 'https://a.com' },
+      { id: 'dup', type: 'bookmark', title: '2', url: 'https://b.com' },
+      { id: '  ', type: 'bookmark', title: '3', url: 'https://c.com' },
+      { id: 7, type: 'bookmark', title: '4', url: 'https://d.com' }
+    ])
+    expect(res?.reissued).toBe(3)
+    const ids = (res?.tree ?? []).map((n) => n.id)
+    expect(ids).toContain('dup')
+    expect(new Set(ids).size).toBe(4)
+  })
+
+  it('深层嵌套被压成一级目录(与激活时的迁移同一条不变量)', () => {
+    const res = normalizeImportedTree([
+      {
+        id: 'f1',
+        type: 'folder',
+        title: 'A',
+        children: [
+          {
+            id: 'f2',
+            type: 'folder',
+            title: 'B',
+            children: [{ id: 'b1', type: 'bookmark', title: '深', url: 'https://deep.com' }]
+          }
+        ]
+      }
+    ])
+    expect(res?.tree).toEqual([
+      { id: 'f1', type: 'folder', title: 'A', children: [{ id: 'b1', type: 'bookmark', title: '深', url: 'https://deep.com' }] }
+    ])
+  })
+
+  it('目录缺 children 当空目录(保留,用户可能有意建待整理)', () => {
+    const res = normalizeImportedTree([{ id: 'f1', type: 'folder', title: '空' }])
+    expect(res?.tree).toEqual([{ id: 'f1', type: 'folder', title: '空', children: [] }])
   })
 })

@@ -27,6 +27,7 @@ import {
   sortEntries,
   toMeta,
   type ExportBackupResult,
+  type ImportBackupResult,
   type PasswordEntry,
   type PasswordSettings
 } from './shared'
@@ -36,6 +37,7 @@ import {
   createVault,
   isInitialized,
   openEntries,
+  parseVaultFile,
   reseal,
   unlockVault,
   type VaultFile
@@ -48,6 +50,7 @@ import {
   type PickerCandidate
 } from './scripts'
 import { dateStamp, writeToDownloads } from '../../main/plugins/exportFile'
+import { pickJsonFile } from '../../main/plugins/pickJsonFile'
 
 /** 主密码最短长度(创建 / 修改时校验) */
 const MIN_MASTER_LENGTH = 6
@@ -526,6 +529,46 @@ function createPasswordsPlugin(): PluginMain {
           `bow-passwords-backup-${dateStamp()}.json`,
           JSON.stringify(vault(), null, 2)
         )
+      })
+
+      /**
+       * 导入加密备份:**整库替换**(入口在设置页「设置 → 密码 → 备份」)。
+       *
+       * 三条硬规则:
+       * 1. 只做**结构**校验(`parseVaultFile`),不解密 —— 导入的是密文,主密码是备份自己那个;
+       * 2. 当前库已初始化时,**先把当前库导出一份**到下载目录;这一步失败就中止导入(绝不先毁后写);
+       * 3. 导入后**强制锁定**:内存里的旧密钥/条目立即清掉,用户得用备份自己的主密码解锁。
+       */
+      ctx.ipc.handle('importBackup', async (): Promise<ImportBackupResult> => {
+        const picked = await pickJsonFile()
+        if (picked.canceled) return { ok: false, canceled: true }
+        if (picked.text == null) return { ok: false, error: '读取文件失败:' + (picked.error ?? '未知错误') }
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(picked.text)
+        } catch {
+          return { ok: false, error: '不是有效的 JSON 文件' }
+        }
+        const file = parseVaultFile(parsed)
+        if (!file) return { ok: false, error: '不是有效的 bow 密码库备份' }
+
+        let backupPath: string | undefined
+        if (isInitialized(vault())) {
+          const saved = writeToDownloads(
+            `bow-passwords-preimport-${dateStamp()}.json`,
+            JSON.stringify(vault(), null, 2)
+          )
+          if (!saved.ok) {
+            return { ok: false, error: '导入前备份当前密码库失败,已中止:' + (saved.error ?? '未知错误') }
+          }
+          backupPath = saved.path
+        }
+
+        vaultStore!.setRaw(file)
+        clearKey()
+        failedUnlocks = 0
+        emitState()
+        return { ok: true, path: picked.path, backupPath }
       })
 
       // ---------- 快捷键与标签事件 ----------

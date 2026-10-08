@@ -14,6 +14,7 @@ import {
   flatten,
   flattenToSingleLevel,
   moveNode,
+  normalizeImportedTree,
   removeNode,
   updateNode
 } from '@shared/bookmarkTree'
@@ -22,6 +23,8 @@ import { isHttpUrl } from '@shared/url'
 import { scoreFields } from '@shared/suggest'
 import { textContent } from '../../main/plugins/mcpResult'
 import { dateStamp, writeToDownloads, type ExportWriteResult } from '../../main/plugins/exportFile'
+import { pickJsonFile } from '../../main/plugins/pickJsonFile'
+import type { BookmarkImportResult } from './shared'
 import type { PluginContext, PluginMain } from '../../main/plugins/types'
 
 interface AddInput {
@@ -113,6 +116,31 @@ const plugin: PluginMain = {
     ctx.ipc.handle('export', (): ExportWriteResult =>
       writeToDownloads(`bow-bookmarks-${dateStamp()}.json`, JSON.stringify(store.get(), null, 2))
     )
+    // 导入:选一个 JSON 文件 → 校验归一 → **整树替换**。入口在设置页(「设置 → 书签」)
+    ctx.ipc.handle('import', async (): Promise<BookmarkImportResult> => {
+      const picked = await pickJsonFile()
+      if (picked.canceled) return { ok: false, canceled: true }
+      if (picked.text == null) return { ok: false, error: '读取文件失败:' + (picked.error ?? '未知错误') }
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(picked.text)
+      } catch {
+        return { ok: false, error: '不是有效的 JSON 文件' }
+      }
+      const norm = normalizeImportedTree(parsed)
+      if (!norm) return { ok: false, error: '文件内容不是书签树(根应为 JSON 数组)' }
+      store.setRaw(norm.tree)
+      emitChanged()
+      const flat = flatten(norm.tree)
+      return {
+        ok: true,
+        path: picked.path,
+        bookmarks: flat.filter((b) => b.type === 'bookmark').length,
+        folders: flat.filter((b) => b.type === 'folder').length,
+        dropped: norm.dropped,
+        reissued: norm.reissued
+      }
+    })
 
     ctx.suggest.register({
       id: 'bookmarks',

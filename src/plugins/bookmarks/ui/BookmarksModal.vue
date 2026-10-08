@@ -4,7 +4,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { BookmarkNode, BookmarkTree } from '@shared/types'
 import { childrenOf } from '@shared/bookmarkTree'
 import { isInternalUrl } from '@shared/internalPages'
-import { ArrowLeft, ArrowRightLeft, Download, Folder, Pencil, Plus, Search, Trash2, X } from 'lucide-vue-next'
+import { ArrowLeft, ArrowRightLeft, Folder, Pencil, Plus, Search, Trash2, X } from 'lucide-vue-next'
 import { domainHue, faviconLetter } from '@renderer/lib/avatar'
 import { openAllInFolder, openBookmarkBackground } from '@renderer/lib/openFolder'
 import ModalShell from '@renderer/components/ModalShell.vue'
@@ -72,18 +72,6 @@ function showNotice(text: string, ms = 2000): void {
   noticeTimer = window.setTimeout(() => {
     notice.value = ''
   }, ms)
-}
-
-/** 导出整棵书签树为 JSON,落到 bow 下载目录(路径由主进程决定,这里只报文件名) */
-async function exportBookmarks(): Promise<void> {
-  if (bookmarks.value.length === 0) return
-  const res = await api.plugins.invoke<{ ok: boolean; path?: string; error?: string }>('bookmarks', 'export')
-  if (!res.ok) {
-    showNotice('导出失败:' + (res.error || '未知错误'), 5000)
-    return
-  }
-  const name = res.path?.split(/[\\/]/).pop() || 'bookmarks.json'
-  showNotice(`已导出到下载目录:${name}`, 5000)
 }
 
 // ---------- 打开 ----------
@@ -347,14 +335,6 @@ onBeforeUnmount(() => {
       <div class="la-foot">
         <button class="btn" @click="startAddBookmark"><Plus :size="13" /> 新建书签</button>
         <button class="btn" @click="startAddFolder"><Plus :size="13" /> 新建文件夹</button>
-        <button
-          class="btn"
-          title="导出全部书签为 JSON(存到 bow 下载目录)"
-          :disabled="bookmarks.length === 0"
-          @click="exportBookmarks"
-        >
-          <Download :size="13" /> 导出
-        </button>
         <span class="la-hint">单击目录进入; Ctrl+点击目录后台打开全部页面</span>
         <span v-if="notice" class="la-notice">{{ notice }}</span>
       </div>

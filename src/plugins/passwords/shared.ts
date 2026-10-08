@@ -90,6 +90,16 @@ export interface ExportBackupResult extends OkResult {
   path?: string
 }
 
+/**
+ * 导入加密备份(整库替换)。`canceled` = 用户在文件选择框里取消,不是错误;
+ * `backupPath` = 覆盖前自动导出的那份「当前库」的路径(当前库本来就未初始化时没有)。
+ */
+export interface ImportBackupResult extends OkResult {
+  canceled?: boolean
+  path?: string
+  backupPath?: string
+}
+
 /** 「从当前页面保存」读回的字段(密码值只在这条通路上跨到渲染层) */
 export interface ReadPageFieldsResult extends OkResult {
   tabId?: number

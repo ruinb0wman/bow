@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   EMPTY_VAULT,
+  IMPORT_KDF_LIMITS,
   SCRYPT_MAXMEM,
   SCRYPT_N,
   changeMaster,
@@ -15,6 +16,7 @@ import {
   isInitialized,
   open,
   openEntries,
+  parseVaultFile,
   reseal,
   seal,
   unlockVault
@@ -113,5 +115,56 @@ describe('密码库加解密', () => {
 
   it('scrypt 内存需求不超过显式 maxmem(128*N*r ≤ maxmem)', () => {
     expect(128 * SCRYPT_N * 8).toBeLessThanOrEqual(SCRYPT_MAXMEM)
+  })
+})
+
+describe('parseVaultFile 导入校验', () => {
+  const good = (): Record<string, unknown> =>
+    JSON.parse(JSON.stringify(createVault('master-pass', []).file)) as Record<string, unknown>
+
+  it('接受自己导出的备份(往返:导入后仍能用原主密码解锁)', () => {
+    const file = parseVaultFile(good())
+    expect(file).not.toBeNull()
+    expect(isInitialized(file!)).toBe(true)
+    const key = unlockVault(file!, 'master-pass')
+    expect(key).not.toBeNull()
+    ;(key as Buffer).fill(0)
+  })
+
+  it('拒绝:非对象 / 版本不对 / 三件套不全', () => {
+    expect(parseVaultFile(null)).toBeNull()
+    expect(parseVaultFile([])).toBeNull()
+    expect(parseVaultFile('{}')).toBeNull()
+    expect(parseVaultFile({ ...good(), version: 2 })).toBeNull()
+    expect(parseVaultFile(EMPTY_VAULT)).toBeNull()
+    expect(parseVaultFile({ ...good(), data: null })).toBeNull()
+    expect(parseVaultFile({ ...good(), verifier: null })).toBeNull()
+    expect(parseVaultFile({ ...good(), kdf: null })).toBeNull()
+  })
+
+  it('拒绝:Sealed 字段缺失或空串', () => {
+    expect(parseVaultFile({ ...good(), data: { iv: 'a', tag: 'b' } })).toBeNull()
+    expect(parseVaultFile({ ...good(), verifier: { iv: '', tag: 'b', ct: 'c' } })).toBeNull()
+  })
+
+  it('拒绝:算法不对 / 数字字段不合法 / keyLen 不符', () => {
+    const base = good()
+    const kdf = { ...(base.kdf as Record<string, unknown>) }
+    expect(parseVaultFile({ ...base, kdf: { ...kdf, algo: 'pbkdf2' } })).toBeNull()
+    expect(parseVaultFile({ ...base, kdf: { ...kdf, salt: '' } })).toBeNull()
+    expect(parseVaultFile({ ...base, kdf: { ...kdf, N: 0 } })).toBeNull()
+    expect(parseVaultFile({ ...base, kdf: { ...kdf, r: 1.5 } })).toBeNull()
+    expect(parseVaultFile({ ...base, kdf: { ...kdf, p: -1 } })).toBeNull()
+    expect(parseVaultFile({ ...base, kdf: { ...kdf, keyLen: 16 } })).toBeNull()
+  })
+
+  it('拒绝:会让 scrypt 吃爆内存的 KDF 参数(外部文件不该能调大算力)', () => {
+    const base = good()
+    const kdf = base.kdf as Record<string, unknown>
+    expect(parseVaultFile({ ...base, kdf: { ...kdf, N: IMPORT_KDF_LIMITS.N * 2 } })).toBeNull()
+    expect(parseVaultFile({ ...base, kdf: { ...kdf, r: IMPORT_KDF_LIMITS.r + 1 } })).toBeNull()
+    expect(parseVaultFile({ ...base, kdf: { ...kdf, p: IMPORT_KDF_LIMITS.p + 1 } })).toBeNull()
+    // 上界本身仍然接受(将来调参不会被误杀)
+    expect(parseVaultFile({ ...base, kdf: { ...kdf, N: IMPORT_KDF_LIMITS.N } })).not.toBeNull()
   })
 })

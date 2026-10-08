@@ -67,6 +67,7 @@ src/
       mcpHttpHost.ts             McpHttpHost:HTTP 服务的 owner/幂等/串行化
       mcpResult.ts               textContent / errorContent / imageContent(统一 isError 判定)
       exportFile.ts              导出到 bow 下载目录(目录解析与下载插件同源;书签 / 密码共用)
+      pickJsonFile.ts            弹系统文件选择框并读回 UTF-8 文本(书签 / 密码的导入共用)
   plugins/<id>/                 内置插件(自包含,每插件一个目录)
     main.ts                     主进程侧:manifest + capabilities + activate(ctx)
     ui.ts                       渲染层侧:slots / overlays / settingsSections
@@ -93,6 +94,7 @@ src/
     src/plugins/slots.ts                collectSlot 纯函数(插槽合并顺序,可单测)
     src/components/                     SuggestPanel(地址栏下拉)/ SplitMenu(分屏面板)/ CloseConfirmModal(关闭窗口确认)/ ModalShell(弹层壳 + Esc 栈顶)
     src/lib/                            avatar(字母头像)/ openFolder(批量后台开标签)/ modalStack
+                                         / splitKeys(设置页自己的分屏键判据,与主进程共用 matchSplitHotkey)
   shared/                        三端共享纯逻辑(无 electron / DOM)
     types.ts        跨端类型(TabInfo/Settings/Suggestion/Overlay*/ActionResult…)
     plugins.ts      插件契约类型 + PluginCapability 标签表
@@ -527,7 +529,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | id | core | capabilities | IPC 方法 | MCP 工具 | net | content | suggest | shortcut | events | 存储 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `history` | ✓ | ui, suggest | `list` `count` `remove(ids[])` `clear` `getSettings` `setSettings` | — | — | — | priority 10 | — | on `tab:navigated` `search:performed`;emit `changed` | `history.json` `history-settings.json` |
-| `bookmarks` | ✓ | ui, suggest, mcp | `list` `add` `addFolder` `update` `remove` `move` `findByUrl` `export` | `browser_add_bookmark` `browser_list_bookmarks` | — | — | priority 20 | — | emit `changed` | `bookmarks.json` |
+| `bookmarks` | ✓ | ui, suggest, mcp | `list` `add` `addFolder` `update` `remove` `move` `findByUrl` `export` `import` | `browser_add_bookmark` `browser_list_bookmarks` | — | — | priority 20 | — | emit `changed` | `bookmarks.json`(`import` = 选一个 JSON → 校验归一 → **整树替换**) |
 | `cors` | — | ui, net | `getSettings` `setSettings` | — | `onBeforeSendHeaders`(记预检 id)+ `onHeadersReceived`(注入 ACAO/ACAM/ACAH,预检覆盖 statusLine) | — | — | — | emit `changed` | `cors.json` |
 | `mcp-http` | ✓ | ui, service | `getState` `setSettings` `restart` `toggle` | — | — | — | — | — | on `mcp-http:ready`(经 `service.onMcpHttpReady`)+ `mcpActivity.onChange`;emit `changed` | `mcp-http.json` |
 | `default-browser` | — | ui | `status` `register` `unregister` `openSettings` | — | — | — | — | — | — | 无(状态现读系统:Linux 读 `mimeapps.list`;Windows 先按 UserChoice 主键→备用键→`Software\Classes` 默认值读“记录”,再用 PowerShell 调 shell 的 `AssocQueryString` 拿“**实际生效者**”,两者不一致时以实际为准并标注记录已失效) |
@@ -535,15 +537,14 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `terminal` | — | ui | `getSettings` `setSettings` `listCandidates` `attach` `write` `resize` `detach` | — | — | — | — | — | on `tab:closed`(按 tabId 回收 shell);emit `data` `exit` `settings-changed` `session-closed` | `terminal.json`(字体/字号/滚动缓冲 + shell 配置列表) |
 | `logseq` | — | ui, mcp | `getState` `pickGraph` `setGraph` `rebuildIndex` `getSettings` `setSettings` `toggleFavorite` `readJournal` `readPage` `listJournals` `listPages` `backlinks` `graph` `listTemplates` `savePage` `attach` `setView` `openInNewPane` | `browser_logseq_graph` | — | — | — | — | on `tab:closed`(按 tabId 丢视图状态);emit `graph-changed` `settings-changed` `favorites-changed` | `logseq.json`(图目录 + 最近图 + 正文字号 + 每个图的收藏) |
 | `downloads` | — | ui, mcp | `list` `pause` `resume` `cancel` `retry` `remove` `clear` `openFile` `showInFolder` `getSettings` `setSettings` `pickDirectory` `revealDir` | `browser_list_downloads` `browser_download` | — | — | — | — | emit `changed` | `downloads.json`(记录)+ `downloads-settings.json`(目录 / 询问 / 保留条数) |
-| `quark` | — | ui | `listFiles` `pushAria2` `getSettings` `setSettings` `testAria2` | —(不贡献 MCP 工具) | — | —(按需 `pages.execute`,不注入常驻脚本) | — | — | — | `quark.json`(UA / Cookie 域名白名单 / aria2 RPC) |
-| `passwords` | — | ui, shortcut | `status` `setup` `unlock` `lock` `list` `getEntry` `save` `remove` `copy` `readPageFields` `fillEntry` `beginFill` `changeMaster` `getSettings` `setSettings` `wipe` `exportBackup` | —(刻意不贡献 MCP 工具:与 AI 隔离) | — | —(按需 `pages.execute` 注入探测 / 下拉 / 填入脚本,不注入常驻脚本) | — | `Ctrl/Cmd+Shift+P` | emit `state-changed` `settings-changed` `open-panel` | `passwords.json`(AES-256-GCM 密文)+ `passwords-settings.json`(自动锁定 / 剪贴板 / 子域匹配);`exportBackup` 只写**密文副本**到 bow 下载目录 |
+| `passwords` | — | ui, shortcut | `status` `setup` `unlock` `lock` `list` `getEntry` `save` `remove` `copy` `readPageFields` `fillEntry` `beginFill` `changeMaster` `getSettings` `setSettings` `wipe` `exportBackup` `importBackup` | —(刻意不贡献 MCP 工具:与 AI 隔离) | — | —(按需 `pages.execute` 注入探测 / 下拉 / 填入脚本,不注入常驻脚本) | — | `Ctrl/Cmd+Shift+P` | emit `state-changed` `settings-changed` `open-panel` | `passwords.json`(AES-256-GCM 密文)+ `passwords-settings.json`(自动锁定 / 剪贴板 / 子域匹配);`exportBackup` 只写**密文副本**到 bow 下载目录;`importBackup` 校验形状后**整库替换**(已初始化时先把当前库导出一份再覆盖,导入后强制锁定) |
 | `pomo` | — | ui, mcp, shortcut | `getState` `getSettings` `setSettings` `start` `pause` `skip` `reset` `toggle` | `browser_pomo_status` `browser_pomo_start` `browser_pomo_pause` `browser_pomo_skip` | — | — | — | `Ctrl/Cmd+Shift+O` | emit `state` `phase-end` | `pomo.json`(设置 + 运行状态:阶段 / `endsAt` / 本轮计数 / 今日完成数;**只在状态转换时写盘**) |
 
 **渲染层侧**(`registry.ts` / 各插件 `ui.ts`)
 
 | id | `addressbar-trailing` | `toolbar` | overlays | settingsSections |
 | --- | --- | --- | --- | --- |
-| `bookmarks` | `StarButton` | `BookmarksButton` | `plugin:bookmarks:panel`(full,`BookmarksModal`) | — |
+| `bookmarks` | `StarButton` | `BookmarksButton` | `plugin:bookmarks:panel`(full,`BookmarksModal`) | `BookmarksSettings`(导入 / 导出) |
 | `history` | — | — | — | `HistorySettings` |
 | `cors` | — | — | — | `CorsSettings` |
 | `mcp-http` | — | `McpStatusBadge` | — | `McpHttpSettings` |
@@ -552,7 +553,6 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `terminal` | — | `TerminalButton` | —(终端是**内部页面**不是浮层:`bow://terminal`) | `TerminalSettings` |
 | `logseq` | — | `LogseqButton` | —(笔记也是**内部页面**:`bow://logseq`) | `LogseqSettings` |
 | `downloads` | — | `DownloadsButton` | `plugin:downloads:panel`(full,`DownloadsPanel`) | `DownloadsSettings` |
-| `quark` | — | `QuarkButton`(仅夸克个人网盘页可点) | `plugin:quark:panel`(full,`QuarkPanel`) | `QuarkSettings` |
 | `passwords` | — | `PasswordsButton` | `plugin:passwords:panel`(full,`PasswordsPanel`) | `PasswordsSettings` |
 | `pomo` | — | `PomoButton`(显示倒计时) | `plugin:pomo:panel`(below-chrome,`PomoPanel`;锚定在按钮右下方) | `PomoSettings` |
 
@@ -814,8 +814,9 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
   CSI 序列送进 pty,分屏 / 调大小在终端里完全没反应;代价是 shell 与终端里的程序也收不到这两个组合。
   DevTools 前端标签自 2026-09-21 起也接管(手机调试窗格里要能就地分屏旁边开终端):判据先看 `TabInfo.inspector`,
   因为它同时满足 `internal === true && internalId === null` —— 不看 `inspector` 就会被「内部页面不接管」那条吃掉。
-  地址栏 / 设置页里的这些组合保持原样(按词选择、前端自己的快捷键);DevTools 内部的 `Ctrl+Shift+方向` 按词选择
-  也让位(已在 README 写明代价)。
+  地址栏里的这些组合保持原样(按词选择);设置页 / 笔记页同样不接管,但它们**由页面自己调 `splitPane` / `resizePane`**
+  (见 `renderer/src/lib/splitKeys.ts` 与笔记页的 `JournalView.vue` —— 非可编辑区域才接管,输入框里仍是按词选择);
+  DevTools 内部的 `Ctrl+Shift+方向` 按词选择也让位(已在 README 写明代价)。
   `Ctrl+R` 原先只接在 chrome 侧(渲染层 `App.vue`)、页面聚焦时是死键 —— 自 2026-09-21 起步进主进程,与其它 tab 热键同一条路。
   `Ctrl+F`(页内查找)同样在主进程:除地址栏 / 浮层外**网页与内部页(设置 / 笔记)都接管**;
   放行有两处 —— 终端页由 `releasesToTerminal` 放行给 shell 的 forward-char,
@@ -826,9 +827,10 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
   `Ctrl+←/→`(历史后退/前进)的接管范围比分屏键宽 —— 除终端页外**不分页面类型**一律接管(含地址栏、设置页、笔记页、DevTools 前端),
   只认 `control`(不认 `meta`)且经 `historyHotkeyEnabled(process.platform)` 在 macOS 上整体关掉
   (mac 的 `⌘+←/→` 是行首/行尾,`Ctrl+←/→` 归系统);代价与分屏键同类 —— 网页输入框里的「按词移动光标」让位。
-  **笔记页(`bow://logseq`)刻意不在 `shouldTakeSplitHotkey` 的白名单里**:
+  **笔记页(`bow://logseq`)与设置页(`bow://settings`)刻意不在 `shouldTakeSplitHotkey` 的白名单里**:
   按键会正常送到页面,由页面自己调 `splitPane` / `resizePane` 这两个既有 IPC 完成分屏与调大小 ——
-  于是核心零改动(终端页必须由主进程接管,是因为 xterm 会先把组合编成 CSI 序列送进 pty;笔记页没有这个问题)。
+  于是核心零改动(终端页必须由主进程接管,是因为 xterm 会先把组合编成 CSI 序列送进 pty;这两个内部页没有这个问题;
+  设置页额外用 `isEditableTarget()` 把输入框排除在外,保住按词选择)。
 - **代理状态角标**:`.tab-agent` 读的是 `TabInfo.agent`(`working`/`blocked`/`done`,组内优先级 blocked > working > done,
   由 `groupAgent(g)` 现算)。链路:终端里的 pi 写 OSC → 终端插件剥序列后 `service.agent.report`
   → `main/agentNotify.ts` → `TabManager.setAgentState` → `tab:updated` → 这里。
@@ -1020,7 +1022,6 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `npm run test:mcp` | 真机冒烟:自己拉起 MCP 模式浏览器跑关键流程 |
 | `npm run test:mcp:http` | 连已常驻的 HTTP 浏览器 |
 | `npm run test:e2e:device` | 设备检查插件的**假手机** E2E:真 Electron + 真 MCP + 真 TCP/WS,只有 adb 与设备端是假的(不需要真机,也不需要显示环境) |
-| `npm run test:e2e:quark` | 夸克网盘插件的**离线** E2E:用 `--host-resolver-rules` 把 `pan/drive-pc.quark.cn` 指到本机一个 HTTPS 假服务器(自签证书 + `--ignore-certificate-errors`),再起一个假 aria2 JSON-RPC 服务器,于是「读页面 → 取直链 → 推 aria2」整条链路在真 Electron 里跑一遍,并断言**两端真正收到了什么**(接口的 UA/登录态/无 `Origin`;aria2 header 的 UA/Referer 与 Cookie 白名单边界)。页面用 MCP 核心工具打开,插件 IPC 用 `--remote-debugging-port` 在 chrome 页面 target 上调 `plugins.invoke`。不需要夸克账号,只需要 openssl |
 | `npm run test:e2e:agent` | 代理状态的 E2E:假 pi(只往 pty 打一条 `1337;bow` 信号)走真终端 → 断言标签栏角标、系统通知的标题/正文(桌面通知观察不到,靠 `BOW_NOTIFY_LOG` 的 JSONL)、代理继续时那条通知被撤回、点通知进入对应标签(OS 点击合成不了,走 `__bowNotifyClick`)、点通知≠回答弹框、关标签后清理,并断言 `toast.html` 不存在;后半段还验设置页「Pi 状态联动」的一键接入(写/删真实文件到临时 `PI_CODING_AGENT_DIR`);在 Linux 上另验「WSL2 提醒不出现」(`status.wsl` 不存在——那段提醒只在 Windows 上给,免得误导)。`BOW_E2E_BIN=dist/linux-unpacked/bow` 可改验打包版(确认源码能从 asar 里读到)。Linux 缺 `libasound.so.2` 时不需要 root:从镜像的 `extra.db` 查出 `alsa-lib` 的包名,下下来 `bsdtar -xf` 到**持久目录**(如 `~/.cache/bow-alsa` —— 放 `/tmp` 会被清掉),再 `LD_LIBRARY_PATH=<解包的 usr/lib>`(与 README 的 `SMOKE_LD_LIBRARY_PATH` 同一招) |
 | `npm run test:e2e:tabid` | 长按 Shift 的 tabId 徽标 E2E:真 Electron + CDP —— 在**页面 target** 上发裸 `Shift` 的 `rawKeyDown`(验证修饰键确实会触发主进程 `before-input-event`)、短按 60ms 不显示、长按后 overlay target 里出现徽标、浮层视图尺寸 = 紧包 bounds、徽标几何 = 窗格中心、点一下 `readClipboardText()` 拿到纯数字 id、松开后消失、已有浮层时不抢;再分屏一次验「每个窗格各一个徽标」 |
 | `npm run mcp` / `mcp:http` | 经 `open-bow.mjs` 以 stdio / HTTP 模式启动 |
@@ -1041,7 +1042,6 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `ensure-electron.mjs` | postinstall:确保 electron 二进制就位(走镜像) |
 | `mcp-smoke.mjs` | 真机冒烟(405 行) |
 | `e2e-device-inspect.mjs` + `fixtures/fake-phone-{,adb,device}.mjs` | 设备检查插件的假手机 E2E:`fake-phone-adb.mjs` 仿 adb 输出并在 `forward` 时拉起 `fake-phone-device.mjs`(HTTP `/json` + WS CDP,并把收到的每条命令写进 `cdp-log.jsonl`),驱动脚本用 MCP 客户端跑 11 个 `device_*` 工具,并用 bow 自己的 `--remote-debugging-port` 往手机 DevTools 前端 target 发 `Ctrl+Shift+→` 验分屏 |
-| `e2e-quark-headers.mjs` | 夸克插件的离线 E2E(自签 HTTPS 假夸克服务器 + 假 aria2 JSON-RPC 服务器 + 隔离 `--user-data-dir`)。它**自己 spawn Electron**(不经 `open-bow.mjs`),因为 `host-resolver-rules` 的值里含空格,而 `BOW_ELECTRON_ARGS` 是按空格切分的 |
 | `install-pi-agent-state.mjs` | 写 pi 的状态桥扩展;源是仓库里的 `integrations/pi/bow-agent-state.ts`(单文件、无运行时依赖,jiti 直接跑)。未安装时的降级:只有「正在执行」角标(靠 pi 内建的 `terminal.showTerminalProgress`)。打包后的应用里**没有这个脚本**:设置页的一键接入走 `src/plugins/terminal/piBridge.ts`(同一套规则,不变式由 `tests/piBridgeExtension.test.ts` 钉住) |
 | `e2e-agent-status.mjs` | 代理状态 E2E:不装 MCP、不用真 pi,全程 CDP —— chrome target 开终端页、终端页 `window.__bowTerminal.send` 敲命令、主进程 inspector target 驱动 `__bowNotifyClick` 并读 `BOW_NOTIFY_LOG`、设置页 target 点一键接入的按钮 |
 | `e2e-tab-id-reveal.mjs` | 长按 Shift 的 tabId 徽标 E2E(见上表);几何常量**独立写死**在脚本里(真机断言不该跟 `@shared/tabIdBadge` 共用一份数) |
@@ -1365,8 +1365,8 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
     同一个下载,`downloadURL` 路径在 `onBeforeSendHeaders` 里 **0 命中**,而「在页面里点一个 `<a download>`」
     路径**每一跳都命中**(`resourceType=mainFrame`)。
     推论:**想给下载请求加请求头(伪装 UA 之类),必须让下载由页面发起**;
-    代价是必须有一个活着的、已登录的页面标签。夸克插件最终把直链交给 **aria2** 而不是 bow 下载器,
-    就是因为「自定义头 + 跨域 Cookie」这两件事在浏览器下载栈里都不可靠(见 §5.8 的 `quark` 行)。
+    代价是必须有一个活着的、已登录的页面标签(插件要把直链交给外部下载器时同理:
+    「自定义头 + 跨域 Cookie」这两件事在浏览器下载栈里都不可靠)。
 32. **显式 `Cookie` 头在重定向跳上会被 Chromium 丢弃**(`downloadURL` / `net.request` / `net.fetch` 三者一致),
     **只有 cookie 域罐里的 cookie 能跨跳存活**。所以「带登录态下载跨域 CDN」的正确做法是:
     尽量让域罐管(域名匹配时自动逐跳带上),只有域罐覆盖不到的域名才用显式头 —— 而那时**必须配域名白名单**,

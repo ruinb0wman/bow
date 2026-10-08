@@ -53,6 +53,56 @@ export function isInitialized(file: VaultFile): boolean {
   return file.kdf != null && file.verifier != null && file.data != null
 }
 
+/**
+ * 导入时接受的 KDF 参数上界。
+ *
+ * 为什么必须有:`unlockVault()` 按备份里写的 `N/r/p` 去跑 scrypt,而 `maxmem` 是固定的 64 MiB ——
+ * 一份声称 `N = 2^30` 的备份(手改或损坏)会让解锁当场抛错;更糟的是**将来**若有人调大 `maxmem`,
+ * 一个外部文件就能让主进程吃光内存。宁可在导入这一步就把不合理的参数挡在门外。
+ * 上界取「当前实现的两倍」:`N ≤ 2^16`、`r/p ≤ 16`、`keyLen = 32`。
+ */
+export const IMPORT_KDF_LIMITS = { N: 1 << 16, r: 16, p: 16 } as const
+
+function isSealed(value: unknown): value is Sealed {
+  if (!value || typeof value !== 'object') return false
+  const s = value as Record<string, unknown>
+  return typeof s.iv === 'string' && s.iv !== '' && typeof s.tag === 'string' && s.tag !== '' && typeof s.ct === 'string'
+}
+
+/**
+ * 校验一份外部 JSON 是不是可用的密码库备份(设置页「导入加密备份」用)。
+ *
+ * 只做**结构**校验,不解密(导入的是密文,不需要也不应该有主密码):
+ * - `version === 1`;
+ * - `kdf` / `verifier` / `data` 三件套齐备且形状正确 —— 即 `isInitialized()` 为真
+ *   (只有 salt 没有数据块的备份毫无用处,直接当无效);
+ * - KDF 参数在 `IMPORT_KDF_LIMITS` 之内。
+ *
+ * 返回 `null` = 不是有效的 bow 密码库备份(调用方据此拒绝,**绝不写盘**)。
+ */
+export function parseVaultFile(raw: unknown): VaultFile | null {
+  if (!raw || typeof raw !== 'object') return null
+  const src = raw as Record<string, unknown>
+  if (src.version !== 1) return null
+  const kdf = src.kdf
+  if (!kdf || typeof kdf !== 'object') return null
+  const k = kdf as Record<string, unknown>
+  if (k.algo !== KDF_ALGO) return null
+  if (typeof k.salt !== 'string' || k.salt === '') return null
+  const nums = [k.N, k.r, k.p, k.keyLen]
+  if (nums.some((n) => typeof n !== 'number' || !Number.isInteger(n) || n <= 0)) return null
+  if ((k.N as number) > IMPORT_KDF_LIMITS.N) return null
+  if ((k.r as number) > IMPORT_KDF_LIMITS.r || (k.p as number) > IMPORT_KDF_LIMITS.p) return null
+  if (k.keyLen !== KEY_LEN) return null
+  if (!isSealed(src.verifier) || !isSealed(src.data)) return null
+  return {
+    version: 1,
+    kdf: { algo: KDF_ALGO, salt: k.salt, N: k.N as number, r: k.r as number, p: k.p as number, keyLen: k.keyLen as number },
+    verifier: src.verifier,
+    data: src.data
+  }
+}
+
 /** 新盐 + 默认 KDF 参数 */
 export function newKdfParams(): KdfParams {
   return {

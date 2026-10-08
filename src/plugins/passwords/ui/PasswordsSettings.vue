@@ -4,12 +4,13 @@
  * 「修改主密码」需要已解锁;「清空密码库」在锁定时也能用(它是唯一的逃生口)。
  */
 import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { Download, Lock, Trash2 } from 'lucide-vue-next'
+import { Download, Lock, Trash2, Upload } from 'lucide-vue-next'
 import {
   AUTO_LOCK_OPTIONS,
   CLIPBOARD_CLEAR_OPTIONS,
   normalizeSettings,
   type ExportBackupResult,
+  type ImportBackupResult,
   type OkResult,
   type PasswordSettings,
   type PasswordStatus
@@ -23,7 +24,9 @@ const newMaster = ref('')
 const confirmMaster = ref('')
 const wipeArmed = ref(false)
 const backupArmed = ref(false)
+const importArmed = ref(false)
 const backupPath = ref('')
+const preimportPath = ref('')
 const notice = ref('')
 const error = ref('')
 const unsubs: Array<() => void> = []
@@ -98,6 +101,28 @@ async function exportBackup(): Promise<void> {
   }
   backupPath.value = res.path || ''
   flash('加密备份已导出')
+}
+
+/**
+ * 导入加密备份:**整库替换**。
+ * 主进程负责结构校验与「覆盖前先备份当前库」;这里只负责确认与把结果说清楚 ——
+ * 导入后库是锁定的,要用**备份自己的主密码**解锁。
+ */
+async function importBackup(): Promise<void> {
+  error.value = ''
+  preimportPath.value = ''
+  const res = await api.plugins.invoke<ImportBackupResult>('passwords', 'importBackup')
+  importArmed.value = false
+  // 用户取消文件选择框:不是错误,什么都不说
+  if (res.canceled) return
+  if (!res.ok) {
+    error.value = res.error || '导入失败'
+    return
+  }
+  backupPath.value = ''
+  preimportPath.value = res.backupPath || ''
+  await refresh()
+  flash('加密备份已导入,请用该备份的主密码解锁')
 }
 
 onMounted(() => {
@@ -191,6 +216,22 @@ onBeforeUnmount(() => {
     </div>
     <div v-if="backupPath" class="pw-settings-hint">已导出:<code>{{ backupPath }}</code></div>
 
+    <div class="set-row">
+      <span class="set-label">导入加密备份</span>
+      <template v-if="importArmed">
+        <span class="pw-settings-hint">
+          会<strong>整库替换</strong>当前密码库{{ status?.initialized ? '(已初始化时会先把当前库导出一份到 bow 下载目录)' : '' }};
+          导入后需要<strong>该备份自己的主密码</strong>才能解锁。
+        </span>
+        <button class="btn danger" @click="importBackup"><Upload :size="12" />确认导入</button>
+        <button class="btn" @click="importArmed = false">取消</button>
+      </template>
+      <button v-else class="btn" @click="importArmed = true"><Upload :size="12" />导入…</button>
+    </div>
+    <div v-if="preimportPath" class="pw-settings-hint">
+      导入前的当前库已备份到:<code>{{ preimportPath }}</code>
+    </div>
+
     <div class="section-title">危险操作</div>
     <div class="set-row">
       <span class="set-label">清空密码库</span>
@@ -205,7 +246,8 @@ onBeforeUnmount(() => {
     <div v-if="error" class="pw-settings-error">{{ error }}</div>
     <div class="pw-settings-hint">
       密码库是 <code>passwords.json</code>(密文,salt 与 KDF 参数为明文),存放在浏览器数据目录;
-      用上面的「导出加密备份」把整库密文写进 bow 下载目录,手工整份复制也可以。
+      用上面的「导出加密备份」把整库密文写进 bow 下载目录,手工整份复制也可以;
+      换机器 / 换库用「导入加密备份」(整库替换,导入后需用备份自己的主密码解锁)。
       <strong>主密码忘记后无法恢复。</strong>
     </div>
     <div v-if="notice" class="pw-settings-notice">{{ notice }}</div>

@@ -1,4 +1,6 @@
 import type { BookmarkNode, BookmarkTree, FlatBookmark } from './types'
+import { isHttpUrl } from './url'
+import { isInternalUrl } from './internalPages'
 
 /** 书签树纯逻辑(可单测):所有操作返回新树,不修改入参 */
 
@@ -174,4 +176,70 @@ export function flattenToSingleLevel(tree: BookmarkTree): BookmarkTree {
     next.push({ ...node, children: flatChildren })
   }
   return next
+}
+
+/** `normalizeImportedTree` 的结果 */
+export interface ImportedBookmarks {
+  tree: BookmarkTree
+  /** 结构不合法、或 url 不是 http(s)/`bow://` 而被丢弃的条目数 */
+  dropped: number
+  /** id 缺失 / 重复 / 非字符串而被重新发放的条目数 */
+  reissued: number
+}
+
+/**
+ * 校验并归一「外部 JSON 书签树」(设置页导入用)。根不是数组 → `null`(调用方报「不是书签树」)。
+ *
+ * 规则:
+ * - 节点必须是 `{title: string, type: 'bookmark' | 'folder'}`;folder 递归 `children`(缺省当空);
+ * - 书签 url 必须是 http(s) 或 `bow://` 内部页 —— 与 `browser_add_bookmark` / 星标同一道门槛,其余丢弃;
+ * - id 缺失 / 重复 / 非字符串 → 重新发放(`move`/`remove` 按 id 定位,重复 id 会让它们指向错的节点);
+ * - 最后跑一次 `flattenToSingleLevel()`,与激活时的迁移同一条不变量(目录恒在根)。
+ */
+export function normalizeImportedTree(raw: unknown): ImportedBookmarks | null {
+  if (!Array.isArray(raw)) return null
+  const stats = { dropped: 0, reissued: 0 }
+  const seen = new Set<string>()
+
+  const takeId = (value: unknown, prefix: string): string => {
+    const id = typeof value === 'string' ? value.trim() : ''
+    if (id && !seen.has(id)) {
+      seen.add(id)
+      return id
+    }
+    stats.reissued += 1
+    const next = genId(prefix)
+    seen.add(next)
+    return next
+  }
+
+  const walk = (list: unknown[]): BookmarkNode[] => {
+    const out: BookmarkNode[] = []
+    for (const item of list) {
+      if (!item || typeof item !== 'object') {
+        stats.dropped += 1
+        continue
+      }
+      const node = item as Record<string, unknown>
+      const title = typeof node.title === 'string' ? node.title : ''
+      if (node.type === 'folder') {
+        const children = Array.isArray(node.children) ? walk(node.children) : []
+        out.push({ id: takeId(node.id, 'fd'), type: 'folder', title, children })
+        continue
+      }
+      if (node.type !== 'bookmark') {
+        stats.dropped += 1
+        continue
+      }
+      const url = typeof node.url === 'string' ? node.url.trim() : ''
+      if (!isHttpUrl(url) && !isInternalUrl(url)) {
+        stats.dropped += 1
+        continue
+      }
+      out.push({ id: takeId(node.id, 'bm'), type: 'bookmark', title: title.trim() || url, url })
+    }
+    return out
+  }
+
+  return { tree: flattenToSingleLevel(walk(raw)), ...stats }
 }
