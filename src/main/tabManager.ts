@@ -406,7 +406,7 @@ export class TabManager extends EventEmitter {
     wc.on('destroyed', () => {
       this.views.delete(id)
       if (this.lastBrowsingId === id) this.lastBrowsingId = null
-      // 从组里摘掉(组空了就整组消失并切到邻组);先于 activeId 回落,否则会被
+      // 从组里摘掉(组空了就整组消失并切到前一个邻组);先于 activeId 回落,否则会被
       // activateLastVisible() 的「id 最大」抢走焦点
       this.unregisterTab(id)
       this.emit('tabs-changed')
@@ -717,7 +717,7 @@ export class TabManager extends EventEmitter {
   /**
    * 把一个窗格从组里摘掉(`close()` 与 `destroyed` 共用)。
    * - 组还剩窗格 → 容器塌缩,焦点交给阅读顺序里的下一个(它接着占那块地方);
-   * - 组空了 → 整组移除,活动组换到**最近的邻组**;
+   * - 组空了 → 整组移除,活动组换回**前一个**邻组(前面没有才用后一个);
    * - 被摘掉的标签本来就是活动标签时,`activeId` 会落到新选中的那个上。
    * 反复调用是幂等的(标签不在任何组里就什么都不做)。
    */
@@ -731,7 +731,7 @@ export class TabManager extends EventEmitter {
       // 组还在:焦点交给幸存的那半(activate 内部会 layout + 通知)
       this.activate(res.focusTabId)
     } else if (wasActive && res.removedGroupId != null) {
-      // 整个组没了:切到最近的邻组
+      // 整个组没了:切回前一个邻组(前面没有才用后一个;都没有才走 activateLastVisible)
       const nextGroupId = neighborGroupIdAfterRemoval(before, [res.removedGroupId])
       const next = nextGroupId != null ? this.groups.find((g) => g.id === nextGroupId) ?? null : null
       const focus = next ? focusedTabId(next) : null

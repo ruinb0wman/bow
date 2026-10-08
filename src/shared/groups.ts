@@ -154,8 +154,8 @@ export function moveTabGroup(groups: TabGroup[], groupId: number, toIndex: numbe
 }
 
 /**
- * 关掉/移除一个组之后该激活谁:优先**后一个**,没有就前一个(都按移除前的顺序算)。
- * `removedIds` 是本轮被移除的组 id(可能不止一个)。
+ * 关掉/移除一个组之后该激活谁:优先**前一个**,没有就后一个(都按移除前的顺序算)。
+ * 相邻的已移除项要跳过去;`removedIds` 是本轮被移除的组 id(可能不止一个)。
  */
 export function neighborGroupIdAfterRemoval(
   before: readonly TabGroup[],
@@ -165,10 +165,10 @@ export function neighborGroupIdAfterRemoval(
   const removed = new Set(removedIds)
   const firstRemoved = before.findIndex((g) => removed.has(g.id))
   if (firstRemoved < 0) return null
-  for (let i = firstRemoved; i < before.length; i += 1) {
+  for (let i = firstRemoved - 1; i >= 0; i -= 1) {
     if (!removed.has(before[i].id)) return before[i].id
   }
-  for (let i = firstRemoved - 1; i >= 0; i -= 1) {
+  for (let i = firstRemoved; i < before.length; i += 1) {
     if (!removed.has(before[i].id)) return before[i].id
   }
   return null

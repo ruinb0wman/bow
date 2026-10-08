@@ -217,11 +217,11 @@ describe('insertIndexAfterGroup', () => {
 })
 
 describe('neighborGroupIdAfterRemoval', () => {
-  it('优先后一个,没有就前一个', () => {
+  it('优先前一个,没有就后一个', () => {
     const groups = [solo(1, 10), solo(2, 30), solo(3, 40)]
-    expect(neighborGroupIdAfterRemoval(groups, [2])).toBe(3)
+    expect(neighborGroupIdAfterRemoval(groups, [2])).toBe(1) // 关中间 → 左边那项
     expect(neighborGroupIdAfterRemoval(groups, [3])).toBe(2) // 最后一个 → 前一个
-    expect(neighborGroupIdAfterRemoval(groups, [1])).toBe(2)
+    expect(neighborGroupIdAfterRemoval(groups, [1])).toBe(2) // 第一个 → 前面没了,回落后一个
     expect(neighborGroupIdAfterRemoval(groups, [1, 2, 3])).toBeNull()
     expect(neighborGroupIdAfterRemoval([], [1])).toBeNull()
     expect(neighborGroupIdAfterRemoval(groups, [99])).toBeNull()
@@ -229,7 +229,9 @@ describe('neighborGroupIdAfterRemoval', () => {
 
   it('连续移除多个时跳过它们', () => {
     const groups = [solo(1, 10), solo(2, 30), solo(3, 40), solo(4, 50)]
-    expect(neighborGroupIdAfterRemoval(groups, [2, 3])).toBe(4)
+    expect(neighborGroupIdAfterRemoval(groups, [2, 3])).toBe(1)
+    expect(neighborGroupIdAfterRemoval(groups, [3, 4])).toBe(2) // 向前也要跳过已移除的
+    expect(neighborGroupIdAfterRemoval(groups, [1, 2])).toBe(3) // 前面没了 → 后一个
   })
 })
 
