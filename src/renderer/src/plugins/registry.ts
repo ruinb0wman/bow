@@ -16,6 +16,7 @@ import logseqUi from '@plugins/logseq/ui'
 import downloadsUi from '@plugins/downloads/ui'
 import passwordsUi from '@plugins/passwords/ui'
 import pomoUi from '@plugins/pomo/ui'
+import filesUi from '@plugins/files/ui'
 
 export const PLUGIN_UI: PluginUiContribution[] = [
   bookmarksUi,
@@ -28,7 +29,8 @@ export const PLUGIN_UI: PluginUiContribution[] = [
   logseqUi,
   downloadsUi,
   passwordsUi,
-  pomoUi
+  pomoUi,
+  filesUi
 ]
 
 /**

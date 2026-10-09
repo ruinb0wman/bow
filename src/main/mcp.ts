@@ -123,6 +123,17 @@ export const MCP_INSTRUCTIONS = `这是一个真实的多标签浏览器窗口(�
 - 恢复下载的行为由服务器决定(支不支持 Range);万一浏览器丢弃了已收字节(记录里 restarted 为 true),
   说明这次是从头下的 —— 不要自己去推。
 
+本地文件(browser_fs_*)
+- 这组工具操作的是**真实磁盘**,与网页无关。**第一步先调 browser_fs_roots** 看允许的工作目录 ——
+  目录之外的路径一律被拒(包括符号链接指向外面的情况),不要凭猜测拼绝对路径。
+- browser_fs_list 省略 path = 第一个工作目录;glob 里 * 不跨段、** 跨段;只有 recursive: true 才递归(最多 8 层)。
+- browser_fs_read 只读文本(默认最多 64 KiB,超长截断并标记 truncated);含 NUL 字节的二进制文件会被拒。
+- browser_fs_write 原子写,**目标已存在时必须显式 overwrite: true**,否则直接拒 —— 不要为了绕过它去先删再写。
+- browser_fs_delete **默认把文件移进系统回收站(可恢复)**;传 permanent: true 才真删,而它需要用户在设置里开启。
+  删目录必须 recursive: true。工作目录本身不能被删/被移走。
+- browser_fs_move / browser_fs_copy 的 to 指向**已存在的目录**时,东西会被放进去(与 mv 一致),
+  以返回体里的 path 为准;目标已存在同样必须 overwrite: true。
+
 边界
 - bow:// 内部页面标签不支持页面类工具,会被明确拒绝。
 - browser_list_tabs 里 inspector: true 的标签是「远程调试用的 DevTools 前端」,同样属于浏览器自身页面,不支持页面类工具。

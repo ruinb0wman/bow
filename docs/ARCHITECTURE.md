@@ -67,6 +67,8 @@ src/
       mcpHttpHost.ts             McpHttpHost:HTTP 服务的 owner/幂等/串行化
       mcpResult.ts               textContent / errorContent / imageContent(统一 isError 判定)
       exportFile.ts              导出到 bow 下载目录(目录解析与下载插件同源;书签 / 密码共用)
+      fileRoots.ts               本地文件访问策略(白名单 + realpath + deny 名单);文件管理插件的**每个**入参路径都过它,
+                                  下载插件的 saveDir 待接(白名单的唯一来源:每次现读 files-settings.json,不缓存不写)
       pickJsonFile.ts            弹系统文件选择框并读回 UTF-8 文本(书签 / 密码的导入共用)
   plugins/<id>/                 内置插件(自包含,每插件一个目录)
     main.ts                     主进程侧:manifest + capabilities + activate(ctx)
@@ -539,6 +541,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `downloads` | — | ui, mcp | `list` `pause` `resume` `cancel` `retry` `remove` `clear` `openFile` `showInFolder` `getSettings` `setSettings` `pickDirectory` `revealDir` | `browser_list_downloads` `browser_download` | — | — | — | — | emit `changed` | `downloads.json`(记录)+ `downloads-settings.json`(目录 / 询问 / 保留条数) |
 | `passwords` | — | ui, shortcut | `status` `setup` `unlock` `lock` `list` `getEntry` `save` `remove` `copy` `readPageFields` `fillEntry` `beginFill` `changeMaster` `getSettings` `setSettings` `wipe` `exportBackup` `importBackup` | —(刻意不贡献 MCP 工具:与 AI 隔离) | — | —(按需 `pages.execute` 注入探测 / 下拉 / 填入脚本,不注入常驻脚本) | — | `Ctrl/Cmd+Shift+P` | emit `state-changed` `settings-changed` `open-panel` | `passwords.json`(AES-256-GCM 密文)+ `passwords-settings.json`(自动锁定 / 剪贴板 / 子域匹配);`exportBackup` 只写**密文副本**到 bow 下载目录;`importBackup` 校验形状后**整库替换**(已初始化时先把当前库导出一份再覆盖,导入后强制锁定) |
 | `pomo` | — | ui, mcp, shortcut | `getState` `getSettings` `setSettings` `start` `pause` `skip` `reset` `toggle` | `browser_pomo_status` `browser_pomo_start` `browser_pomo_pause` `browser_pomo_skip` | — | — | — | `Ctrl/Cmd+Shift+O` | emit `state` `phase-end` | `pomo.json`(设置 + 运行状态:阶段 / `endsAt` / 本轮计数 / 今日完成数;**只在状态转换时写盘**) |
+| `files` | — | ui, mcp | `getSettings` `setSettings` `pickRoots` `removeRoot` `openRoot` | `browser_fs_roots` `browser_fs_list` `browser_fs_info` `browser_fs_read` `browser_fs_write` `browser_fs_mkdir` `browser_fs_move` `browser_fs_copy` `browser_fs_delete` | — | — | — | — | emit `changed` | `files-settings.json`(工作目录白名单 + 允许永久删除);**渲染层拿不到任何 fs 操作面**,只有配白名单的 IPC |
 
 **渲染层侧**(`registry.ts` / 各插件 `ui.ts`)
 
@@ -555,6 +558,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `downloads` | — | `DownloadsButton` | `plugin:downloads:panel`(full,`DownloadsPanel`) | `DownloadsSettings` |
 | `passwords` | — | `PasswordsButton` | `plugin:passwords:panel`(full,`PasswordsPanel`) | `PasswordsSettings` |
 | `pomo` | — | `PomoButton`(显示倒计时) | `plugin:pomo:panel`(below-chrome,`PomoPanel`;锚定在按钮右下方) | `PomoSettings` |
+| `files` | — | —(刻意没有工具栏按钮:当前只有工具面与策略配置) | — | `FilesSettings`(工作目录白名单 + 允许永久删除) |
 
 ⚠️ 终端插件的 `ui/TerminalView.vue` 与笔记插件的 `ui/JournalView.vue` **不在**注册表里 ——
 它们分别是 `bow://terminal` / `bow://logseq` 页面的主体,由 `renderer/src/<entry>/main.ts` 直接引用。
@@ -633,20 +637,23 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `browser_screenshot` | tabId, fullPage | fullPage falsy | **image content**(`image/png`);失败才是 text |
 | `browser_get_info` | tabId | — | `{ok,info:TabInfo}`(info 带 `windowId`) |
 
-插件工具 20 个:`browser_add_bookmark` `browser_list_bookmarks`(书签)、
+插件工具 29 个:`browser_add_bookmark` `browser_list_bookmarks`(书签)、
 `device_list_targets` `device_inspect` `device_snapshot` `device_tap` `device_type` `device_press_key`
 `device_scroll` `device_console` `device_eval` `device_screenshot` `device_connect`(设备检查)、
 `browser_list_downloads` `browser_download`(下载)、
 `browser_pomo_status` `browser_pomo_start` `browser_pomo_pause` `browser_pomo_skip`(番茄钟)、
-`browser_logseq_graph`(笔记的关系图谱,只读)
-—— 共 20 个,合计 **39** 个工具。
+`browser_logseq_graph`(笔记的关系图谱,只读)、
+`browser_fs_roots` `browser_fs_list` `browser_fs_info` `browser_fs_read` `browser_fs_write` `browser_fs_mkdir`
+`browser_fs_move` `browser_fs_copy` `browser_fs_delete`(文件管理:白名单内的本地文件操作)
+—— 共 29 个,合计 **48** 个工具。
 
 静态计数来源:`CORE_MCP_TOOL_NAMES`(19)+ `ctx.mcp.tool(...)` 的调用点
 (`bookmarks/main.ts:137,165`、
 `device-inspect/main.ts:451,493,510,531,554,574,612,642,666,698,731`、
 `downloads/main.ts:500,529`、
 `pomo/main.ts:229,238,249,260`、
-`logseq/main.ts:703`)。
+`logseq/main.ts:703`、
+`files/main.ts:279,300,342,378,423,473,497,552,598`)。
 ⚠️ 实际工具面**随插件启停变化**:停用 device-inspect 就少 11 个,停用 downloads 就少 2 个。
 
 ⚠️ 插件工具的 schema **不做 strict 校验**(走 `kernel.mcp` 声明快照),未知参数会被静默丢弃。
@@ -901,6 +908,7 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `logseq.json` | 笔记插件的图目录 + 最近图 | `{version:1, graphPath:'', recentGraphs:[]}` | logseq(图里的笔记内容本身属于用户的 Logseq 图,不在这里) |
 | `downloads.json` | 下载记录(数组整体替换;`DownloadRecord[]`,读盘时过 `sanitizeRecords()` + `reconcileOnStart()`) | `[]` | downloads |
 | `downloads-settings.json` | `{askWhereToSave, downloadDir, maxRecords}` | `{askWhereToSave:true, downloadDir:'', maxRecords:500}`(`downloadDir` 为空 = `app.getPath('downloads')`) | downloads |
+| `files-settings.json` | `{version, roots, allowPermanentDelete, listLimit}` | `{version:1, roots:[], allowPermanentDelete:false, listLimit:200}`;**`roots` 空数组 = 只用 bow 下载目录,不是放开到全盘**(读、写两侧都过 `sanitizeRoots()`:相对路径、非字符串、`userData` 一律丢掉) | files |
 | `passwords.json` | 密码库密文(AES-256-GCM;盐 / KDF 参数 / iv / tag 为明文,**条目明文为零**) | `{version:1, kdf:null, verifier:null, data:null}`;加解密在 `passwords/vault.ts`(只用 node:crypto,`scrypt(N=2^15,r=8,p=1)` + 显式 `maxmem`),条目读出后过 `normalizeEntries()` | passwords |
 | `passwords-settings.json` | `{autoLockMinutes, clipboardClearSeconds, matchSubdomains}` | `{autoLockMinutes:5, clipboardClearSeconds:30, matchSubdomains:true}`;读写都过 `normalizeSettings()`(只接受设置页下拉里的合法值) | passwords |
 | `pomo.json` | `{settings, state}` | `settings` = `{focusMinutes:25, shortBreakMinutes:5, longBreakMinutes:15, roundsBeforeLongBreak:4, autoStartNext:false, notify:true, sound:true}`;`state` = `{phase, running, endsAt, remainingMs, cycleIndex, completedToday, completedDate}`。读写都过 `normalizeSettings()` / `normalizeState()`(夹紧 + 跨天归零 + `running` 无 `endsAt` 退化);**只在状态转换时写盘**,不逐秒写 | pomo |
@@ -1300,6 +1308,11 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 15. 核心工具 strict 校验,插件工具**不** strict —— 写工具时要意识到这个不对称。
 16. 改工具语义必须同步 `MCP_INSTRUCTIONS`(它才是 LLM 的行为契约)。
 17. 延迟回复/竞态问题优先用「观察到本次开始」的判据解决,不要用固定宽限期赌(300ms 曾真机赌输)。
+18. **路径类工具必须自己校验**(插件工具不 strict,见 15):删除/写入/移动这类工具的**每个**入参路径都要过
+    `main/plugins/fileRoots.ts` 的 `checkFilePath()`(白名单 + 对**最深的已存在祖先** `realpath` + deny 名单)。
+    两个容易写错的点:包含判定**不能用 `startsWith`**(`/a/bc` 会被 `/a/b` 误判成在内,要用 `path.relative`);
+    以及只 `resolve()` 不 `realpath` 的话,工作目录里一个指向 `/etc` 的符号链接就能把 AI 带出去
+    (创建新文件时目标还不存在,所以要向上找最深的已存在祖先再 realpath —— 见 `checkPath()`)。
 
 **环境层**
 
