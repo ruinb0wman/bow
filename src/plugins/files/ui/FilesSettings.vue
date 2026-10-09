@@ -97,7 +97,8 @@ onBeforeUnmount(() => {
     </div>
     <div class="fs-hint">
       AI 只能在这些目录之内操作文件(<code>browser_fs_*</code> 那组工具)。路径按<b>真实路径</b>判定,所以目录里指向外部的符号链接同样会被拒。
-      一个都不配 = 只用 bow 的下载目录(<code>{{ state?.downloadsDir ?? '…' }}</code>),<b>不是</b>放开到全盘。
+      <b>下载目录永远在列表里</b>(标着「默认」,不可删)—— 否则你添了工作目录之后,
+      <code>browser_download</code> 指定保存到下载目录反而会被拒。
       bow 自身的数据目录(密码库 / 书签 / 插件设置)永远不可操作。
     </div>
 

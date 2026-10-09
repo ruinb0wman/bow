@@ -155,14 +155,31 @@ export function sanitizeRoots(roots: readonly string[], deny: readonly string[] 
 }
 
 /**
- * **生效**的白名单:显式配的工作目录;一个都没配 → bow 的下载目录。
- * 注意这与「哪都能去」是两件事 —— 空数组绝不代表放开。
+ * **生效**的白名单:**你配的工作目录 ∪ bow 的下载目录**。
+ *
+ * 下载目录**永远**在里面(排在你配的那些后面)。为什么不让它只当「没配时才用的默认值」:
+ * 一旦你添了任何工作目录,下载目录就不再是 root,于是 `browser_download {saveDir: <下载目录>}`
+ * 会开始报「不在允许的工作目录内」—— 而不传 saveDir 的同一次下载照样写进同一个目录,自相矛盾。
+ *
+ * 注意这与「哪个目录都能去」是两件事:一个都没配 ≈ 只有下载目录。
+ * 另外 bow 数据目录永远不会因为它而被放行(`checkPath` 先查 deny 名单)。
  */
 export function resolveFileRoots(): string[] {
   const settings = readFilesSettingsRaw()
-  const explicit = sanitizeRoots(settings.roots)
-  if (explicit.length > 0) return explicit
-  return [resolveDownloadsDir()]
+  const configured = sanitizeRoots(settings.roots)
+  const downloads = downloadDirSafe()
+  if (!downloads) return configured
+  if (configured.some((root) => isSamePath(root, downloads))) return configured
+  return [...configured, downloads]
+}
+
+/** 下载目录解析失败时不要拖垮整个白名单(宁可只剩你配的那几个,也不要抛) */
+function downloadDirSafe(): string {
+  try {
+    return resolveDownloadsDir()
+  } catch {
+    return ''
+  }
 }
 
 /** 所有 fs 操作与 `saveDir` 的统一入口:白名单 + deny 名单 + realpath */

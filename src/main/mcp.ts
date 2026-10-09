@@ -118,13 +118,14 @@ export const MCP_INSTRUCTIONS = `这是一个真实的多标签浏览器窗口(�
 
 下载(browser_download / browser_list_downloads)
 - browser_download 不需要页面上的点击,也**不弹保存对话框**:默认落到 bow 的下载目录并自动重名(同名加 (1))。
-- saveDir / filename 只在用户明确要求时才传(它们决定文件写到哪里);wait: true 会等到下载结束或超时 ——
+- saveDir / filename 只在用户明确要求时才传(它们决定文件写到哪里);**saveDir 必须落在 browser_fs_roots 列出的工作目录里**
+  (下载目录总在里面),越界会被拒;wait: true 会等到下载结束或超时 ——
   超时不代表失败(下载仍在继续),用 browser_list_downloads 看后续进度即可。
 - 恢复下载的行为由服务器决定(支不支持 Range);万一浏览器丢弃了已收字节(记录里 restarted 为 true),
   说明这次是从头下的 —— 不要自己去推。
 
 本地文件(browser_fs_*)
-- 这组工具操作的是**真实磁盘**,与网页无关。**第一步先调 browser_fs_roots** 看允许的工作目录 ——
+- 这组工具操作的是**真实磁盘**,与网页无关。**第一步先调 browser_fs_roots** 看允许的工作目录(你配的 ∪ bow 的下载目录)——
   目录之外的路径一律被拒(包括符号链接指向外面的情况),不要凭猜测拼绝对路径。
 - browser_fs_list 省略 path = 第一个工作目录;glob 里 * 不跨段、** 跨段;只有 recursive: true 才递归(最多 8 层)。
 - browser_fs_read 只读文本(默认最多 64 KiB,超长截断并标记 truncated);含 NUL 字节的二进制文件会被拒。

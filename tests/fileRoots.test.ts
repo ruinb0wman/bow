@@ -190,9 +190,16 @@ describe('设置文件(真磁盘)', () => {
     expect(resolveFileRoots()).toEqual([env.downloads])
   })
 
-  it('配了就用配的(并清洗掉非法项)', () => {
+  it('配了就用配的(并清洗掉非法项),**并且下载目录仍然在里面**', () => {
     writeSettings({ version: 1, roots: ['/a', 'rel', '/a'] })
-    expect(resolveFileRoots()).toEqual(['/a'])
+    expect(resolveFileRoots()).toEqual(['/a', env.downloads])
+  })
+
+  it('配的那条就是下载目录时不会重复(按真实路径比)', () => {
+    writeSettings({ version: 1, roots: [env.downloads] })
+    expect(resolveFileRoots()).toEqual([env.downloads])
+    writeSettings({ version: 1, roots: [`${env.downloads}/`] })
+    expect(resolveFileRoots()).toEqual([env.downloads])
   })
 
   it('坏 JSON / 文件不存在 → 默认设置,不抛', () => {

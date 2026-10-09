@@ -20,6 +20,9 @@ import { basename, isAbsolute, join } from 'node:path'
 import { z } from 'zod'
 import type { PluginContext, PluginMain, PluginStorage } from '../../main/plugins/types'
 import { errorContent, textContent } from '../../main/plugins/mcpResult'
+// 落盘位置必须过「文件管理」插件那份白名单(与 browser_fs_* 同一套策略):
+// 核心的 fileRoots 是白名单的唯一来源,每次现读 files-settings.json。
+import { checkFilePath } from '../../main/plugins/fileRoots'
 import {
   DEFAULT_DOWNLOAD_SETTINGS,
   DOWNLOADS_EVENT,
@@ -565,6 +568,11 @@ function createDownloadsPlugin(): PluginMain {
           if (!/^https?:/i.test(url)) return errorContent('url 必须是 http(s) 地址')
           const rawDir = typeof args.saveDir === 'string' && args.saveDir.trim() ? args.saveDir.trim() : undefined
           if (rawDir && !isAbsolute(rawDir)) return errorContent('saveDir 必须是绝对路径')
+          if (rawDir) {
+            // 不接这一条的话白名单就是装饰:AI 可以拿 saveDir 凭空往任意目录写文件
+            const check = checkFilePath(rawDir)
+            if (!check.ok) return errorContent(`saveDir:${check.error}`)
+          }
           const rawName = typeof args.filename === 'string' ? args.filename.trim() : ''
           const filename = rawName ? basename(rawName) : undefined
 

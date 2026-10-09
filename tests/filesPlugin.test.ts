@@ -178,15 +178,18 @@ describe('插件契约', () => {
 })
 
 describe('browser_fs_roots', () => {
-  it('列出生效的工作目录(配了就用配的)', async () => {
+  it('列出生效的工作目录:你配的 + **永远带着的下载目录**', async () => {
     const { data } = await run('browser_fs_roots')
     expect(data.ok).toBe(true)
-    expect(data.roots).toEqual([{ path: root, isDefault: false, exists: true }])
+    expect(data.roots).toEqual([
+      { path: root, isDefault: false, exists: true },
+      { path: env.downloads, isDefault: true, exists: true }
+    ])
     expect(data.downloadsDir).toBe(env.downloads)
     expect(data.allowPermanentDelete).toBe(false)
   })
 
-  it('没配工作目录时那条「默认」= 下载目录', async () => {
+  it('没配工作目录时只剩下载目录那一条', async () => {
     writeSettings([])
     h = harness()
     files.activate(h as unknown as PluginContext)
@@ -195,10 +198,13 @@ describe('browser_fs_roots', () => {
   })
 
   it('报的是**守卫真正放行的**那份:磁盘上的设置被外部改过也如实反映', async () => {
-    // 内存里的 store 还是老值(harness 不会再读一次盘),gurad 却读盘
+    // 内存里的 store 还是老值(harness 不会再读一次盘),guard 却读盘
     writeSettings([outside])
     const { data } = await run('browser_fs_roots')
-    expect(data.roots).toEqual([{ path: outside, isDefault: false, exists: true }])
+    expect(data.roots).toEqual([
+      { path: outside, isDefault: false, exists: true },
+      { path: env.downloads, isDefault: true, exists: true }
+    ])
     expect((await run('browser_fs_write', { path: join(outside, 'live.txt'), content: 'x' })).data.ok).toBe(true)
   })
 })
@@ -496,8 +502,17 @@ describe('browser_fs_delete', () => {
 describe('设置 IPC', () => {
   it('getSettings 返回生效状态与 deny 名单', async () => {
     const state = await call<{ roots: Array<{ path: string; isDefault: boolean }>; denyList: string[] }>('getSettings')
-    expect(state.roots).toEqual([{ path: root, isDefault: false, exists: true }])
+    expect(state.roots).toEqual([
+      { path: root, isDefault: false, exists: true },
+      { path: env.downloads, isDefault: true, exists: true }
+    ])
     expect(state.denyList).toEqual([env.userData])
+  })
+
+  it('下载目录不用配也能用(新增工作目录不会把它挤出去)', async () => {
+    const written = await run('browser_fs_write', { path: join(env.downloads, 'dl.txt'), content: 'x' })
+    expect(written.data.ok).toBe(true)
+    expect(existsSync(join(env.downloads, 'dl.txt'))).toBe(true)
   })
 
   it('setSettings 改白名单立即生效(核心读的是磁盘那份),并广播 changed', async () => {
@@ -514,7 +529,7 @@ describe('设置 IPC', () => {
     expect(next.settings.roots).toEqual([root])
   })
 
-  it('removeRoot 移除后回退到下载目录(那条标着默认)', async () => {
+  it('removeRoot 移除后只剩下载目录(那条标着默认)', async () => {
     const next = await call<{ roots: Array<{ path: string; isDefault: boolean }> }>('removeRoot', root)
     expect(next.roots).toEqual([{ path: env.downloads, isDefault: true, exists: true }])
     expect((await run('browser_fs_write', { path: at('x.txt'), content: 'x' })).data.ok).toBe(false)

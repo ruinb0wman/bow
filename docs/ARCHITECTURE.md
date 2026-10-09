@@ -67,8 +67,8 @@ src/
       mcpHttpHost.ts             McpHttpHost:HTTP 服务的 owner/幂等/串行化
       mcpResult.ts               textContent / errorContent / imageContent(统一 isError 判定)
       exportFile.ts              导出到 bow 下载目录(目录解析与下载插件同源;书签 / 密码共用)
-      fileRoots.ts               本地文件访问策略(白名单 + realpath + deny 名单);文件管理插件的**每个**入参路径都过它,
-                                  下载插件的 saveDir 待接(白名单的唯一来源:每次现读 files-settings.json,不缓存不写)
+      fileRoots.ts               本地文件访问策略(白名单 + realpath + deny 名单);文件管理插件的**每个**入参路径
+                                  与下载插件的 saveDir 都过它(白名单的唯一来源:每次现读 files-settings.json,不缓存不写)
       pickJsonFile.ts            弹系统文件选择框并读回 UTF-8 文本(书签 / 密码的导入共用)
   plugins/<id>/                 内置插件(自包含,每插件一个目录)
     main.ts                     主进程侧:manifest + capabilities + activate(ctx)
@@ -908,7 +908,7 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `logseq.json` | 笔记插件的图目录 + 最近图 | `{version:1, graphPath:'', recentGraphs:[]}` | logseq(图里的笔记内容本身属于用户的 Logseq 图,不在这里) |
 | `downloads.json` | 下载记录(数组整体替换;`DownloadRecord[]`,读盘时过 `sanitizeRecords()` + `reconcileOnStart()`) | `[]` | downloads |
 | `downloads-settings.json` | `{askWhereToSave, downloadDir, maxRecords}` | `{askWhereToSave:true, downloadDir:'', maxRecords:500}`(`downloadDir` 为空 = `app.getPath('downloads')`) | downloads |
-| `files-settings.json` | `{version, roots, allowPermanentDelete, listLimit}` | `{version:1, roots:[], allowPermanentDelete:false, listLimit:200}`;**`roots` 空数组 = 只用 bow 下载目录,不是放开到全盘**(读、写两侧都过 `sanitizeRoots()`:相对路径、非字符串、`userData` 一律丢掉) | files |
+| `files-settings.json` | `{version, roots, allowPermanentDelete, listLimit}` | `{version:1, roots:[], allowPermanentDelete:false, listLimit:200}`;**生效白名单 = `roots` ∪ 下载目录**(下载目录永远在里面,否则添了工作目录后 `browser_download` 指定保存到下载目录反而会被拒);读、写两侧都过 `sanitizeRoots()`:相对路径、非字符串、`userData` 一律丢掉 | files |
 | `passwords.json` | 密码库密文(AES-256-GCM;盐 / KDF 参数 / iv / tag 为明文,**条目明文为零**) | `{version:1, kdf:null, verifier:null, data:null}`;加解密在 `passwords/vault.ts`(只用 node:crypto,`scrypt(N=2^15,r=8,p=1)` + 显式 `maxmem`),条目读出后过 `normalizeEntries()` | passwords |
 | `passwords-settings.json` | `{autoLockMinutes, clipboardClearSeconds, matchSubdomains}` | `{autoLockMinutes:5, clipboardClearSeconds:30, matchSubdomains:true}`;读写都过 `normalizeSettings()`(只接受设置页下拉里的合法值) | passwords |
 | `pomo.json` | `{settings, state}` | `settings` = `{focusMinutes:25, shortBreakMinutes:5, longBreakMinutes:15, roundsBeforeLongBreak:4, autoStartNext:false, notify:true, sound:true}`;`state` = `{phase, running, endsAt, remainingMs, cycleIndex, completedToday, completedDate}`。读写都过 `normalizeSettings()` / `normalizeState()`(夹紧 + 跨天归零 + `running` 无 `endsAt` 退化);**只在状态转换时写盘**,不逐秒写 | pomo |
@@ -1311,7 +1311,8 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 18. **路径类工具必须自己校验**(插件工具不 strict,见 15):删除/写入/移动这类工具的**每个**入参路径都要过
     `main/plugins/fileRoots.ts` 的 `checkFilePath()`(白名单 + 对**最深的已存在祖先** `realpath` + deny 名单)。
     两个容易写错的点:包含判定**不能用 `startsWith`**(`/a/bc` 会被 `/a/b` 误判成在内,要用 `path.relative`);
-    以及只 `resolve()` 不 `realpath` 的话,工作目录里一个指向 `/etc` 的符号链接就能把 AI 带出去
+    以及只 `resolve()` 不 `realpath` 的话,工作目录里一个指向 `/etc` 的符号链接就能把 AI 带出去。
+    写盘类工具同样要过:`browser_download` 的 `saveDir` 就是这么接上的(`downloads/main.ts`)
     (创建新文件时目标还不存在,所以要向上找最深的已存在祖先再 realpath —— 见 `checkPath()`)。
 
 **环境层**

@@ -373,7 +373,7 @@ npm run test:mcp:http
 | `device_screenshot {targetKey?, fullPage?}` | 截取**手机页面**并作为 PNG 返回(由「设备检查」插件提供) |
 | `device_connect {address}` | 连接已开启无线调试的设备(`adb connect <address>`)(由「设备检查」插件提供) |
 | `browser_list_downloads {id?, state?, limit?}` | 下载记录(进行中的在前),含状态、进度百分比、速度、保存路径与文件是否还在磁盘上(由「下载」插件提供) |
-| `browser_download {url, saveDir?, filename?, wait?, timeoutMs?}` | 从 URL 下载文件(不需要页面上的点击,也不弹保存对话框);默认保存到 bow 的下载目录并自动重名,`wait: true` 等到下载结束才返回(由「下载」插件提供) |
+| `browser_download {url, saveDir?, filename?, wait?, timeoutMs?}` | 从 URL 下载文件(不需要页面上的点击,也不弹保存对话框);默认保存到 bow 的下载目录并自动重名,**`saveDir` 必须落在 `browser_fs_roots` 的工作目录里**,`wait: true` 等到下载结束才返回(由「下载」插件提供) |
 | `browser_fs_roots` | 列出 AI 被允许读写的本地工作目录(白名单);**动文件之前先调它** —— 白名单外的路径一律被拒(由「文件管理」插件提供) |
 | `browser_fs_list {path?, glob?, recursive?, limit?, showHidden?}` | 列目录(目录在前);`glob` 里 `*` 不跨段、`**` 跨段;`recursive: true` 才递归(最多 8 层,不跟随符号链接)(由「文件管理」插件提供) |
 | `browser_fs_info {path}` | 路径是否存在 / 类型 / 大小 / 修改时间;路径不存在也算成功(`exists: false`)(由「文件管理」插件提供) |
@@ -696,7 +696,7 @@ npm run test:mcp:http
 - 笔记(「笔记」插件):`<userData>/logseq.json` —— 存**图目录 / 最近图 / 正文字号 / 每个图的收藏**;笔记内容本身就在你的 Logseq 图里,不另存一份
 - 下载(「下载」插件):`<userData>/downloads.json` —— 下载记录(文件名 / 网址 / 保存路径 / 状态 / 进度 / 是否可续传);设置(保存目录 / 是否询问 / 保留条数)在同目录的 `downloads-settings.json`。**删除记录不会删文件**
 - 番茄钟(「番茄钟」插件):`<userData>/pomo.json` —— 设置(各阶段时长 / 长休轮数 / 自动开始 / 通知与提示音)与运行状态(阶段 / `running` / `endsAt` / 本轮计数 / 今日完成数);**只在状态转换时写入,不逐秒写盘**
-- 文件管理(「文件管理」插件):`<userData>/files-settings.json` —— AI 可读写的**工作目录白名单**与「允许永久删除」开关;空白名单 = 只用下载目录(不是放开)。它是文件路径策略的**唯一来源**,每次现读不缓存
+- 文件管理(「文件管理」插件):`<userData>/files-settings.json` —— AI 可读写的**工作目录白名单**与「允许永久删除」开关;**生效白名单 = 这里配的 ∪ bow 的下载目录**。它是文件路径策略的**唯一来源**,每次现读不缓存;`browser_fs_*` 与 `browser_download` 的 `saveDir` 都过它
 - 插件导入 / 导出的文件(书签 JSON、密码库加密备份 / 导入前的自动备份):**bow 下载目录**(= 下载插件设置里的保存目录,空则系统下载目录);同名自动加 ` (1)`,**不进下载记录列表**
 - 插件启停状态(内核):`<userData>/plugins.json`
 - 核心设置(默认搜索引擎/主页):`<userData>/settings.json`
@@ -787,7 +787,7 @@ MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生
 面板里点删除与 AI 调 `browser_fs_delete` 走的是同一段代码(主进程里一份操作层,两个入口)。
 两个入口不同的只有一处:面板里删除**多一步点击确认**(AI 那条路刻意没有确认框,因为会把自动化卡住)。
 
-- **白名单**:AI 只能操作你在这里添加的工作目录(一个都不加 = **只用 bow 的下载目录**,不是放开到全盘)。
+- **白名单** = 你在这里添加的工作目录 **∪ bow 的下载目录**(那一条标着「默认」、不可删)。
   每个入参路径都会先 `resolve`,再对**最深的已存在祖先**做 `realpath`,然后才判定是否落在白名单内 ——
   所以目录里一个指向外部的符号链接同样会被拒;bow 自己的数据目录(密码库 / 书签 / 插件设置)**永远不可操作**。
 - **删除**:默认走 `shell.trashItem`(系统回收站,**可恢复**);`permanent:true` 真删需要你在这里打开
@@ -796,8 +796,7 @@ MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生
   gio 会拒绝,报 `Trashing on system internal mounts is not supported`);Windows 上是回收站。
 - **写文件**:目标已存在且没显式 `overwrite:true` 就直接拒,不会静默覆盖;写盘是原子的(`.tmp` → rename,
   失败退化为就地写)。面板里不会静默覆盖任何文件(重命名撞名会被拒)。
-- ⚠️ **已知缺口**:`browser_download` 的 `saveDir` 目前**不受**这份白名单约束(计划里的待办),
-  所以白名单暂时只能挡住 `browser_fs_*` 这条路。
+- `browser_download` 的 `saveDir` 走**同一条白名单**(不接的话 AI 可以拿它凭空往任意目录写文件)。
 
 ### 密码插件
 

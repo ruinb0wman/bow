@@ -28,8 +28,8 @@ export const READ_MAX_BYTES_LIMIT = 1024 * 1024
 export interface FilesSettings {
   version: number
   /**
-   * 允许读写的工作目录(**绝对**路径)。**空数组 ≠ 哪都能去** —— 它表示「用 bow 的下载目录」,
-   * 设置页里那条标着「默认」的项就是它。相对路径在 `fileRoots.sanitizeRoots()` 阶段就被丢掉。
+   * 允许读写的工作目录(**绝对**路径)。**生效的白名单 = 这里配的 ∪ 下载目录**(见 `fileRoots.resolveFileRoots`),
+   * 所以**空数组 ≠ 哪都能去** —— 它表示「只用 bow 的下载目录」。相对路径在 `sanitizeRoots()` 阶段就被丢掉。
    */
   roots: string[]
   /** 允许 `browser_fs_delete {permanent:true}`:不进系统回收站的删除 */
@@ -67,7 +67,7 @@ export interface FsEntry {
 /** 设置页/工具里的一条工作目录 */
 export interface FilesRootView {
   path: string
-  /** 是「默认 = 下载目录」那一条(设置页不给删,因为删了它也会回来) */
+  /** 是**下载目录**自动带上来的那一条(设置页不给删,因为删了它也会回来) */
   isDefault: boolean
   exists: boolean
 }

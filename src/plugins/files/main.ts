@@ -241,10 +241,20 @@ export default {
      * 生效的工作目录视图。路径取 `resolveFileRoots()`(**guard 真正会放行的那份**,每次现读磁盘),
      * 而不是内存里的 settings —— 两者正常同源,但「AI 会看到什么」必须以后者为准:
      * 一旦有人手改了 files-settings.json,`browser_fs_roots` 就不该报一份与守卫不一致的清单。
+     * `isDefault` 只用来标「这条是下载目录自动带的」,与「有没有额外配目录」无关。
      */
     function effectiveRootViews(): FilesRootView[] {
-      const isDefault = sanitizeRoots(settings().roots, fileRootsDenyList()).length === 0
-      return resolveFileRoots().map((path) => ({ path, isDefault, exists: existsSafe(path) }))
+      let downloadsDir = ''
+      try {
+        downloadsDir = resolveDownloadsDir()
+      } catch {
+        downloadsDir = ''
+      }
+      return resolveFileRoots().map((path) => ({
+        path,
+        isDefault: downloadsDir !== '' && isSamePath(path, downloadsDir),
+        exists: existsSafe(path)
+      }))
     }
 
     function settingsState(): FilesSettingsState {
