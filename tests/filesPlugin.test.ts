@@ -20,6 +20,7 @@ const env = vi.hoisted(() => ({
   downloads: '',
   trashed: [] as string[],
   opened: [] as string[],
+  revealed: [] as string[],
   pickResult: { canceled: true, filePaths: [] as string[] }
 }))
 
@@ -34,6 +35,9 @@ vi.mock('electron', () => ({
     openPath: async (path: string) => {
       env.opened.push(path)
       return ''
+    },
+    showItemInFolder: (path: string) => {
+      env.revealed.push(path)
     }
   }
 }))
@@ -142,6 +146,7 @@ beforeEach(async () => {
   for (const dir of [env.userData, env.downloads, root, outside]) mkdirSync(dir, { recursive: true })
   env.trashed.length = 0
   env.opened.length = 0
+  env.revealed.length = 0
   env.pickResult = { canceled: true, filePaths: [] }
   writeSettings([root])
   h = harness()
@@ -531,5 +536,100 @@ describe('设置 IPC', () => {
     expect(env.opened).toEqual([root])
     const bad = await call<{ ok: boolean; error?: string }>('openRoot', outside)
     expect(bad.ok).toBe(false)
+  })
+})
+
+describe('浏览面板的 IPC 面(与 MCP 工具共用同一套语义)', () => {
+  it('list:列目录;白名单外被拒', async () => {
+    writeFileSync(at('a.txt'), 'a', 'utf-8')
+    mkdirSync(at('sub'))
+    const listed = await call<{ ok: boolean; path: string; entries: Array<{ name: string; type: string }> }>(
+      'list',
+      root,
+      { limit: 50 }
+    )
+    expect(listed.ok).toBe(true)
+    expect(listed.path).toBe(root)
+    expect(listed.entries.map((e) => `${e.type}:${e.name}`)).toEqual(['dir:sub', 'file:a.txt'])
+
+    const outsideRes = await call<{ ok: boolean; error?: string }>('list', outside, {})
+    expect(outsideRes.ok).toBe(false)
+  })
+
+  it('readText:读文本;二进制与目录被拒', async () => {
+    writeFileSync(at('a.txt'), '内容', 'utf-8')
+    const text = await call<{ ok: boolean; text?: string }>('readText', at('a.txt'))
+    expect(text).toMatchObject({ ok: true, text: '内容' })
+
+    writeFileSync(at('bin.dat'), Buffer.from([0, 1, 2]))
+    expect((await call<{ ok: boolean }>('readText', at('bin.dat'))).ok).toBe(false)
+    mkdirSync(at('sub'))
+    expect((await call<{ ok: boolean }>('readText', at('sub'))).ok).toBe(false)
+  })
+
+  it('mkdir / rename:重命名撞名或名字带分隔符都被拒', async () => {
+    const made = await call<{ ok: boolean; created?: boolean }>('mkdir', at('新目录'))
+    expect(made).toMatchObject({ ok: true, created: true })
+
+    writeFileSync(at('a.txt'), 'a', 'utf-8')
+    const renamed = await call<{ ok: boolean; path?: string }>('rename', at('a.txt'), 'b.txt')
+    expect(renamed).toMatchObject({ ok: true, path: at('b.txt') })
+    expect(existsSync(at('b.txt'))).toBe(true)
+
+    writeFileSync(at('c.txt'), 'c', 'utf-8')
+    const clash = await call<{ ok: boolean; error?: string }>('rename', at('c.txt'), 'b.txt')
+    expect(clash.ok).toBe(false)
+    expect(clash.error).toContain('拒绝覆盖')
+
+    for (const bad of ['../x', 'a/b', 'a\\b', '', '  ', '.', '..']) {
+      const res = await call<{ ok: boolean }>('rename', at('c.txt'), bad)
+      expect(res.ok, `应拒绝名字:${JSON.stringify(bad)}`).toBe(false)
+    }
+    expect(existsSync(at('c.txt'))).toBe(true)
+  })
+
+  it('move / copy:目标是已存在的目录时放进去', async () => {
+    mkdirSync(at('dest'))
+    writeFileSync(at('a.txt'), 'a', 'utf-8')
+    const moved = await call<{ ok: boolean; path?: string; intoDir?: boolean }>('move', at('a.txt'), at('dest'))
+    expect(moved).toMatchObject({ ok: true, path: at('dest', 'a.txt'), intoDir: true })
+
+    const copied = await call<{ ok: boolean; path?: string }>('copy', at('dest', 'a.txt'), at('copy.txt'))
+    expect(copied).toMatchObject({ ok: true, path: at('copy.txt') })
+    expect(existsSync(at('dest', 'a.txt'))).toBe(true)
+    expect((await call<{ ok: boolean }>('move', root, at('dest'))).ok).toBe(false)
+  })
+
+  it('remove:批量删,一条越界不影响其余(逐条报)', async () => {
+    writeFileSync(at('a.txt'), 'a', 'utf-8')
+    writeFileSync(at('b.txt'), 'b', 'utf-8')
+    writeFileSync(join(outside, 'c.txt'), 'c', 'utf-8')
+    const result = await call<{ ok: boolean; deleted: string[]; failed: Array<{ path: string; error: string }> }>(
+      'remove',
+      [at('a.txt'), join(outside, 'c.txt'), at('b.txt')]
+    )
+    expect(result.deleted).toEqual([at('a.txt'), at('b.txt')])
+    expect(result.failed).toHaveLength(1)
+    expect(result.failed[0]?.path).toBe(join(outside, 'c.txt'))
+    expect(result.ok).toBe(false)
+    expect(env.trashed).toEqual([at('a.txt'), at('b.txt')])
+    expect(existsSync(join(outside, 'c.txt'))).toBe(true)
+  })
+
+  it('pickDirectory:取消 vs 选中;openPath / showInFolder 都过 guard', async () => {
+    expect(await call<{ canceled?: boolean }>('pickDirectory', root)).toMatchObject({ canceled: true })
+
+    env.pickResult = { canceled: false, filePaths: [at('dest')] }
+    expect(await call<{ path?: string }>('pickDirectory', root)).toMatchObject({ path: at('dest') })
+
+    writeFileSync(at('a.txt'), 'a', 'utf-8')
+    expect(await call<{ ok: boolean }>('openPath', at('a.txt'))).toMatchObject({ ok: true })
+    expect(env.opened).toEqual([at('a.txt')])
+    expect(await call<{ ok: boolean }>('showInFolder', at('a.txt'))).toMatchObject({ ok: true })
+    expect(env.revealed).toEqual([at('a.txt')])
+
+    expect((await call<{ ok: boolean }>('openPath', join(outside, 'x'))).ok).toBe(false)
+    expect((await call<{ ok: boolean }>('showInFolder', env.userData)).ok).toBe(false)
+    expect(env.opened).toHaveLength(1)
   })
 })

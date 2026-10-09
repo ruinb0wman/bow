@@ -4,21 +4,32 @@
 
 > ## 实施状态(2026-10-09)
 >
-> **已做(保守切法,全程零 CDP)**:步骤 0~2
-> - `src/plugins/files/`(main / shared / ui / ui/FilesSettings.vue)、`src/main/plugins/fileRoots.ts`(核心策略)、
->   `builtin.ts` + `registry.ts` 登记、`MCP_INSTRUCTIONS` 加「本地文件」一节、README / ARCHITECTURE / bow-browser SKILL 同步。
-> - 9 个 `browser_fs_*` 工具 + 设置页「文件管理」分区(工作目录白名单 / 允许永久删除)。
-> - 测试:+3 文件 84 用例(`filesShared` 19 / `fileRoots` 26 / `filesPlugin` 39);全量 **67 文件 / 1303 用例** 绿,`typecheck` / `build` 绿。
-> - **真机已验证**:隔离实例(`--user-data-dir=…`)+ 真 MCP HTTP 端点,**18/18** 通过(写 / 拒覆盖 / 原子写不留 `.tmp`、
->   白名单外与 bow 数据目录被拒、mkdir / move(进目录)/ copy / list(glob + recursive)/ info、回收站删除、
->   permanent 开关、工作目录本身不许删);工具面共 48 个。
+> **已做**
+> - **步骤 0~2**(保守切法,全程零 CDP):`src/plugins/files/`(main / shared / ui / ui/FilesSettings.vue)、
+>   `src/main/plugins/fileRoots.ts`(核心策略)、`builtin.ts` + `registry.ts` 登记、`MCP_INSTRUCTIONS` 加「本地文件」一节。
+> - **步骤 3(浏览面板,也零 CDP)**:`ui/FilesPanel.vue`(工具栏按钮 + `plugin:files:panel`;roots 下拉 / 面包屑 /
+>   新建目录 / 重命名 / 移动到… / 复制到… / 删除 / 打开 / 显示位置 / 文本预览)与 `ui/FilesButton.vue`;
+>   `main.ts` 重构成**操作层 + 工具层 + IPC 层**三层 —— 面板与 9 个工具共用同一套操作与 guard(语义只有一份)。
+> - 文档同步:README / ARCHITECTURE(§1 §5.8 §6.2 §8 §13)/ bow-browser SKILL。
+> - 测试:+3 文件 **90** 用例(`filesShared` 19 / `fileRoots` 26 / `filesPlugin` 45);全量 **67 文件 / 1309 用例** 绿,
+>   `typecheck` / `build` 绿。
+> - **真机验证两轮**(都用隔离实例 `--user-data-dir=…` + 真 MCP HTTP 端点):
+>   - **工具面 18/18**:写 / 拒覆盖 / 原子写不留 `.tmp` / 白名单外与 bow 数据目录被拒 / mkdir /
+>     move 进目录 / copy / list(glob+recursive)/ info / 回收站删除 / permanent 开关 / 工作目录本身不许删;
+>   - **面板 17/17**(CDP 驱动真窗口:点工具栏按钮 → 读 overlay DOM → 真点一遍):roots 下拉、面包屑、
+>     「目录在前」的列表、大小/时间列、7 个工具按钮、提示文案、点文件名出预览、新建目录落盘、重命名落盘、
+>     删除两步确认 + 真的进回收站;并截了一张面板图核对排版(见下面的字体说明)。
 >
-> **未做**:步骤 3(浏览面板)、4/5(`browser_upload` + 接管网站文件选择框)、6(堵 `browser_download.saveDir`)。
+> **未做**:步骤 4/5(`browser_upload` + 接管网站文件选择框)、6(堵 `browser_download.saveDir`)。
 > ⇒ **`browser_download {url, saveDir}` 仍是不受白名单约束的写盘旁路**,见 §3.7。
 >
 > **实施中改掉的一处设计**:`browser_fs_roots` 与 `getSettings` 报的 roots 改成取 `resolveFileRoots()`
 > (**guard 真正放行的那份**,每次现读磁盘)而不是内存 store —— 真机验证时发现这两者一旦不同步
 > (有人手改 `files-settings.json`),AI 看到的清单就会与守卫不一致(已有回归用例看住)。
+>
+> **验证环境的一个坑(不是 bug)**:本仓库的 WSL2 开发副本里 `/usr/share/fonts` 只有 Adwaita / gnu-free,
+> **一个 CJK 字体都没有** —— 所以 CDP 截图里中文全是豆腐块(整台机任何程序都如此),而 DOM 断言里的文案是对的。
+> 排版已通过截图核对;字形渲染只能在你真用 bow 的那台上看(bow 实际跑在 Windows,字体栈里有 'Microsoft YaHei')。
 
 ## 1. 目标与假设
 

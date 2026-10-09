@@ -1,6 +1,13 @@
 /**
  * 文件管理插件主进程侧:**唯一接触 electron 与 node:fs 的地方**。
  *
+ * 三层,职责不要混:
+ * 1. **操作层**(本文件里那些 `listDir` / `writeTextFile` / `deletePath`…):只接受**已经过 guard 的**绝对路径,
+ *    返回 `{ok:...}` 结果对象(不抛、不拼 MCP 返回体)。MCP 工具与浏览面板 IPC **共用同一套** ——
+ *    语义只能有一份,否则面板点删除与 AI 调工具会走出两种行为;
+ * 2. **MCP 工具层**:校验入参类型(插件工具的 schema **不做 strict 校验**,ARCHITECTURE §6.2)→ guard → 调操作层;
+ * 3. **IPC 层**:给设置页与浏览面板用(面板要的是数据,不要 `{content:[{text}]}` 那种 MCP 包装)。
+ *
  * 三条纪律(改代码前先看):
  * 1. **每个入参路径都先过 `checkFilePath()`**(核心的 `src/main/plugins/fileRoots.ts`)——
  *    它做白名单 + realpath + deny 名单(userData),拿到返回的 `abs` 才能碰盘。不做路径拼接猜测。
@@ -9,9 +16,8 @@
  * 3. **写文件默认不覆盖**:目标已存在且没显式 `overwrite:true` 就直接拒。
  *    这条是从笔记插件学来的(`expectMissing`:一次静默覆盖把用户整页笔记清空过,ARCHITECTURE:575)。
  *
- * 明确的**非目标**(本次不做,见 `.pi/plans/2026-10-09-file-manager-plugin/plan.md`):
- * 浏览面板(步骤 3)、网站文件选择器接管与 `browser_upload`(步骤 4/5,需要 CDP + 常挂标签调试器)。
- * 所以本插件现在只贡献设置页与 9 个 MCP 工具:没有工具栏按钮、没有浮层。
+ * 明确的**非目标**(见 `.pi/plans/2026-10-09-file-manager-plugin/plan.md`):
+ * 网站文件选择器接管与 `browser_upload`(步骤 4/5,需要 CDP + 常挂标签调试器)还没做。
  */
 
 import { BrowserWindow, dialog, shell } from 'electron'
@@ -29,7 +35,8 @@ import {
   isSamePath,
   realpathDeepest,
   resolveFileRoots,
-  sanitizeRoots
+  sanitizeRoots,
+  type PathCheck
 } from '../../main/plugins/fileRoots'
 import { resolveDownloadsDir } from '../../main/plugins/exportFile'
 import {
@@ -37,6 +44,7 @@ import {
   DEFAULT_READ_MAX_BYTES,
   FILES_EVENT,
   MAX_LIST_DEPTH,
+  PANEL_LIST_LIMIT,
   READ_MAX_BYTES_LIMIT,
   clampListLimit,
   isHiddenName,
@@ -44,10 +52,18 @@ import {
   normalizeFilesSettings,
   sortEntries,
   type FilesActionResult,
+  type FilesDeleteManyResult,
+  type FilesDeleteResult,
+  type FilesInfoResult,
   type FilesListResult,
+  type FilesMoveResult,
+  type FilesNewResult,
+  type FilesPickDirResult,
+  type FilesReadResult,
   type FilesRootView,
   type FilesSettings,
   type FilesSettingsState,
+  type FilesWriteResult,
   type FsEntry,
   type FsEntryType
 } from './shared'
@@ -197,6 +213,17 @@ function trimPartialUtf8(buf: Buffer): Buffer {
   return buf.subarray(0, end)
 }
 
+/** 名字里不能有这些东西(面板的「重命名」用;路径分隔符会把操作变成移动) */
+function checkEntryName(raw: unknown): { ok: true; name: string } | { ok: false; error: string } {
+  const name = typeof raw === 'string' ? raw.trim() : ''
+  if (!name) return { ok: false, error: '名字不能为空' }
+  if (name === '.' || name === '..') return { ok: false, error: '这个名字不合法' }
+  if (name.includes('/') || name.includes('\\')) return { ok: false, error: '名字里不能带路径分隔符' }
+  if (name.includes('\0')) return { ok: false, error: '名字里不能带 NUL 字符' }
+  if (name.length > 255) return { ok: false, error: '名字太长(超过 255 个字符)' }
+  return { ok: true, name }
+}
+
 export default {
   manifest,
   capabilities: ['ui', 'mcp'],
@@ -238,7 +265,257 @@ export default {
       return state
     }
 
-    // ---------- IPC(设置页用;本次**不**给渲染层任何 fs 操作面)----------
+    // ---------- 操作层:全部只接受**已 guard 的**绝对路径,返回结果对象(不抛) ----------
+
+    async function listDir(
+      abs: string,
+      opts: { glob?: string; recursive?: boolean; limit?: number; showHidden?: boolean } = {}
+    ): Promise<FilesListResult> {
+      let stat
+      try {
+        stat = await fsp.stat(abs)
+      } catch (e) {
+        return { ok: false, error: describeError(e) }
+      }
+      if (!stat.isDirectory()) return { ok: false, error: `不是目录:${abs}(要读文件用 browser_fs_read)` }
+      const limit = Math.min(MAX_LIST_LIMIT, clampListLimit(opts.limit ?? settings().listLimit))
+      try {
+        const { entries, truncated } = await listDirectory(abs, {
+          glob: opts.glob ?? '',
+          recursive: opts.recursive === true,
+          limit,
+          showHidden: opts.showHidden === true
+        })
+        return { ok: true, path: abs, entries, truncated, count: entries.length }
+      } catch (e) {
+        return { ok: false, error: describeError(e) }
+      }
+    }
+
+    async function infoPath(abs: string): Promise<FilesInfoResult> {
+      try {
+        const st = await fsp.lstat(abs)
+        const type: FsEntryType = st.isSymbolicLink()
+          ? 'symlink'
+          : st.isDirectory()
+            ? 'dir'
+            : st.isFile()
+              ? 'file'
+              : 'other'
+        return {
+          ok: true,
+          path: abs,
+          exists: true,
+          type,
+          size: st.isFile() ? st.size : 0,
+          mtimeMs: st.mtimeMs,
+          isRoot: isRootPath(abs)
+        }
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { ok: true, path: abs, exists: false }
+        return { ok: false, error: describeError(e) }
+      }
+    }
+
+    async function readTextFile(abs: string, maxBytes: number): Promise<FilesReadResult> {
+      const cap = Math.min(MAX_READ_BYTES, Math.max(1, Math.floor(maxBytes) || DEFAULT_READ_MAX_BYTES))
+      try {
+        const st = await fsp.stat(abs)
+        if (st.isDirectory()) return { ok: false, error: `是目录不是文件:${abs}(用 browser_fs_list)` }
+        if (!st.isFile()) return { ok: false, error: `不是普通文件,不读:${abs}` }
+        const handle = await fsp.open(abs, 'r')
+        try {
+          const buf = Buffer.alloc(Math.min(cap, st.size))
+          const { bytesRead } = await handle.read(buf, 0, buf.length, 0)
+          const slice = buf.subarray(0, bytesRead)
+          if (slice.includes(0)) return { ok: false, error: `看起来是二进制文件(含 NUL 字节),不读:${abs}` }
+          const truncated = st.size > bytesRead
+          return {
+            ok: true,
+            path: abs,
+            size: st.size,
+            mtimeMs: st.mtimeMs,
+            truncated,
+            text: (truncated ? trimPartialUtf8(slice) : slice).toString('utf8')
+          }
+        } finally {
+          await handle.close()
+        }
+      } catch (e) {
+        return { ok: false, error: describeError(e) }
+      }
+    }
+
+    async function writeTextFile(
+      abs: string,
+      content: string,
+      opts: { overwrite?: boolean; createDirs?: boolean } = {}
+    ): Promise<FilesWriteResult> {
+      const overwrite = opts.overwrite === true
+      const createDirs = opts.createDirs !== false
+      try {
+        const existing = await fsp.lstat(abs).catch(() => null)
+        if (existing) {
+          if (existing.isDirectory()) return { ok: false, error: `目标是一个目录:${abs}` }
+          if (!overwrite) {
+            return {
+              ok: false,
+              error: `文件已存在,拒绝覆盖:${abs}(确认要覆盖就传 overwrite:true;想改名请用 browser_fs_move)`
+            }
+          }
+        }
+        if (createDirs) {
+          await fsp.mkdir(dirname(abs), { recursive: true })
+        } else {
+          const parent = await fsp.stat(dirname(abs)).catch(() => null)
+          if (!parent) return { ok: false, error: `父目录不存在:${dirname(abs)}(可传 createDirs:true)` }
+        }
+        await writeFileAtomic(abs, content)
+        const st = await fsp.lstat(abs)
+        return {
+          ok: true,
+          path: abs,
+          bytes: Buffer.byteLength(content, 'utf8'),
+          size: st.size,
+          overwrote: existing !== null
+        }
+      } catch (e) {
+        return { ok: false, error: describeError(e) }
+      }
+    }
+
+    async function makeDir(abs: string, recursive = true): Promise<FilesNewResult> {
+      try {
+        const existing = await fsp.stat(abs).catch(() => null)
+        if (existing?.isDirectory()) return { ok: true, path: abs, created: false }
+        if (existing) return { ok: false, error: `同名路径已存在且不是目录:${abs}` }
+        await fsp.mkdir(abs, { recursive })
+        return { ok: true, path: abs, created: true }
+      } catch (e) {
+        return { ok: false, error: describeError(e) }
+      }
+    }
+
+    /** 移动 / 重命名(两端都必须是已 guard 的绝对路径) */
+    async function movePath(fromAbs: string, toAbs: string, overwrite = false): Promise<FilesMoveResult> {
+      try {
+        const source = await fsp.lstat(fromAbs).catch(() => null)
+        if (!source) return { ok: false, error: `源路径不存在:${fromAbs}` }
+        if (isRootPath(fromAbs)) return { ok: false, error: `不许移动工作目录本身:${fromAbs}` }
+
+        const { dest, intoDir } = await resolveDestination(toAbs, fromAbs)
+        const destCheck = checkFilePath(dest)
+        if (!destCheck.ok) return { ok: false, error: `to:${destCheck.error}` }
+        const target = destCheck.abs
+        if (isInside(fromAbs, target)) {
+          return { ok: false, error: `不许把目录移动到它自己里面:${fromAbs} → ${target}` }
+        }
+        const existing = await fsp.lstat(target).catch(() => null)
+        if (existing && !overwrite) {
+          return { ok: false, error: `目标已存在,拒绝覆盖:${target}(确认要覆盖就传 overwrite:true)` }
+        }
+        if (existing?.isDirectory() && source.isDirectory()) {
+          return { ok: false, error: `目标是一个已存在的目录:${target}(想放进去请把 to 指到它里面)` }
+        }
+        try {
+          await fsp.rename(fromAbs, target)
+        } catch (e) {
+          // 只有跨卷(rename 做不到)才回落成 copy + unlink。别的错误码(EPERM 被占 / EACCES 没权限)
+          // 直接报出去 —— 那种情况下 copy 也会失败,而半拷贝状态比报错更难收拾
+          if ((e as NodeJS.ErrnoException).code !== 'EXDEV') throw e
+          ctx.log('跨卷移动,回落为复制 + 删除', fromAbs, target)
+          await fsp.cp(fromAbs, target, { recursive: true, force: overwrite, errorOnExist: !overwrite })
+          await fsp.rm(fromAbs, { recursive: true, force: true })
+        }
+        return { ok: true, path: target, from: fromAbs, intoDir }
+      } catch (e) {
+        return { ok: false, error: describeError(e) }
+      }
+    }
+
+    /** 面板的「重命名」= 同一个目录里换个名字(带分隔符的名字会被 `checkEntryName` 拒掉) */
+    async function renameEntry(abs: string, rawName: unknown): Promise<FilesMoveResult> {
+      const named = checkEntryName(rawName)
+      if (!named.ok) return { ok: false, error: named.error }
+      const target = join(dirname(abs), named.name)
+      if (isSamePath(abs, target)) return { ok: true, path: abs, from: abs, intoDir: false }
+      const check = checkFilePath(target)
+      if (!check.ok) return { ok: false, error: check.error }
+      return movePath(abs, check.abs, false)
+    }
+
+    async function copyPath(
+      fromAbs: string,
+      toAbs: string,
+      opts: { overwrite?: boolean; recursive?: boolean } = {}
+    ): Promise<FilesMoveResult> {
+      const overwrite = opts.overwrite === true
+      const recursive = opts.recursive === true
+      try {
+        const source = await fsp.lstat(fromAbs).catch(() => null)
+        if (!source) return { ok: false, error: `源路径不存在:${fromAbs}` }
+        if (source.isDirectory() && !recursive) {
+          return { ok: false, error: `源是目录,复制目录要传 recursive:true:${fromAbs}` }
+        }
+        const { dest, intoDir } = await resolveDestination(toAbs, fromAbs)
+        const destCheck = checkFilePath(dest)
+        if (!destCheck.ok) return { ok: false, error: `to:${destCheck.error}` }
+        const target = destCheck.abs
+        if (isInside(fromAbs, target)) {
+          return { ok: false, error: `不许把目录复制到它自己里面:${fromAbs} → ${target}` }
+        }
+        const existing = await fsp.lstat(target).catch(() => null)
+        if (existing && !overwrite) {
+          return { ok: false, error: `目标已存在,拒绝覆盖:${target}(确认要覆盖就传 overwrite:true)` }
+        }
+        await fsp.cp(fromAbs, target, { recursive, force: overwrite, errorOnExist: !overwrite })
+        return { ok: true, path: target, from: fromAbs, intoDir }
+      } catch (e) {
+        return { ok: false, error: describeError(e) }
+      }
+    }
+
+    async function deletePath(
+      abs: string,
+      opts: { recursive?: boolean; permanent?: boolean } = {}
+    ): Promise<FilesDeleteResult> {
+      const recursive = opts.recursive === true
+      const permanent = opts.permanent === true
+      try {
+        const st = await fsp.lstat(abs).catch(() => null)
+        if (!st) return { ok: false, error: `路径不存在:${abs}` }
+        if (isRootPath(abs)) return { ok: false, error: `不许删除工作目录本身:${abs}` }
+        if (st.isDirectory() && !recursive) {
+          return { ok: false, error: `是目录,删目录要传 recursive:true:${abs}` }
+        }
+        if (permanent) {
+          if (!settings().allowPermanentDelete) {
+            return {
+              ok: false,
+              error:
+                '永久删除已被关闭:请让用户在 bow://settings 的「文件管理」里打开「允许永久删除」,或改用默认的回收站删除'
+            }
+          }
+          await fsp.rm(abs, { recursive, force: false })
+          ctx.log('永久删除', abs)
+          return { ok: true, path: abs, permanent: true }
+        }
+        try {
+          await shell.trashItem(abs)
+        } catch (e) {
+          return {
+            ok: false,
+            error: `移到回收站失败:${describeError(e)}(没有降级为永久删除;若确实要真删,请在设置页打开「允许永久删除」后传 permanent:true)`
+          }
+        }
+        ctx.log('移入回收站', abs)
+        return { ok: true, path: abs, permanent: false, trashed: true }
+      } catch (e) {
+        return { ok: false, error: describeError(e) }
+      }
+    }
+
+    // ---------- IPC ----------
 
     ctx.ipc.handle('getSettings', (): FilesSettingsState => settingsState())
 
@@ -279,10 +556,119 @@ export default {
       return err ? { ok: false, error: err } : { ok: true, path: check.abs }
     })
 
+    // ---- 下面是浏览面板的面(全部走同一个 guard;渲染层拿不到白名单外的任何东西)----
+
+    ctx.ipc.handle('list', async (path: unknown, opts: unknown): Promise<FilesListResult> => {
+      const check = checkFilePath(path)
+      if (!check.ok) return { ok: false, error: check.error }
+      const raw = (opts && typeof opts === 'object' ? opts : {}) as Record<string, unknown>
+      return listDir(check.abs, {
+        glob: typeof raw.glob === 'string' ? raw.glob : '',
+        recursive: raw.recursive === true,
+        limit: clampListLimit(raw.limit ?? PANEL_LIST_LIMIT),
+        showHidden: raw.showHidden === true
+      })
+    })
+
+    ctx.ipc.handle('readText', async (path: unknown): Promise<FilesReadResult> => {
+      const check = checkFilePath(path)
+      if (!check.ok) return { ok: false, error: check.error }
+      return readTextFile(check.abs, DEFAULT_READ_MAX_BYTES)
+    })
+
+    ctx.ipc.handle('mkdir', async (path: unknown): Promise<FilesNewResult> => {
+      const check = checkFilePath(path)
+      if (!check.ok) return { ok: false, error: check.error }
+      return makeDir(check.abs, true)
+    })
+
+    ctx.ipc.handle('rename', async (path: unknown, name: unknown): Promise<FilesMoveResult> => {
+      const check = checkFilePath(path)
+      if (!check.ok) return { ok: false, error: check.error }
+      return renameEntry(check.abs, name)
+    })
+
+    ctx.ipc.handle(
+      'move',
+      async (from: unknown, to: unknown, overwrite: unknown): Promise<FilesMoveResult> => {
+        const src = checkFilePath(from)
+        if (!src.ok) return { ok: false, error: src.error }
+        const dest = checkFilePath(to)
+        if (!dest.ok) return { ok: false, error: dest.error }
+        if (isSamePath(src.abs, dest.abs)) return { ok: false, error: '源与目标相同' }
+        return movePath(src.abs, dest.abs, overwrite === true)
+      }
+    )
+
+    ctx.ipc.handle(
+      'copy',
+      async (from: unknown, to: unknown, overwrite: unknown): Promise<FilesMoveResult> => {
+        const src = checkFilePath(from)
+        if (!src.ok) return { ok: false, error: src.error }
+        const dest = checkFilePath(to)
+        if (!dest.ok) return { ok: false, error: dest.error }
+        if (isSamePath(src.abs, dest.abs)) return { ok: false, error: '源与目标相同' }
+        return copyPath(src.abs, dest.abs, { overwrite: overwrite === true, recursive: true })
+      }
+    )
+
+    ctx.ipc.handle('remove', async (paths: unknown): Promise<FilesDeleteManyResult> => {
+      const list = Array.isArray(paths) ? paths : []
+      const deleted: string[] = []
+      const failed: Array<{ path: string; error: string }> = []
+      for (const item of list) {
+        const check = checkFilePath(item)
+        if (!check.ok) {
+          failed.push({ path: typeof item === 'string' ? item : String(item), error: check.error })
+          continue
+        }
+        const result = await deletePath(check.abs, { recursive: true })
+        if (result.ok) deleted.push(check.abs)
+        else failed.push({ path: check.abs, error: result.error ?? '删除失败' })
+      }
+      return { ok: failed.length === 0, deleted, failed }
+    })
+
+    ctx.ipc.handle('pickDirectory', async (start: unknown): Promise<FilesPickDirResult> => {
+      const check = checkFilePath(start)
+      const fallback = check.ok ? check.abs : resolveFileRoots()[0]
+      const options: OpenDialogOptions = {
+        title: '选择目标目录',
+        properties: ['openDirectory'],
+        ...(fallback ? { defaultPath: fallback } : {})
+      }
+      const parent = BrowserWindow.getFocusedWindow()
+      const result = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options)
+      if (result.canceled || result.filePaths.length === 0) return { canceled: true }
+      return { path: result.filePaths[0] }
+    })
+
+    ctx.ipc.handle('openPath', async (path: unknown): Promise<FilesActionResult> => {
+      const check = checkFilePath(path)
+      if (!check.ok) return { ok: false, error: check.error }
+      const err = await shell.openPath(check.abs)
+      return err ? { ok: false, error: err } : { ok: true, path: check.abs }
+    })
+
+    ctx.ipc.handle('showInFolder', (path: unknown): FilesActionResult => {
+      const check = checkFilePath(path)
+      if (!check.ok) return { ok: false, error: check.error }
+      shell.showItemInFolder(check.abs)
+      return { ok: true, path: check.abs }
+    })
+
     // ---------- MCP 工具 ----------
     // ⚠️ 插件工具的 schema **不做 strict 校验**(ARCHITECTURE §6.2),所以每个参数都要自己判类型。
 
     const str = (raw: unknown): string => (typeof raw === 'string' ? raw : '')
+
+    /** 工具层的统一收尾:结果对象 → MCP 返回体(`ok:false` 会被 mcpResult 标成 isError) */
+    const reply = (result: { ok: boolean; error?: string }): McpToolResult =>
+      result.ok ? textContent(result) : errorContent(result.error ?? '操作失败')
+
+    /** guard 失败的收尾 */
+    const guardReply = (check: PathCheck): McpToolResult | null =>
+      check.ok ? null : errorContent(check.error)
 
     ctx.mcp.tool(
       'browser_fs_roots',
@@ -321,29 +707,16 @@ export default {
       async (args): Promise<McpToolResult> => {
         const target = str(args.path).trim() || resolveFileRoots()[0] || ''
         const check = checkFilePath(target)
-        if (!check.ok) return errorContent(check.error)
-
-        let stat
-        try {
-          stat = await fsp.stat(check.abs)
-        } catch (e) {
-          return errorContent(describeError(e))
-        }
-        if (!stat.isDirectory()) return errorContent(`不是目录:${check.abs}(用 browser_fs_read 读文件)`)
-
-        const limit = Math.min(MAX_LIST_LIMIT, clampListLimit(args.limit ?? settings().listLimit))
-        try {
-          const { entries, truncated } = await listDirectory(check.abs, {
+        const failed = guardReply(check)
+        if (failed || !check.ok) return failed ?? errorContent('路径校验失败')
+        return reply(
+          await listDir(check.abs, {
             glob: str(args.glob),
             recursive: args.recursive === true,
-            limit,
+            limit: args.limit === undefined ? undefined : clampListLimit(args.limit),
             showHidden: args.showHidden === true
           })
-          const result: FilesListResult = { ok: true, path: check.abs, entries, truncated }
-          return textContent({ ...result, count: entries.length })
-        } catch (e) {
-          return errorContent(describeError(e))
-        }
+        )
       }
     )
 
@@ -355,31 +728,9 @@ export default {
       },
       async (args): Promise<McpToolResult> => {
         const check = checkFilePath(args.path)
-        if (!check.ok) return errorContent(check.error)
-        try {
-          const st = await fsp.lstat(check.abs)
-          const type: FsEntryType = st.isSymbolicLink()
-            ? 'symlink'
-            : st.isDirectory()
-              ? 'dir'
-              : st.isFile()
-                ? 'file'
-                : 'other'
-          return textContent({
-            ok: true,
-            path: check.abs,
-            exists: true,
-            type,
-            size: st.isFile() ? st.size : 0,
-            mtimeMs: st.mtimeMs,
-            isRoot: isRootPath(check.abs)
-          })
-        } catch (e) {
-          if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
-            return textContent({ ok: true, path: check.abs, exists: false })
-          }
-          return errorContent(describeError(e))
-        }
+        const failed = guardReply(check)
+        if (failed || !check.ok) return failed ?? errorContent('路径校验失败')
+        return reply(await infoPath(check.abs))
       }
     )
 
@@ -395,36 +746,10 @@ export default {
       },
       async (args): Promise<McpToolResult> => {
         const check = checkFilePath(args.path)
-        if (!check.ok) return errorContent(check.error)
-        const maxBytes = Math.min(
-          MAX_READ_BYTES,
-          Math.max(1, Math.floor(Number(args.maxBytes) || DEFAULT_READ_MAX_BYTES))
-        )
-        try {
-          const st = await fsp.stat(check.abs)
-          if (st.isDirectory()) return errorContent(`是目录不是文件:${check.abs}(用 browser_fs_list)`)
-          if (!st.isFile()) return errorContent(`不是普通文件,不读:${check.abs}`)
-          const handle = await fsp.open(check.abs, 'r')
-          try {
-            const buf = Buffer.alloc(Math.min(maxBytes, st.size))
-            const { bytesRead } = await handle.read(buf, 0, buf.length, 0)
-            const slice = buf.subarray(0, bytesRead)
-            if (slice.includes(0)) return errorContent(`看起来是二进制文件(含 NUL 字节),不读:${check.abs}`)
-            const truncated = st.size > bytesRead
-            return textContent({
-              ok: true,
-              path: check.abs,
-              size: st.size,
-              mtimeMs: st.mtimeMs,
-              truncated,
-              text: (truncated ? trimPartialUtf8(slice) : slice).toString('utf8')
-            })
-          } finally {
-            await handle.close()
-          }
-        } catch (e) {
-          return errorContent(describeError(e))
-        }
+        const failed = guardReply(check)
+        if (failed || !check.ok) return failed ?? errorContent('路径校验失败')
+        const maxBytes = args.maxBytes === undefined ? DEFAULT_READ_MAX_BYTES : Number(args.maxBytes)
+        return reply(await readTextFile(check.abs, maxBytes))
       }
     )
 
@@ -442,39 +767,15 @@ export default {
       },
       async (args): Promise<McpToolResult> => {
         const check = checkFilePath(args.path)
-        if (!check.ok) return errorContent(check.error)
+        const failed = guardReply(check)
+        if (failed || !check.ok) return failed ?? errorContent('路径校验失败')
         if (typeof args.content !== 'string') return errorContent('content 必须是字符串')
-        const content = args.content
-        const overwrite = args.overwrite === true
-        const createDirs = args.createDirs !== false
-        try {
-          const existing = await fsp.lstat(check.abs).catch(() => null)
-          if (existing) {
-            if (existing.isDirectory()) return errorContent(`目标是一个目录:${check.abs}`)
-            if (!overwrite) {
-              return errorContent(
-                `文件已存在,拒绝覆盖:${check.abs}(确认要覆盖就传 overwrite:true;想改名请用 browser_fs_move)`
-              )
-            }
-          }
-          if (createDirs) {
-            await fsp.mkdir(dirname(check.abs), { recursive: true })
-          } else {
-            const parent = await fsp.stat(dirname(check.abs)).catch(() => null)
-            if (!parent) return errorContent(`父目录不存在:${dirname(check.abs)}(可传 createDirs:true)`)
-          }
-          await writeFileAtomic(check.abs, content)
-          const st = await fsp.lstat(check.abs)
-          return textContent({
-            ok: true,
-            path: check.abs,
-            bytes: Buffer.byteLength(content, 'utf8'),
-            size: st.size,
-            overwrote: existing !== null
+        return reply(
+          await writeTextFile(check.abs, args.content, {
+            overwrite: args.overwrite === true,
+            createDirs: args.createDirs !== false
           })
-        } catch (e) {
-          return errorContent(describeError(e))
-        }
+        )
       }
     )
 
@@ -489,16 +790,9 @@ export default {
       },
       async (args): Promise<McpToolResult> => {
         const check = checkFilePath(args.path)
-        if (!check.ok) return errorContent(check.error)
-        try {
-          const existing = await fsp.stat(check.abs).catch(() => null)
-          if (existing?.isDirectory()) return textContent({ ok: true, path: check.abs, created: false })
-          if (existing) return errorContent(`同名路径已存在且不是目录:${check.abs}`)
-          await fsp.mkdir(check.abs, { recursive: args.recursive !== false })
-          return textContent({ ok: true, path: check.abs, created: true })
-        } catch (e) {
-          return errorContent(describeError(e))
-        }
+        const failed = guardReply(check)
+        if (failed || !check.ok) return failed ?? errorContent('路径校验失败')
+        return reply(await makeDir(check.abs, args.recursive !== false))
       }
     )
 
@@ -519,41 +813,7 @@ export default {
         const to = checkFilePath(args.to)
         if (!to.ok) return errorContent(`to:${to.error}`)
         if (isSamePath(from.abs, to.abs)) return errorContent('源与目标相同')
-
-        const overwrite = args.overwrite === true
-        try {
-          const source = await fsp.lstat(from.abs).catch(() => null)
-          if (!source) return errorContent(`源路径不存在:${from.abs}`)
-          if (isRootPath(from.abs)) return errorContent(`不许移动工作目录本身:${from.abs}`)
-
-          const { dest, intoDir } = await resolveDestination(to.abs, from.abs)
-          const destCheck = checkFilePath(dest)
-          if (!destCheck.ok) return errorContent(`to:${destCheck.error}`)
-          const target = destCheck.abs
-          if (isInside(from.abs, target)) return errorContent(`不许把目录移动到它自己里面:${from.abs} → ${target}`)
-
-          const existing = await fsp.lstat(target).catch(() => null)
-          if (existing && !overwrite) {
-            return errorContent(`目标已存在,拒绝覆盖:${target}(确认要覆盖就传 overwrite:true)`)
-          }
-          if (existing?.isDirectory() && source.isDirectory()) {
-            return errorContent(`目标是一个已存在的目录:${target}(想放进去请把 to 指到它里面)`)
-          }
-          try {
-            await fsp.rename(from.abs, target)
-          } catch (e) {
-            // 只有跨卷(rename 做不到)才回落成 copy + unlink。别的错误码(EPERM 被占 / EACCES 没权限)
-            // 直接报出去 —— 那种情况下 copy 也会失败,而半拷贝状态比报错更难收拾
-            if ((e as NodeJS.ErrnoException).code !== 'EXDEV') throw e
-            ctx.log('跨卷移动,回落为复制 + 删除', from.abs, target)
-            await fsp.cp(from.abs, target, { recursive: true, force: overwrite, errorOnExist: !overwrite })
-            await fsp.rm(from.abs, { recursive: true, force: true })
-          }
-          const result: FilesActionResult = { ok: true, path: target }
-          return textContent({ ...result, from: from.abs, intoDir })
-        } catch (e) {
-          return errorContent(describeError(e))
-        }
+        return reply(await movePath(from.abs, to.abs, args.overwrite === true))
       }
     )
 
@@ -575,31 +835,9 @@ export default {
         const to = checkFilePath(args.to)
         if (!to.ok) return errorContent(`to:${to.error}`)
         if (isSamePath(from.abs, to.abs)) return errorContent('源与目标相同')
-
-        const overwrite = args.overwrite === true
-        const recursive = args.recursive === true
-        try {
-          const source = await fsp.lstat(from.abs).catch(() => null)
-          if (!source) return errorContent(`源路径不存在:${from.abs}`)
-          if (source.isDirectory() && !recursive) {
-            return errorContent(`源是目录,复制目录要传 recursive:true:${from.abs}`)
-          }
-          const { dest, intoDir } = await resolveDestination(to.abs, from.abs)
-          const destCheck = checkFilePath(dest)
-          if (!destCheck.ok) return errorContent(`to:${destCheck.error}`)
-          const target = destCheck.abs
-          if (isInside(from.abs, target)) return errorContent(`不许把目录复制到它自己里面:${from.abs} → ${target}`)
-
-          const existing = await fsp.lstat(target).catch(() => null)
-          if (existing && !overwrite) {
-            return errorContent(`目标已存在,拒绝覆盖:${target}(确认要覆盖就传 overwrite:true)`)
-          }
-          await fsp.cp(from.abs, target, { recursive, force: overwrite, errorOnExist: !overwrite })
-          const result: FilesActionResult = { ok: true, path: target }
-          return textContent({ ...result, from: from.abs, intoDir })
-        } catch (e) {
-          return errorContent(describeError(e))
-        }
+        return reply(
+          await copyPath(from.abs, to.abs, { overwrite: args.overwrite === true, recursive: args.recursive === true })
+        )
       }
     )
 
@@ -616,38 +854,11 @@ export default {
       },
       async (args): Promise<McpToolResult> => {
         const check = checkFilePath(args.path)
-        if (!check.ok) return errorContent(check.error)
-        const recursive = args.recursive === true
-        const permanent = args.permanent === true
-        try {
-          const st = await fsp.lstat(check.abs).catch(() => null)
-          if (!st) return errorContent(`路径不存在:${check.abs}`)
-          if (isRootPath(check.abs)) return errorContent(`不许删除工作目录本身:${check.abs}`)
-          if (st.isDirectory() && !recursive) {
-            return errorContent(`是目录,删目录要传 recursive:true:${check.abs}`)
-          }
-          if (permanent) {
-            if (!settings().allowPermanentDelete) {
-              return errorContent(
-                '永久删除已被关闭:请让用户在 bow://settings 的「文件管理」里打开「允许永久删除」,或改用默认的回收站删除'
-              )
-            }
-            await fsp.rm(check.abs, { recursive, force: false })
-            ctx.log('永久删除', check.abs)
-            return textContent({ ok: true, path: check.abs, permanent: true })
-          }
-          try {
-            await shell.trashItem(check.abs)
-          } catch (e) {
-            return errorContent(
-              `移到回收站失败:${describeError(e)}(没有降级为永久删除;若确实要真删,请在设置页打开「允许永久删除」后传 permanent:true)`
-            )
-          }
-          ctx.log('移入回收站', check.abs)
-          return textContent({ ok: true, path: check.abs, permanent: false, trashed: true })
-        } catch (e) {
-          return errorContent(describeError(e))
-        }
+        const failed = guardReply(check)
+        if (failed || !check.ok) return failed ?? errorContent('路径校验失败')
+        return reply(
+          await deletePath(check.abs, { recursive: args.recursive === true, permanent: args.permanent === true })
+        )
       }
     )
   }

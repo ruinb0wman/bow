@@ -39,7 +39,7 @@ export const PLUGIN_UI: PluginUiContribution[] = [
  */
 export const SLOT_PLUGIN_ORDER: Record<PluginSlot, readonly string[]> = {
   'addressbar-trailing': [],
-  toolbar: ['bookmarks', 'downloads', 'mcp-http', 'terminal', 'logseq', 'passwords', 'pomo']
+  toolbar: ['bookmarks', 'downloads', 'mcp-http', 'terminal', 'logseq', 'passwords', 'pomo', 'files']
 }
 
 export function pluginUi(id: string): PluginUiContribution | undefined {

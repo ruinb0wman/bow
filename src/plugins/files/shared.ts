@@ -48,7 +48,9 @@ export const DEFAULT_FILES_SETTINGS: FilesSettings = {
 /** 插件广播事件名(经 ctx.ipc.emit) */
 export const FILES_EVENT = {
   /** 设置变更(工作目录增删 / 开关) */
-  changed: 'changed'
+  changed: 'changed',
+  /** 请工具栏按钮把面板打开(主进程不能直接开浮层;密码插件的 `open-panel` 同路子) */
+  openPanel: 'open-panel'
 } as const
 
 export type FsEntryType = 'file' | 'dir' | 'symlink' | 'other'
@@ -88,6 +90,8 @@ export interface FilesListResult {
   entries?: FsEntry[]
   /** 命中上限 / 深度上限被截断 */
   truncated?: boolean
+  /** 本次返回了多少条(`entries.length`,省得调用方再数一遍) */
+  count?: number
   error?: string
 }
 
@@ -97,6 +101,65 @@ export interface FilesActionResult {
   path?: string
   error?: string
 }
+
+export interface FilesInfoResult {
+  ok: boolean
+  path?: string
+  exists?: boolean
+  type?: FsEntryType
+  size?: number
+  mtimeMs?: number
+  isRoot?: boolean
+  error?: string
+}
+
+export interface FilesReadResult {
+  ok: boolean
+  path?: string
+  size?: number
+  mtimeMs?: number
+  truncated?: boolean
+  text?: string
+  error?: string
+}
+
+export interface FilesWriteResult extends FilesActionResult {
+  bytes?: number
+  size?: number
+  overwrote?: boolean
+}
+
+export interface FilesNewResult extends FilesActionResult {
+  /** 目录是不是这次真新建的(false = 本来就存在) */
+  created?: boolean
+}
+
+export interface FilesMoveResult extends FilesActionResult {
+  from?: string
+  /** `to` 指向的是已存在的目录,东西被放进了它里面 */
+  intoDir?: boolean
+}
+
+export interface FilesDeleteResult extends FilesActionResult {
+  permanent?: boolean
+  trashed?: boolean
+}
+
+/** 面板的批量删除结果:部分失败不算整体失败,逐条报 */
+export interface FilesDeleteManyResult {
+  ok: boolean
+  deleted: string[]
+  failed: Array<{ path: string; error: string }>
+}
+
+/** 目录选择框(「移动到…」/「复制到…」用)的结果 */
+export interface FilesPickDirResult {
+  canceled?: boolean
+  path?: string
+}
+
+/** 面板一次最多列多少条(不做分页,到上限就提示缩小范围) */
+export const PANEL_LIST_LIMIT = 500
 
 export function clampListLimit(value: unknown): number {
   const n = typeof value === 'number' ? value : Number(value)

@@ -541,7 +541,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `downloads` | — | ui, mcp | `list` `pause` `resume` `cancel` `retry` `remove` `clear` `openFile` `showInFolder` `getSettings` `setSettings` `pickDirectory` `revealDir` | `browser_list_downloads` `browser_download` | — | — | — | — | emit `changed` | `downloads.json`(记录)+ `downloads-settings.json`(目录 / 询问 / 保留条数) |
 | `passwords` | — | ui, shortcut | `status` `setup` `unlock` `lock` `list` `getEntry` `save` `remove` `copy` `readPageFields` `fillEntry` `beginFill` `changeMaster` `getSettings` `setSettings` `wipe` `exportBackup` `importBackup` | —(刻意不贡献 MCP 工具:与 AI 隔离) | — | —(按需 `pages.execute` 注入探测 / 下拉 / 填入脚本,不注入常驻脚本) | — | `Ctrl/Cmd+Shift+P` | emit `state-changed` `settings-changed` `open-panel` | `passwords.json`(AES-256-GCM 密文)+ `passwords-settings.json`(自动锁定 / 剪贴板 / 子域匹配);`exportBackup` 只写**密文副本**到 bow 下载目录;`importBackup` 校验形状后**整库替换**(已初始化时先把当前库导出一份再覆盖,导入后强制锁定) |
 | `pomo` | — | ui, mcp, shortcut | `getState` `getSettings` `setSettings` `start` `pause` `skip` `reset` `toggle` | `browser_pomo_status` `browser_pomo_start` `browser_pomo_pause` `browser_pomo_skip` | — | — | — | `Ctrl/Cmd+Shift+O` | emit `state` `phase-end` | `pomo.json`(设置 + 运行状态:阶段 / `endsAt` / 本轮计数 / 今日完成数;**只在状态转换时写盘**) |
-| `files` | — | ui, mcp | `getSettings` `setSettings` `pickRoots` `removeRoot` `openRoot` | `browser_fs_roots` `browser_fs_list` `browser_fs_info` `browser_fs_read` `browser_fs_write` `browser_fs_mkdir` `browser_fs_move` `browser_fs_copy` `browser_fs_delete` | — | — | — | — | emit `changed` | `files-settings.json`(工作目录白名单 + 允许永久删除);**渲染层拿不到任何 fs 操作面**,只有配白名单的 IPC |
+| `files` | — | ui, mcp | `getSettings` `setSettings` `pickRoots` `removeRoot` `openRoot` + 面板面:`list` `readText` `mkdir` `rename` `move` `copy` `remove` `pickDirectory` `openPath` `showInFolder` | `browser_fs_roots` `browser_fs_list` `browser_fs_info` `browser_fs_read` `browser_fs_write` `browser_fs_mkdir` `browser_fs_move` `browser_fs_copy` `browser_fs_delete` | — | — | — | — | emit `changed` `open-panel` | `files-settings.json`(工作目录白名单 + 允许永久删除);工具与面板**共用同一套操作层与 guard** |
 
 **渲染层侧**(`registry.ts` / 各插件 `ui.ts`)
 
@@ -558,13 +558,13 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `downloads` | — | `DownloadsButton` | `plugin:downloads:panel`(full,`DownloadsPanel`) | `DownloadsSettings` |
 | `passwords` | — | `PasswordsButton` | `plugin:passwords:panel`(full,`PasswordsPanel`) | `PasswordsSettings` |
 | `pomo` | — | `PomoButton`(显示倒计时) | `plugin:pomo:panel`(below-chrome,`PomoPanel`;锚定在按钮右下方) | `PomoSettings` |
-| `files` | — | —(刻意没有工具栏按钮:当前只有工具面与策略配置) | — | `FilesSettings`(工作目录白名单 + 允许永久删除) |
+| `files` | — | `FilesButton` | `plugin:files:panel`(full,`FilesPanel`) | `FilesSettings`(工作目录白名单 + 允许永久删除) |
 
 ⚠️ 终端插件的 `ui/TerminalView.vue` 与笔记插件的 `ui/JournalView.vue` **不在**注册表里 ——
 它们分别是 `bow://terminal` / `bow://logseq` 页面的主体,由 `renderer/src/<entry>/main.ts` 直接引用。
 插槽/浮层注册表面向的是 chrome 与 overlay 两个宿主。
 
-`SLOT_PLUGIN_ORDER.toolbar = ['bookmarks','downloads','mcp-http','terminal','logseq','passwords','pomo']`;
+`SLOT_PLUGIN_ORDER.toolbar = ['bookmarks','downloads','mcp-http','terminal','logseq','passwords','pomo','files']`;
 `addressbar-trailing` 为空(保持注册顺序)。未列出的插件排在已列出者之后。
 
 **笔记插件(`bow://logseq`)的六条不变式**(它是唯一直接读写用户仓库外文件的插件,改它之前请务必看这几条,
