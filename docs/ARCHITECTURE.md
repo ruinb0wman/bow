@@ -48,9 +48,12 @@ src/
                                  `BOW_NOTIFY_LOG` 给 E2E 的 JSONL 测试缝)
     agentActivate.ts             「点代理通知 = 进入对应标签」的唯一实现(系统通知的 click 调它)
     closeConfirm.ts              关闭窗口确认:多标签时拦下 close 事件,改用应用内确认框(确认态按窗口隔离)
-    actions.ts                   注入式页面操作原语(snapshot/click/type/scroll/pressKey/screenshot)+ waitForLoad
-    pageScripts.ts               注入脚本字符串的唯一来源(SNAPSHOT/CLICK/TYPE/SCROLL_FN;actions.ts 与设备检查插件共用,
+    actions.ts                   注入式页面操作原语(snapshot/click/type/scroll/pressKey/screenshot/read)+ waitForLoad
+    pageScripts.ts               注入脚本字符串的唯一来源(SNAPSHOT/READ/CLICK/TYPE/SCROLL_FN;actions.ts 与设备检查插件共用,
                                  无 electron 依赖所以纯 node 单测也能 import)
+    axTree.ts                    无障碍树 → 紧凑文本树 + ref 表(纯变换,不碰 CDP → 可喂假 AX 节点数组单测)
+    axSnapshot.ts                AX 通道的 CDP 驱动:逐 frame 取树 + ref 表的会话级存放 + 文档身份校验
+    debuggerSession.ts           「临时借用调试器」的唯一实现(只 detach 自己附加的那次;不去抢 DevTools)
     ipc.ts                       chrome UI ↔ 主进程的 IPC 面(标签/导航/设置/浮层/布局/插件)
     stores.ts                    JsonStore(原子写)+ 核心 settings.json + 分屏布局 split-layouts.json
     mcp.ts                       核心 MCP 工具(20 个)+ MCP_INSTRUCTIONS + 服务器构建
@@ -627,11 +630,11 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `browser_navigate` | **url**, tabId, waitUntil, timeoutMs | waitUntil `'load'`;timeout 15000 | `{ok,url,tabId,createdTab,waited?,loadedUrl?}`;非 http(s) 直接拒 |
 | `browser_search` | **query**, engine, tabId, waitUntil, timeoutMs | engine 取设置;waitUntil `'load'` | 同上 + `engine` |
 | `browser_eval` | **code**, tabId | — | `{ok,result}`;`undefined` → `result:null` |
-| `browser_snapshot` | tabId, maxElements | 200(上限 1000) | `{ok,tabId,data:{title,url,elements[]}}` |
+| `browser_snapshot` | tabId, maxElements, format, target | maxElements 200(上限 1000);format `'ax'` | format=`'ax'`(默认)→ `{ok,tabId,format,url,title,tree,elements,truncated,frames}`;format=`'dom'` → 旧的 `{ok,tabId,format,data:{title,url,elements[]}}` |
 | `browser_read` | tabId, selector, maxChars | maxChars 12000(上限 200000) | `{ok,tabId,title,url,mode,markdown,chars,truncated}`;`mode` ∈ `selector`/`main`/`wide`;抽不到正文时 `{ok:false,error}` 并指向该用哪个工具 |
 | `browser_wait` | tabId, selector, state, timeoutMs | state `'visible'`;等元素 10000 / 等加载 15000 | 有 selector → `{ok,tabId,selector,state,waited:true}`;无 → 走 `idle` |
-| `browser_click` | **selector**, tabId, waitUntil, timeoutMs | waitUntil `'none'` | `{ok,tabId,selector,result,waited?,loadedUrl?}` |
-| `browser_type` | text(**必填**), selector, clear, tabId | clear `true` | `{ok,tabId,typed,value}`;省略 selector = 当前聚焦元素 |
+| `browser_click` | target 或 selector(二者必居其一), tabId, waitUntil, timeoutMs | waitUntil `'none'` | `{ok,tabId,ref?|selector?,result,waited?,loadedUrl?}`;`target` 以 `e数字` 形式即当作 ref |
+| `browser_type` | text(**必填**), target 或 selector, clear, tabId | clear `true` | `{ok,tabId,typed,value}`;target/selector 均省略 = 当前聚焦元素 |
 | `browser_press_key` | **key**, tabId, waitUntil, timeoutMs | waitUntil `'none'` | F5/Ctrl+R 强制等加载;Ctrl+W 关标签;Ctrl+T 开标签;其余走 `pressKey` |
 | `browser_scroll` | **direction**, selector, amount, tabId | amount 0 → 一屏 70% | `{ok,tabId,top,direction}` |
 | `browser_back` / `browser_forward` | tabId, waitUntil, timeoutMs | waitUntil `'load'` | 同一循环注册,`maybe-navigation` |
@@ -664,6 +667,44 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 ⚠️ 实际工具面**随插件启停变化**:停用 device-inspect 就少 11 个,停用 downloads 就少 2 个。
 
 ⚠️ 插件工具的 schema **不做 strict 校验**(走 `kernel.mcp` 声明快照),未知参数会被静默丢弃。
+
+### 6.2.1 无障碍树快照与 ref(为什么不用 CSS 选择器当句柄)
+
+`browser_snapshot` 的默认通道走 CDP 的 `Accessibility.getFullAXTree`,把无障碍树渲染成**紧凑文本树**:
+一行一个元素、缩进表达层级、行尾 `[ref=e12]`。`format: "dom"` 是刻意留的退路(需要 CSS 选择器、
+或无障碍树取不到时用),它跑的还是老的 `SNAPSHOT_FN`。
+
+**为什么换样**:老快照把元素清单摊平成一个 10 字段 JSON,句柄是 `selFor()` 兜底生成的
+`div:nth-of-type(2)>ul:nth-of-type(1)>li:nth-of-type(7)>a:nth-of-type(1)`。**这条路径不报错、
+但会指到错元素**:页面一重排(分页、懒加载、插节点)它仍然能 `querySelector` 到另一个元素,
+于是点击返回 `ok` 却打在别的东西上。现在 ref 指向的是浏览器自己给的 `backendNodeId`,
+**失效时报错而不回退**(`resolveAxRef` 系一的兜底是“宁可失败”)。
+
+真机实测的对比(同一页同一个 `maxElements`,真 Chromium):
+
+| | 旧 `format:dom` | 新 `format:ax` |
+| --- | --- | --- |
+| 每元素字符数(大页 300 条结果) | 156 字符/元素 | **50 字符/元素** |
+| 同上限下的总字符 | 31,258 | **9,964(3.1x 更小)** |
+| shadow DOM 内部元素 | ✗ | ✓ |
+| iframe 内容 | ✗(只有个 iframe 占位) | ✓(`Page.getFrameTree` 逐 frame 取后缝进来) |
+| `checked`/`disabled`/`level` 状态 | ✗ | ✓ |
+| shadow DOM 内部的文本节点 | ✗ | ✓ 部分(可寻址的都有 ref) |
+
+实现分三层,刻意拆开:`axTree.ts` 是**纯变换**(喂假 AX 节点数组就能单测),
+`axSnapshot.ts` 管 CDP 与会话级的 ref 表,`debuggerSession.ts` 管「借调试器」这条不变式。
+
+**ref 的三道保险**(全部为了“宁可不做,不能做错”):
+
+1. **地址变了 → 整表作废**;
+2. **文档身份变了 → 整表作废**。只比地址不够:原地重载时 URL 根本没变,而 `backendNodeId` 可能落到
+   **另一个元素**上 —— 那正是老选择器静默打偏的翻版。所以快照时记下主框架的 `loaderId`,执行前再读一次;
+3. **`DOM.resolveNode` 拿不到节点就直接失败**,绝不回落到用旧路径再找一次。
+
+⚠️ **需临时附加调试器**的:无障碍树快照、按 ref 的 click/type、整页截图。用户在**该标签开着 DevTools**
+时这些会失败(attach 报 `Debugger is already attached to the target`),文案会说明并建议关掉 DevTools
+或改用 `format: "dom"` —— **不去抢用户的调试会话**。另一面:bow 自己的「接管文件选择框」会长期挂着调试器,
+所以借用的那一方**只 detach 自己附加的那次**(`debuggerSession.ts` 的唯一职责)。
 
 ### 6.3 返回体与错误约定
 

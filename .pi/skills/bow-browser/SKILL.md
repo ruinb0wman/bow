@@ -24,7 +24,8 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 | --- | --- | --- |
 | 读网页正文/文章/文档内容 | `browser_read` | 自动到正文容器、剥导航/侧栏/广告后输出 markdown;比截图与手写 `browser_eval` 都省 token。返回体里的 `mode=wide` 表示正文定位可能不准;`truncated` 时用 `selector` 收窄再读 |
 | 读结构化数据、批量取值 | `browser_eval` | 最省 token,一次拿回需要的字段 |
-| 定位可点/可输入元素 | `browser_snapshot` | 返回稳定 CSS 选择器,别自己猜 |
+| 定位可点/可输入元素 | `browser_snapshot`(默认 `format: "ax"`) | 返回**带 `ref` 的无障碍树**:shadow DOM 内部、iframe 内容、勾选/禁用态、标题层级、表格结构、图片 alt 都在里面;拿行尾的 `ref` 直接调 click/type,别自己猜选择器 |
+| 只要某个区块里的元素 | `browser_snapshot {target: "e12"}` | `target` 传上一次快照里的 `ref`(或 CSS 选择器)只快照那棵子树,大页上省很多 |
 | 判断样式、布局、视觉效果 | `browser_screenshot` | 只在需要肉眼判断时 |
 | 要看整页(含滚动到视口外的部分) | `browser_screenshot {fullPage:true}` | 一次截全,不用边滚边截 |
 | 等异步渲染 | `browser_wait` | 等元素出现,而不是靠猜时长 |
@@ -43,7 +44,9 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 
 1. `browser_new_tab {url}` 或 `browser_navigate {url}` —— 默认 `waitUntil: 'load'`,返回时主文档已加载完。
 2. 异步内容(SPA、懒加载、无限滚动)用 `browser_wait {selector}` 等目标元素出现;**不要**用 sleep、也不要反复截图探路。
-3. `browser_snapshot {maxElements}` 拿到元素列表,然后**直接用它返回的 `selector`** 调 `browser_click` / `browser_type`。
+3. `browser_snapshot {maxElements}` 拿到**带 `ref` 的无障碍树**,把元素行末尾的 `ref`(如 `e12`)传给 `browser_click` / `browser_type` 的 `target`。
+   `ref` 只在当前这份快照里有效:页面一变(导航、原地重载、重排)就会**明确报错**——重新 `browser_snapshot` 即可,报错不是故障。
+   大页上可以 `browser_snapshot {target: "e12"}` 收窄到某棵子树,或先调小 `maxElements`。
 4. 这次点击会引发跳转时传 `waitUntil: 'load'`;SPA 内部交互保持默认 `'none'`,再 `browser_wait` 等具体元素。
 5. 收尾复验:`browser_eval` 取关键值,或 `browser_get_info` 看 URL/标题,别调完就不管了。
 
@@ -71,8 +74,9 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 
 ## 反模式
 
-- ❌ 手写 CSS 选择器 → ✅ 用 `browser_snapshot` 返回的 `selector`
-- ❌ 每次都全量快照 200 个元素 → ✅ 先小后大,必要时配合 `browser_eval` 精确定位
+- ❌ 手写 CSS 选择器 → ✅ 用 `browser_snapshot` 返回的 `ref`(或它给的 `selector`)
+- ❌ 每次都全量快照 200 个元素 → ✅ 先小后大,或用 `browser_snapshot {target}` 收窄、用 `browser_eval` 精确定位
+- ❌ 看到 `ref 已失效` 就改用选择器硬撑 → ✅ 重新 `browser_snapshot` 拿新 ref(失效报错是故意的:旧的会指到别的元素上)
 - ❌ `navigate` 后立刻 `snapshot` 抓异步页 → ✅ 先 `browser_wait`
 - ❌ 用截图代替取值 → ✅ `browser_eval` 更省、更准
 - ❌ 为了读文章正文现写抽取 JS / 截长图 → ✅ `browser_read`(它返回的 markdown 已经是纯净正文)
@@ -82,6 +86,8 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 ## 边界与故障
 
 - `bow://` 内部页面标签(设置页等)不支持页面类工具,会明确拒绝;`browser_list_tabs` 用 `internal: true` 标出它们。
+- `browser_snapshot`(默认 ax 格式)、按 `ref` 的 click/type、整页截图都需要**临时附加调试器**:该标签**开着 DevTools**
+  时它们会失败并说明原因。关掉 DevTools 重试,或传 `browser_snapshot {format: "dom"}` / 改用选择器定位。
 - 默认目标是 bow 为你自动创建并复用的 **agent 专属窗口**:`browser_list_tabs` 顶层的 `mcpWindowId` 就是它
   (还没创建时为 `null`,下一次页面类工具会自动建);`focusedWindowId` 只是「用户在看哪个」的参考。
   `browser_switch_tab` 只在 agent 窗口之间切换默认目标,指向用户窗口时只激活那个标签、不改默认目标。

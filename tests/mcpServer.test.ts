@@ -436,13 +436,29 @@ describe('MCP 服务器:页面操作', () => {
     await client.close()
   })
 
-  it('snapshot 返回页面标题/URL 与元素列表', async () => {
+  it('snapshot 默认走无障碍树:返回带 ref 的文本树(format: ax)', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs, 'https://snap.example/')
+    wc.debugger.frameUrl = 'https://snap.example/'
+    const res = await call(client, 'browser_snapshot', { maxElements: 10 })
+    expect(res.isError).toBe(false)
+    expect(res.data.format).toBe('ax')
+    expect(res.data.url).toBe('https://snap.example/')
+    expect(res.data.title).toBe('Fake Page')
+    expect(res.data.tree).toBe('- button "提交" [ref=e1]')
+    expect(res.data.elements).toBe(1)
+    expect(res.data.truncated).toBe(false)
+    await client.close()
+  })
+
+  it('snapshot format:dom 保持旧形状(元素清单 + CSS 选择器)', async () => {
     const { client, tabs } = await setup()
     const wc = browsingTab(tabs, 'https://snap.example/')
     wc.elements.set('#a', { tag: 'a', visible: true, text: '链接' })
     wc.elements.set('#b', { tag: 'input', visible: false })
-    const res = await call(client, 'browser_snapshot', { maxElements: 10 })
+    const res = await call(client, 'browser_snapshot', { maxElements: 10, format: 'dom' })
     expect(res.isError).toBe(false)
+    expect(res.data.format).toBe('dom')
     expect(res.data.data.url).toBe('https://snap.example/')
     expect(res.data.data.title).toBe('Fake Page')
     expect(res.data.data.elements).toHaveLength(2)
@@ -877,6 +893,204 @@ describe('MCP 服务器:未知参数严格校验', () => {
  * 这里能守住的:两条路径各自被走到、CDP 参数与文档尺寸一致、异常一律显式失败。
  * 真实整页像素(是否真的含视口外内容)只能由桌面环境验证——见 README 的 MCP 冒烟测试。
  */
+describe('MCP 服务器:无障碍树快照与 ref', () => {
+  /** 快照一次并返回拿到的 ref(默认假树里只有一个 button → e1) */
+  const snapOnce = async (client: Client, tabs: FakeTabs): Promise<void> => {
+    const res = await call(client, 'browser_snapshot', {})
+    expect(res.isError).toBe(false)
+    expect(res.data.format).toBe('ax')
+  }
+
+  it('按 ref 点击:走 DOM.resolveNode + Runtime.callFunctionOn,不经过选择器', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs, 'https://ref.example/')
+    wc.debugger.frameUrl = 'https://ref.example/'
+    await snapOnce(client, tabs)
+
+    const res = await call(client, 'browser_click', { target: 'e1' })
+    expect(res.isError).toBe(false)
+    expect(res.data.ref).toBe('e1')
+    const resolved = wc.debugger.calls.find((c) => c.method === 'DOM.resolveNode')
+    expect(resolved?.params).toEqual({ backendNodeId: 11 })
+    expect(wc.debugger.calls.some((c) => c.method === 'Runtime.callFunctionOn')).toBe(true)
+    // 不需要任何选择器
+    expect(wc.debugger.calls.some((c) => c.method === 'DOM.querySelector')).toBe(false)
+    await client.close()
+  })
+
+  it('按 ref 输入文字', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs, 'https://ref.example/')
+    wc.debugger.frameUrl = 'https://ref.example/'
+    wc.debugger.handleResult = { value: '模型上下文协议' }
+    await snapOnce(client, tabs)
+    const res = await call(client, 'browser_type', { target: 'e1', text: '模型上下文协议' })
+    expect(res.isError).toBe(false)
+    expect(res.data.value).toBe('模型上下文协议')
+    await client.close()
+  })
+
+  it('ref 不存在:失败并让人重新快照(不回落到旧路径)', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs, 'https://ref.example/')
+    wc.debugger.frameUrl = 'https://ref.example/'
+    await snapOnce(client, tabs)
+    const res = await call(client, 'browser_click', { target: 'e99' })
+    expect(res.isError).toBe(true)
+    expect(res.data.error).toContain('browser_snapshot')
+    expect(wc.debugger.calls.some((c) => c.method === 'DOM.resolveNode')).toBe(false)
+    await client.close()
+  })
+
+  it('★ 原地重新加载(URL 没变,但 loaderId 换了)也要让 ref 失效 —— 否则会点到另一个元素上', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs, 'https://ref.example/')
+    wc.debugger.frameUrl = 'https://ref.example/'
+    await snapOnce(client, tabs)
+    wc.debugger.loaderId = 'L2' // 文档重建
+    const res = await call(client, 'browser_click', { target: 'e1' })
+    expect(res.isError).toBe(true)
+    expect(res.data.error).toContain('重新加载')
+    expect(wc.debugger.calls.some((c) => c.method === 'DOM.resolveNode')).toBe(false)
+    await client.close()
+  })
+
+  it('地址变了:整张 ref 表作废', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs, 'https://ref.example/')
+    wc.debugger.frameUrl = 'https://ref.example/'
+    await snapOnce(client, tabs)
+    wc.url = 'https://other.example/'
+    const res = await call(client, 'browser_click', { target: 'e1' })
+    expect(res.isError).toBe(true)
+    expect(res.data.error).toContain('已失效')
+    await client.close()
+  })
+
+  it('节点已经不在了:明确失败,不用旧路径再找一次', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs, 'https://ref.example/')
+    wc.debugger.frameUrl = 'https://ref.example/'
+    await snapOnce(client, tabs)
+    // resolveNode 拿不到 objectId
+    wc.debugger.sendCommand = async function (this: FakeDebugger, method: string) {
+      if (method === 'DOM.resolveNode') return {}
+      return Object.getPrototypeOf(this).sendCommand.call(this, method)
+    } as typeof wc.debugger.sendCommand
+    const res = await call(client, 'browser_click', { target: 'e1' })
+    expect(res.isError).toBe(true)
+    expect(res.data.error).toContain('browser_snapshot')
+    await client.close()
+  })
+
+  it('页面侧报错(比如目标不是可输入元素)要提升成顶层失败', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs, 'https://ref.example/')
+    wc.debugger.frameUrl = 'https://ref.example/'
+    wc.debugger.handleResult = { error: '目标不是可输入元素: div' }
+    await snapOnce(client, tabs)
+    const res = await call(client, 'browser_type', { target: 'e1', text: 'x' })
+    expect(res.isError).toBe(true)
+    expect(res.data.error).toContain('目标不是可输入元素')
+    await client.close()
+  })
+
+  it('target 仍接受 CSS 选择器(已知元素时可跳过一次快照)', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs)
+    wc.elements.set('#a', { tag: 'button', visible: true, text: '链接' })
+    const res = await call(client, 'browser_click', { target: '#a' })
+    expect(res.isError).toBe(false)
+    expect(res.data.selector).toBe('#a')
+    await client.close()
+  })
+
+  it('selector 旧写法仍然可用', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs)
+    wc.elements.set('#a', { tag: 'button', visible: true, text: '链接' })
+    const res = await call(client, 'browser_click', { selector: '#a' })
+    expect(res.isError).toBe(false)
+    await client.close()
+  })
+
+  it('既不给 target 也不给 selector:明确报错', async () => {
+    const { client, tabs } = await setup()
+    browsingTab(tabs)
+    const res = await call(client, 'browser_click', {})
+    expect(res.isError).toBe(true)
+    expect(res.data.error).toContain('target')
+    await client.close()
+  })
+
+  it('snapshot 收窄到某个 ref 的子树', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs, 'https://ref.example/')
+    wc.debugger.frameUrl = 'https://ref.example/'
+    wc.debugger.axNodes = [
+      { nodeId: '1', role: { value: 'RootWebArea' }, childIds: ['2', '5'] },
+      { nodeId: '2', parentId: '1', role: { value: 'navigation' }, childIds: ['3'] },
+      { nodeId: '3', parentId: '2', role: { value: 'link' }, name: { value: '首页' }, backendDOMNodeId: 21 },
+      { nodeId: '5', parentId: '1', role: { value: 'main' }, childIds: ['6'] },
+      { nodeId: '6', parentId: '5', role: { value: 'button' }, name: { value: '正文按钮' }, backendDOMNodeId: 22 }
+    ]
+    await snapOnce(client, tabs)
+    const res = await call(client, 'browser_snapshot', { target: 'e1' }) // e1 = navigation
+    expect(res.isError).toBe(false)
+    expect(res.data.target).toBe('e1')
+    expect(res.data.tree).toContain('首页')
+    expect(res.data.tree).not.toContain('正文按钮')
+    await client.close()
+  })
+
+  it('snapshot target 用了不存在的 ref:明确报错', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs, 'https://ref.example/')
+    wc.debugger.frameUrl = 'https://ref.example/'
+    await snapOnce(client, tabs)
+    const res = await call(client, 'browser_snapshot', { target: 'e99' })
+    expect(res.isError).toBe(true)
+    expect(res.data.error).toContain('e99')
+    await client.close()
+  })
+
+  it('DevTools 占着调试器:报错说清原因,并指出可用 format:dom', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs)
+    wc.debugger.attachError = new Error('Debugger is already attached to the target')
+    const res = await call(client, 'browser_snapshot', {})
+    expect(res.isError).toBe(true)
+    expect(res.data.error).toContain('DevTools')
+    expect(res.data.error).toContain('dom')
+    expect(wc.debugger.detachCount).toBe(0)
+    await client.close()
+  })
+
+  it('借用别人已经附加的调试器:不 detach 掉别人的连接', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs, 'https://ref.example/')
+    wc.debugger.frameUrl = 'https://ref.example/'
+    wc.debugger.attached = true // 模拟「接管文件选择框」长期挂着
+    const res = await call(client, 'browser_snapshot', {})
+    expect(res.isError).toBe(false)
+    expect(wc.debugger.attached).toBe(true)
+    expect(wc.debugger.detachCount).toBe(0)
+    await client.close()
+  })
+
+  it('关掉标签会丢掉它的 ref 表', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs, 'https://ref.example/')
+    wc.debugger.frameUrl = 'https://ref.example/'
+    await snapOnce(client, tabs)
+    const tabId = tabs.getActiveView()!.info.id
+    await call(client, 'browser_close_tab', { tabId })
+    const res = await call(client, 'browser_click', { target: 'e1' })
+    expect(res.isError).toBe(true)
+    await client.close()
+  })
+})
+
 describe('MCP 服务器:截图', () => {
   it('默认只截视口:走 capturePage,完全不碰调试器', async () => {
     const { client, tabs } = await setup()

@@ -72,12 +72,24 @@ function makeElement(spec: FakeElement): Record<string, unknown> {
   return el
 }
 
+/**
+ * 假的 a11y 树(最小形态:一个按钮)。真机上的形状由 `scripts/mcp-smoke.mjs` 覆盖;
+ * 这里只保证 MCP 层接线(取树 → 渲染 → ref 表)能跑通。
+ */
+const DEFAULT_AX_NODES = (): Array<Record<string, unknown>> => [
+  { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'Fake Page' }, childIds: ['2'] },
+  { nodeId: '2', parentId: '1', role: { value: 'button' }, name: { value: '提交' }, backendDOMNodeId: 11 }
+]
+
 export class FakeDebugger {
   attached = false
   /** attach() 抛错(模拟 DevTools 占着调试器) */
   attachError: Error | null = null
   /** sendCommand 抛错 */
   sendError: Error | null = null
+  /** 主框架地址(`Page.getFrameTree` 里回显,便于验 URL 变化 → ref 失效) */
+  frameUrl = 'https://example.com/'
+  /** detach 次数(验「只 detach 自己附加的那次」) */
   detachCount = 0
   calls: Array<{ method: string; params?: unknown }> = []
   /** Page.getLayoutMetrics 的返回;拿不到尺寸的路径用空对象 */
@@ -92,6 +104,16 @@ export class FakeDebugger {
   fileInputNodeIds: number[] = []
   /** nodeId → DOM.describeNode 的属性扁平数组([name,value,…]) */
   nodeAttributes = new Map<number, string[]>()
+  /**
+   * `Accessibility.getFullAXTree` 的返回(null = 用一个最小的默认树:单个按钮)。
+   * 按 frameId 覆盖用 `axNodesByFrame`。
+   */
+  axNodes: Array<Record<string, unknown>> | null = null
+  axNodesByFrame = new Map<string, Array<Record<string, unknown>>>()
+  /** 主框架的 loaderId:`Page.getFrameTree` 返回它,用来验「文档换了 → ref 失效」 */
+  loaderId = 'L1'
+  /** `Runtime.callFunctionOn` 的返回(按 ref 操作节点时用) */
+  handleResult: unknown = { tag: 'button', text: '提交' }
   /**
    * upload 的 Runtime.evaluate 读回:页面侧 `input.files` 的真实状态。
    * null = 没设(那就按整页截图那条路返回 devicePixelRatio)。
@@ -117,6 +139,16 @@ export class FakeDebugger {
     this.calls.push({ method, params })
     if (this.sendError) throw this.sendError
     if (method === 'Page.getLayoutMetrics') return this.metrics
+    if (method === 'Page.getFrameTree') {
+      return { frameTree: { frame: { id: 'F1', url: this.frameUrl, loaderId: this.loaderId } } }
+    }
+    if (method === 'Accessibility.getFullAXTree') {
+      const frameId = String((params as { frameId?: string } | undefined)?.frameId ?? '')
+      if (this.axNodesByFrame.has(frameId)) return { nodes: this.axNodesByFrame.get(frameId) }
+      return { nodes: this.axNodes ?? DEFAULT_AX_NODES() }
+    }
+    if (method === 'DOM.resolveNode') return { object: { objectId: 'fake-object-1' } }
+    if (method === 'Runtime.callFunctionOn') return { result: { value: this.handleResult } }
     if (method === 'DOM.getDocument') return { root: { nodeId: 1 } }
     if (method === 'DOM.querySelector') return { nodeId: this.queryNodeId }
     if (method === 'DOM.querySelectorAll') return { nodeIds: this.fileInputNodeIds }
@@ -136,9 +168,10 @@ export class FakeDebugger {
 export class FakeWc extends EventEmitter {
   destroyed = false
   loading = false
-  url = 'https://example.com/'
-  /** 视口截图(capturePage)的假返回值 */
+  url = 'https://example.com/'  /** 视口截图(capturePage)的假返回值 */
   captureEmpty = false
+  /** 页面标题(wc.getTitle();无障碍树快照的返回体里会带它) */
+  title = 'Fake Page'
   capturePng = Buffer.from('fake-viewport-png')
   captureCount = 0
   /** 整页截图(capturePage 之外的 CDP 路径)用的假调试器 */
@@ -195,6 +228,10 @@ export class FakeWc extends EventEmitter {
     return this.url
   }
 
+  getTitle(): string {
+    return this.title
+  }
+
   sendInputEvent(event: unknown): void {
     this.sentEvents.push(event)
   }
@@ -237,7 +274,7 @@ export class FakeWc extends EventEmitter {
     if (this.raw.has(code)) return this.raw.get(code)
 
     const document = {
-      title: 'Fake Page',
+      title: this.title,
       activeElement: null,
       // READ_FN 会在正文定位失手时退到 document.body(整页放宽,并跳过链接农场);
       // 给它一具能读出行内文本的假 body —— 注意 `children` 要有东西,

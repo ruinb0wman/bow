@@ -71,9 +71,13 @@ export const SNAPSHOT_FN = `function __mcpSnapshot__(maxElements){
   return { title: document.title, url: location.href, elements: out };
 }`
 
-export const CLICK_FN = `function __mcpClick__(sel){
-  var el = document.querySelector(sel);
-  if (!el) return { error: '未找到选择器: ' + sel };
+/**
+ * 点一个元素。两参数版本按选择器取,一参数版本接受**已经拿到的元素**(ref 路径经
+ * `Runtime.callFunctionOn` 把 `this` 传进来)。两条路共用同一份实现 —— 分别写一遍必然漂移
+ * (典型症状:只在一条路上补了 `scrollIntoView`)。
+ */
+export const CLICK_FN = `function __mcpClickEl__(el){
+  if (!el) return { error: '没有可点的目标元素' };
   var r = el.getBoundingClientRect();
   if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'center' });
   if (typeof el.focus === 'function') el.focus();
@@ -82,24 +86,27 @@ export const CLICK_FN = `function __mcpClick__(sel){
   el.dispatchEvent(new MouseEvent('mousedown', opts));
   el.dispatchEvent(new MouseEvent('mouseup', opts));
   el.dispatchEvent(new MouseEvent('click', opts));
-  var tag = el.tagName.toLowerCase();
-  var role = el.getAttribute && el.getAttribute('role');
-  if (tag === 'a' || tag === 'button' || tag === 'input' || tag === 'summary' ||
-      tag === 'select' || role === 'button' || role === 'link' ||
-      role === 'checkbox' || role === 'radio') {
-    try { el.click(); } catch (e) { /* ignore */ }
-  }
-  return { selector: sel, tag: tag, text: (el.innerText || el.value || '').toString().slice(0, 200) };
+  // ⚠️ 这里**不要**再补一次 el.click()。浏览器会对“派发到元素上的 click”执行元素自己的激活行为
+  // (链接跳转、表单提交、<summary> 展开、onclick 处理器),再调一次 el.click() 等于点两下 ——
+  // 真实页面上的表现就是“点一次触发两次提交/自增两次”(真机实测到的,已回归用例钉住)。
+  return { tag: el.tagName.toLowerCase(), text: (el.innerText || el.value || '').toString().slice(0, 200) };
 }`
 
-export const TYPE_FN = `function __mcpType__(sel, text, clear){
-  var el = null;
-  if (sel) el = document.querySelector(sel);
-  else if (document.activeElement && document.activeElement instanceof HTMLElement) el = document.activeElement;
-  if (!el) return { error: '未找到输入目标' + (sel ? ': ' + sel : '') };
+/** 按选择器点击:取元素后交给上面那份实现 */
+export const CLICK_BY_SELECTOR_FN = `function __mcpClick__(sel){
+  var el = document.querySelector(sel);
+  if (!el) return { error: '未找到选择器: ' + sel };
+  var fn = ${CLICK_FN};
+  var out = fn(el);
+  out.selector = sel;
+  return out;
+}`
+
+export const TYPE_FN = `function __mcpTypeEl__(el, text, clear){
+  if (!el) return { error: '没有可输入的目标元素' };
   var tag = el.tagName.toLowerCase();
   var isEditable = tag === 'input' || tag === 'textarea' || el.isContentEditable || el.getAttribute('contenteditable') === 'true';
-  if (!isEditable) return { error: '目标不是可输入元素: ' + tag };
+  if (!isEditable && tag !== 'select') return { error: '目标不是可输入元素: ' + tag };
   el.focus();
   if (tag === 'input' || tag === 'textarea') {
     var proto = tag === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -113,18 +120,31 @@ export const TYPE_FN = `function __mcpType__(sel, text, clear){
       el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: textStr[i] }));
     }
     el.dispatchEvent(new Event('change', { bubbles: true }));
-    return { selector: sel || '(focused)', value: el.value };
+    return { value: el.value };
   }
   if (tag === 'select') {
     var opt = Array.prototype.find.call(el.options, function(o){ return o.textContent.trim() === String(text); });
     if (!opt) return { error: '选项不存在: ' + text };
     el.value = opt.value;
     el.dispatchEvent(new Event('change', { bubbles: true }));
-    return { selector: sel, value: el.value };
+    return { value: el.value };
   }
   el.textContent = (clear ? '' : (el.textContent || '')) + String(text || '');
   el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: String(text) }));
-  return { selector: sel || '(focused)', value: el.textContent };
+  return { value: el.textContent };
+}`
+
+/** 按选择器输入(省略 selector = 当前聚焦元素):取元素后交给上面那份实现 */
+export const TYPE_BY_SELECTOR_FN = `function __mcpType__(sel, text, clear){
+  var el = null;
+  if (sel) el = document.querySelector(sel);
+  else if (document.activeElement && document.activeElement instanceof HTMLElement) el = document.activeElement;
+  if (!el) return { error: '未找到输入目标' + (sel ? ': ' + sel : '') };
+  var fn = ${TYPE_FN};
+  var out = fn(el, text, clear);
+  if (out && out.error) return out;
+  out.selector = sel || '(focused)';
+  return out;
 }`
 
 export const SCROLL_FN = `function __mcpScroll__(sel, direction, amount){

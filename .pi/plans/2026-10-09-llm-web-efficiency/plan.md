@@ -456,6 +456,65 @@ Fixture：`fixture.html`（小页，含 shadow DOM / iframe / 表格 / 表单状
 大页的 `browser_read` 仍然是全量抽取后再截断(34988 → 12000),没做「只抽视口附近」——
 那属于 P0-① 视口过滤的一部分。
 
+### 2026-10-09 步骤 2:P0-① 落地 —— 无障碍树快照 + ref 句柄
+
+**改动**（+4 新文件、~10 改动）:
+
+| 位置 | 内容 |
+| --- | --- |
+| `src/main/axTree.ts`(新) | **纯变换**:AX 节点数组 → 文本树 + ref 表。不碰 CDP ⇒ 可用伪造节点数组真测 |
+| `src/main/axSnapshot.ts`(新) | CDP 驱动:`Page.getFrameTree` 逐 frame 取树、会话级 ref 表、文档身份校验、target 收窄 |
+| `src/main/debuggerSession.ts`(新) | 「临时借用调试器」的**唯一**实现：只 detach 自己附加的那次;不去抢 DevTools |
+| `src/main/pageScripts.ts` | CLICK/TYPE 拆成「元素版 + 选择器版」(两条路共用一份实现);删掉重复的 `el.click()` |
+| `src/main/actions.ts` | `pageClickRef` / `pageTypeRef`;整页截图改走 `withDebugger` |
+| `src/main/mcp.ts` | `browser_snapshot {format, target}`, `browser_click` / `browser_type {target}` |
+| 测试 | `tests/axTree.test.ts`(17 条纯单测)+ `mcpServer.test.ts` +15 条(全走真 MCP 链路)+ `fakeWc` 补 AX 面 |
+| `scripts/mcp-smoke.mjs` | +2 段真机断言(无障碍树 + 按 ref 点击 + `format:dom` 退路) |
+
+**真机实测**(真 Chromium,同一页同一个 `maxElements`):
+
+| | 旧 `format:dom` | 新 `format:ax` |
+| --- | --- | --- |
+| 大页(300 条结果)每元素字符 | 156 | **50** |
+| 同上限下总字符 | 31,258 | **9,964(3.1x 更小)** |
+| 小页(同 200 上限) | 14 元素 / 1,855 字符 | **51 元素** / 1,874 字符 ⇒ 每元素 132 → 37 字符 |
+| shadow DOM 内部元素/文本 | ✗ | ✓ |
+| iframe 内容 | ✗(只有占位) | ✓(2 frames 缝进来) |
+| `checked`/`disabled`/`level`/`img alt`/表格结构 | ✗ | ✓ |
+
+按 ref 操作已真机验过:注入一个自增计数器的按钮 → `snapshot` 拿 ref → `browser_click {target}`
+→ 计数器 = 1;输入框按 ref 写值后真落到 `input.value`;重新加载后旧 ref **明确报错**
+(文案:`页面在这期间重新加载了,e23 已失效…`),`target` 收窄 51 → 16 个元素。
+
+**★ 顺带抓出一个既存 bug:`browser_click` 会点两下。**
+旧 `CLICK_FN` 既 `dispatchEvent(new MouseEvent('click'))` 又补一次 `el.click()` ——
+在按钮/链接上等于触发两次默认行为(真实表现:自增两次、表单提交两次)。
+之前从未暴露,是这次给 fixture 加了点击计数器才现形。已删掉重复那次,
+并在 `scripts/mcp-smoke.mjs` 里加了「按 ref 点击只能让计数器 +1」的真机断言钉住。
+
+**其它两个“只差一点就写错”的实测坑**:
+
+1. **Chromium 的三态属性值是字符串 `'true'`**,不是布尔。渲染器一开始只认布尔,
+   结果勾选态被整个吐掉(真机才看得出来,伪造数据里很容易写成布尔)。
+2. **`backendNodeId` 跨 attach/detach 稳定**(单独探针 `probe-backend.mjs` 验过:`resolveNode` /
+   `callFunctionOn` / `getBoxModel` 都行,跨会话点击真的命中)—— 这是 ref 设计成立的前提。
+   但**同 URL 原地重载后不稳定**:所以加了 `loaderId` 比对(只比地址不够)。
+
+**关于视口过滤:本次故意没做。** 实测的真相是「大页上 919 个候选里视口内只有 17 个」,
+但 bow 的快照本来就有 `maxElements` 上限——真正的浪费是**每元素 156 字符的格式**,
+不是没过滤。换成无障碍树后每元素 50 字符,同样上限下已经 3.1x 更小,
+而视口过滤会带来新摩擦(模型要操作视口外的元素时必须先猜到自己得传参)。
+如果后续还有 token 压力,再加成**可选**的 `scope: "viewport"`。
+
+**P0-① 未做的（下一步候选,按性价比排序）**:
+- `browser_find`(在已渲染的快照文本上搜,只回匹配子树)—— 纯文本搜索,不需 CDP,便宜;
+- 动作后**可选回带新快照**( `includeSnapshot`),省一轮往返;
+- 快照**差分**(标出「自上次以来新增/变更」的元素, 学 browser-use);
+- `browser_fill`(批量填表)、`browser_dialog`、标签侧 console/network 可见性;
+- 真实输入事件(`Input.dispatchMouseEvent` / `sendInputEvent`)代替合成事件 —— 需先验坐标空间(dpr/缩放/iframe);
+- **跨源 iframe(OOPIF)**:目前逐 frame 取不到就跳过并记日志,ref 也解析不到;
+- 快照的 `maxDepth`(Playwright 有,bow 暂未做)。
+
 ---
 
 ## 9. 参考

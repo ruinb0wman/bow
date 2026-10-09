@@ -17,15 +17,18 @@ import { imageContent, textContent } from './plugins/mcpResult'
 import { mcpActivity } from './mcpActivity'
 import {
   pageClick,
+  pageClickRef,
   pageRead,
   pageSnapshot,
   pageScreenshot,
   pageScroll,
   pageType,
+  pageTypeRef,
   pressKey,
   waitForLoad,
   waitForSelector
 } from './actions'
+import { captureAxSnapshot, forgetAxSession } from './axSnapshot'
 import { log, logError } from './logger'
 
 export type MCPDeps = { windows: WindowRegistry; kernel: PluginKernel }
@@ -88,8 +91,10 @@ export const MCP_INSTRUCTIONS = `这是一个真实的多标签浏览器窗口(�
    若不想等,传 waitUntil: 'none' 或更小的 timeoutMs。
 2. 页面内容若是异步渲染的(SPA、懒加载),用 browser_wait { selector } 等目标元素出现,
    不要靠反复截图或盲目等待。
-3. 用 browser_snapshot 拿到元素后,直接使用它返回的 selector 调 browser_click / browser_type,
-   不要自己猜 CSS 选择器。快照默认最多 200 个元素;页面很大时先调小 maxElements 定位,需要更多再扩大。
+3. 用 browser_snapshot 拿到元素树, 把元素行末尾的 ref(如 e12)传给 browser_click / browser_type 的 target;
+   不要自己猜 CSS 选择器。ref 只在**当前这份快照**里有效:页面一变就会明确报错,这时重新 snapshot 即可
+   (报错不是故障,是为了不让你点到错的东西上)。快照默认最多 200 个元素;页面很大时用 target 传某个
+   ref 只看那棵子树,或先调小 maxElements。target 也接受 CSS 选择器;format: "dom" 退回旧的元素清单。
 4. browser_click 默认不等待(适合 SPA 内的局部交互);若这次点击会触发跳转,传 waitUntil: 'load',
    或随后用 browser_wait 等具体元素。动作没有引发跳转时 waitUntil: 'load' 会在约 1.5s 内以 waited=false 返回。
 5. browser_press_key 返回 ok 只代表按键已投递,不代表网页已经处理完;若这次按键会触发跳转(如回车提交表单),
@@ -97,8 +102,8 @@ export const MCP_INSTRUCTIONS = `这是一个真实的多标签浏览器窗口(�
 
 工具选型
 - 读网页正文/文章/文档内容 → browser_read(自动剥导航与广告后输出 markdown,比截图或自己写 eval 都省 token)
+- 定位可点 / 可输入元素 → browser_snapshot(默认返回带 ref 的无障碍树;拿 ref 直接调 click / type)
 - 读结构化数据、批量取值 → browser_eval(最省 token)
-- 定位可点 / 可输入元素 → browser_snapshot
 - 判断样式、布局、视觉效果 → browser_screenshot;要看滚动到视口外的内容就传 fullPage: true
 - 手机页面(= device_* 那一套)上的定位 → device_snapshot,操作 → device_tap / device_type / device_press_key,
   不要用 device_eval 里的合成事件(拿不到真事件与焦点链路)
@@ -159,6 +164,8 @@ export const MCP_INSTRUCTIONS = `这是一个真实的多标签浏览器窗口(�
 - 页面上正文之外的界面文字(筛选器、分页、推荐位)不在输出里是预期行为,不要因为看不到就去反复 eval。
 
 边界
+- browser_snapshot 的无障碍树、按 ref 的 click / type、整页截图都需要临时附加调试器。该标签**开着 DevTools**
+  时这些会失败(不去抢),报错会说明原因 —— 关掉 DevTools 重试,或改用 selector 定位。
 - bow:// 内部页面标签不支持页面类工具,会被明确拒绝。
 - browser_list_tabs 里 inspector: true 的标签是「远程调试用的 DevTools 前端」,同样属于浏览器自身页面,不支持页面类工具。
 - device_eval / device_screenshot / device_snapshot / device_tap / device_type / device_press_key / device_scroll /
@@ -310,14 +317,30 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
     'browser_snapshot',
     {
       tabId: z.number().optional(),
-      maxElements: z.number().int().positive().max(1000).default(200).describe('最多返回可操作元素数')
+      maxElements: z.number().int().positive().max(1000).default(200).describe('最多返回可操作元素数'),
+      format: z
+        .enum(['ax', 'dom'])
+        .default('ax')
+        .describe(
+          "ax(默认)=带 ref 的无障碍树文本,用 ref 调 click/type;dom=旧的元素清单(含 CSS 选择器),仅在需要选择器或 ax 取不到时用"
+        ),
+      target: z
+        .string()
+        .optional()
+        .describe('只看这棵子树:上一次快照里的 ref(如 e12)或 CSS 选择器')
     },
-    async ({ tabId, maxElements }) => {
+    async ({ tabId, maxElements, format, target: targetRef }) => {
       const { view, fail } = target(tabId)
       if (!view) return textContent({ ok: false, error: fail })
-      const res = await pageSnapshot(view.view.webContents, maxElements)
-      if (!res.ok) return textContent(res)
-      return textContent({ ok: true, tabId: view.info.id, data: res.data })
+      const id = view.info.id
+      if (format === 'dom') {
+        const res = await pageSnapshot(view.view.webContents, maxElements)
+        if (!res.ok) return textContent(res)
+        return textContent({ ok: true, tabId: id, format: 'dom', data: res.data })
+      }
+      const res = await captureAxSnapshot(view.view.webContents, id, { maxElements, target: targetRef })
+      if (!res.ok) return textContent({ ok: false, tabId: id, error: res.error })
+      return textContent({ ok: true, tabId: id, format: 'ax', ...res.data })
     }
   )
 
@@ -376,46 +399,63 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
   tool(
     'browser_click',
     {
-      selector: z.string().describe('CSS 选择器'),
+      target: z
+        .string()
+        .optional()
+        .describe('要点的元素:快照里的 ref(如 e12)或 CSS 选择器(推荐用 ref)'),
+      selector: z.string().optional().describe('CSS 选择器;与 target 等价(保留旧的写法)'),
       tabId: z.number().optional(),
       waitUntil: WaitUntilSchema.default('none').describe(
         "'none' 点完即返回(默认,适合 SPA 内局部交互);'load' 等到点击引发的跳转加载完成"
       ),
       timeoutMs: z.number().int().positive().optional()
     },
-    async ({ selector, tabId, waitUntil, timeoutMs }) => {
+    async ({ target: locator, selector, tabId, waitUntil, timeoutMs }) => {
       const { view, fail } = target(tabId)
       if (!view) return textContent({ ok: false, error: fail })
       const id = view.info.id
-      const res = await pageClick(view.view.webContents, selector)
+      const wc = view.view.webContents
+      const at = locator ?? selector
+      if (!at) return textContent({ ok: false, tabId: id, error: '需要 target(ref 或 CSS 选择器)或 selector' })
+
+      const byRef = /^e\d+$/.test(at)
+      const res = byRef ? await pageClickRef(wc, id, at) : await pageClick(wc, at)
       if (!res.ok) return textContent({ ok: false, tabId: id, error: res.error })
-      if (waitUntil !== 'load') return textContent({ ok: true, tabId: id, selector, result: res })
-      const load = await waitForLoad(view.view.webContents, {
+      const how = byRef ? { ref: at } : { selector: at }
+      if (waitUntil !== 'load') return textContent({ ok: true, tabId: id, ...how, result: res.result })
+      const load = await waitForLoad(wc, {
         mode: 'maybe-navigation',
         timeoutMs: timeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS
       })
-      return textContent({ ok: load.ok, tabId: id, selector, result: res, ...loadFields(load) })
+      return textContent({ ok: load.ok, tabId: id, ...how, result: res.result, ...loadFields(load) })
     }
   )
 
   tool(
     'browser_type',
     {
-      selector: z.string().optional().describe('CSS 选择器;省略则输入到当前聚焦元素'),
       text: z.string(),
+      target: z
+        .string()
+        .optional()
+        .describe('要输入的元素:快照里的 ref(如 e12)或 CSS 选择器(推荐用 ref);省略则输入到当前聚焦元素'),
+      selector: z.string().optional().describe('CSS 选择器;与 target 等价(保留旧的写法)'),
       clear: z.boolean().default(true).describe('输入前是否清空原内容'),
       tabId: z.number().optional()
     },
-    async ({ selector, text, clear, tabId }) => {
+    async ({ text, target: locator, selector, clear, tabId }) => {
       const { view, fail } = target(tabId)
       if (!view) return textContent({ ok: false, error: fail })
-      const res = await pageType(view.view.webContents, selector ?? '', text, clear)
-      const typed = (res.result as { value?: string } | null)?.value
-      return textContent(
-        res.ok
-          ? { ok: true, tabId: view.info.id, typed: text, value: typed ?? '' }
-          : { ok: false, tabId: view.info.id, error: res.error }
-      )
+      const id = view.info.id
+      const wc = view.view.webContents
+      const at = locator ?? selector
+      const byRef = !!at && /^e\d+$/.test(at)
+      const res = byRef
+        ? await pageTypeRef(wc, id, at, text, clear)
+        : await pageType(wc, at ?? '', text, clear)
+      if (!res.ok) return textContent({ ok: false, tabId: id, error: res.error })
+      const value = (res.result as { value?: string } | null)?.value
+      return textContent({ ok: true, tabId: id, typed: text, value: value ?? '' })
     }
   )
 
@@ -563,6 +603,8 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
     const hit = windows.byTabId(tabId)
     if (!hit) return textContent({ ok: false, error: `标签 ${tabId} 不存在` })
     const res = hit.ctx.tabs.close(tabId)
+    // 标签没了,它的 ref 表也没有意义了
+    forgetAxSession(tabId)
     return textContent(res.ok ? { ok: true, closed: tabId } : { ok: false, error: `标签 ${tabId} 不存在` })
   })
 

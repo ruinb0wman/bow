@@ -211,11 +211,12 @@ assert(!/Electron/.test(uaStr), `UA 不应含 Electron,实际: ${uaStr}`)
 assert(procType === 'undefined', '页面不应暴露 window.process')
 console.log(`✓ 浏览器签名 UA: ${uaStr}`)
 
-// 3. 快照
+// 3. 快照(默认 format:ax = 带 ref 的无障碍树)
 const snap = await client.callTool({ name: 'browser_snapshot', arguments: { tabId, maxElements: 50 } })
 const snapText = JSON.parse(snap.content[0].text)
-console.log(`✓ browser_snapshot: ${snapText.data?.elements?.length ?? 0} 个元素, title=${snapText.data?.title}`)
-assert(Array.isArray(snapText.data?.elements), '快照含元素列表')
+console.log(`✓ browser_snapshot: ${snapText.elements} 个元素, title=${snapText.title} (format=${snapText.format})`)
+assert(snapText.format === 'ax', '快照默认走无障碍树', snapText)
+assert(typeof snapText.tree === 'string' && snapText.tree.length > 0, '快照含文本树', snapText)
 
 // 3.1 阅读通道:正文抽取 → markdown。断言不依赖具体站点文案(example.com 的文案会变):
 //     比的是「抽出来的东西比原始 HTML 小一个量级」与「返回体自洽」
@@ -245,6 +246,49 @@ const readBad = await client.callTool({ name: 'browser_read', arguments: { tabId
 assert(readBad.isError === true, 'browser_read 未知 selector 应报错', readBad.content[0].text)
 assert(String(readBad.content[0].text).includes('未找到选择器'), '报错应指出选择器不存在')
 console.log('✓ browser_read 未知 selector 已报错')
+
+// 3.4 无障碍树 + ref:注入一个按钮,按 ref 点它,并确认**只点了一次**
+//     (旧实现先派发 click 事件再调一次 el.click(),真实页面上表现为“点一下触发两下”)
+await client.callTool({
+  name: 'browser_eval',
+  arguments: {
+    tabId,
+    code:
+      '(() => { window.__smokeClicks = 0;' +
+      " document.body.insertAdjacentHTML('beforeend'," +
+      "   '<button id=\"bow-smoke-btn\" onclick=\"window.__smokeClicks++\">bow 冒烟按钮</button>');" +
+      ' return true })()'
+  }
+})
+const axSnap = await client.callTool({ name: 'browser_snapshot', arguments: { tabId } })
+const axText = JSON.parse(axSnap.content[0].text)
+assert(axText.format === 'ax', 'snapshot 默认走无障碍树(format: ax)', axText)
+assert(typeof axText.tree === 'string' && axText.tree.length > 0, '无障碍树文本非空')
+assert(axText.elements > 0, '无障碍树里有可寻址元素', axText.elements)
+const smokeRef = String(axText.tree).match(/- button "bow 冒烟按钮" \[ref=(e\d+)\]/)?.[1]
+assert(!!smokeRef, '在无障碍树里找到注入按钮的 ref', String(axText.tree).slice(0, 200))
+const refClick = await client.callTool({ name: 'browser_click', arguments: { tabId, target: smokeRef } })
+assert(refClick.isError !== true, '按 ref 点击成功', refClick.content[0].text)
+const clickCount = async () =>
+  JSON.parse(
+    (await client.callTool({ name: 'browser_eval', arguments: { tabId, code: 'window.__smokeClicks' } }))
+      .content[0].text
+  ).result
+assert((await clickCount()) === 1, `按 ref 点击应当只触发一次(实际 ${await clickCount()})—— 双击是回归`)
+const selClick = await client.callTool({ name: 'browser_click', arguments: { tabId, selector: '#bow-smoke-btn' } })
+assert(selClick.isError !== true, 'selector 旧写法仍然可用', selClick.content[0].text)
+assert((await clickCount()) === 2, 'selector 路径也只触发一次')
+console.log(`✓ 无障碍树 ${axText.elements} 个元素;按 ref 点击(只用 ref,不经选择器)正常`)
+
+// 3.5 format:'dom' 是刻意留的退路(需要 CSS 选择器 / 无障碍树取不到时用)
+const domSnap = await client.callTool({ name: 'browser_snapshot', arguments: { tabId, format: 'dom', maxElements: 20 } })
+const domText = JSON.parse(domSnap.content[0].text)
+assert(domText.format === 'dom' && Array.isArray(domText.data?.elements), 'format:dom 仍返回旧的元素清单', domText)
+assert(
+  typeof domText.data.elements[0]?.selector === 'string',
+  'dom 清单里仍带 CSS 选择器'
+)
+console.log(`✓ format:dom 退路可用(${domText.data.elements.length} 个元素)`)
 
 // 3.5 等待原语:browser_wait 等元素
 const wOk = await client.callTool({

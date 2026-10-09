@@ -1,9 +1,11 @@
 /** 页面操作:通过 executeJavaScript 注入执行,带统一超时与错误包装 */
 
 import type { WebContents } from 'electron'
+import { withDebugger, type SendCommand } from './debuggerSession'
+import { runOnAxRef } from './axSnapshot'
 import type { ActionResult, PageRead, PageSnapshot } from '@shared/types'
 import { logError } from './logger'
-import { CLICK_FN, READ_FN, SCROLL_FN, SNAPSHOT_FN, TYPE_FN } from './pageScripts'
+import { CLICK_BY_SELECTOR_FN, CLICK_FN, READ_FN, SCROLL_FN, SNAPSHOT_FN, TYPE_BY_SELECTOR_FN, TYPE_FN } from './pageScripts'
 
 const EXEC_TIMEOUT = 10_000
 
@@ -53,11 +55,46 @@ export async function pageSnapshot(wc: WebContents, maxElements = 200): Promise<
 }
 
 export async function pageClick(wc: WebContents, selector: string): Promise<ActionResult> {
-  return lift(await runInPage(wc, CLICK_FN, [selector]))
+  return lift(await runInPage(wc, CLICK_BY_SELECTOR_FN, [selector]))
 }
 
 export async function pageType(wc: WebContents, selector: string, text: string, clear: boolean): Promise<ActionResult> {
-  return lift(await runInPage(wc, TYPE_FN, [selector, text, clear]))
+  return lift(await runInPage(wc, TYPE_BY_SELECTOR_FN, [selector, text, clear]))
+}
+
+/**
+ * ref 路径的点击:节点句柄由 a11y 快照给出,经 `runOnAxRef`(校验文档身份)解析回真实节点再执行。
+ * **全程不经过选择器** —— 所以不存在「选择器指到别的元素」这种错;节点没了就明确失败。
+ */
+export async function pageClickRef(wc: WebContents, tabId: number, ref: string): Promise<ActionResult> {
+  const res = await runOnAxRef(wc, tabId, ref, async (objectId, send) => {
+    const out = await send('Runtime.callFunctionOn', {
+      objectId,
+      functionDeclaration: `function(){ var fn = ${CLICK_FN}; return fn(this); }`,
+      returnByValue: true
+    })
+    return (out?.result?.value ?? {}) as Record<string, unknown>
+  })
+  return res.ok ? { ok: true, result: res.value } : { ok: false, error: res.error }
+}
+
+export async function pageTypeRef(
+  wc: WebContents,
+  tabId: number,
+  ref: string,
+  text: string,
+  clear: boolean
+): Promise<ActionResult> {
+  const res = await runOnAxRef(wc, tabId, ref, async (objectId, send) => {
+    const out = await send('Runtime.callFunctionOn', {
+      objectId,
+      functionDeclaration: `function(text, clear){ var fn = ${TYPE_FN}; return fn(this, text, clear); }`,
+      arguments: [{ value: text }, { value: clear }],
+      returnByValue: true
+    })
+    return (out?.result?.value ?? {}) as Record<string, unknown>
+  })
+  return res.ok ? { ok: true, result: res.value } : { ok: false, error: res.error }
 }
 
 export interface PageReadOptions {
@@ -162,11 +199,8 @@ const MAX_FULL_PAGE_DEVICE_PX = 16_000
  * 这条路不受页面 CSP / 脚本策略影响,也不会另起一次主进程→渲染进程的往返。
  * 读不到就返回 null —— 宁可明确失败,不能拿 dpr=1 去赌一个可能高得多的真实尺寸(会得到错图)。
  */
-async function readDevicePixelRatio(dbg: WebContents['debugger']): Promise<number | null> {
-  const res = await dbg.sendCommand('Runtime.evaluate', {
-    expression: 'window.devicePixelRatio',
-    returnByValue: true
-  })
+async function readDevicePixelRatio(send: SendCommand): Promise<number | null> {
+  const res = await send('Runtime.evaluate', { expression: 'window.devicePixelRatio', returnByValue: true })
   const value = Number(res?.result?.value)
   return Number.isFinite(value) && value > 0 ? value : null
 }
@@ -208,30 +242,14 @@ export async function pageScreenshot(
 async function fullPageScreenshot(
   wc: WebContents
 ): Promise<ActionResult & { data?: { pngBase64: string } }> {
-  const dbg = wc.debugger
-  if (!dbg) return { ok: false, error: '当前环境不支持整页截图(拿不到调试器)' }
-
-  let attachedByUs = false
-  if (!dbg.isAttached()) {
-    try {
-      dbg.attach('1.3')
-      attachedByUs = true
-    } catch (e) {
-      return {
-        ok: false,
-        error: `整页截图需要临时附加调试器,附加失败(DevTools 是否已打开?):${String((e as Error).message ?? e)}`
-      }
-    }
-  }
-
-  try {
-    const metrics = await dbg.sendCommand('Page.getLayoutMetrics')
+  const res = await withDebugger(wc, async (send): Promise<ActionResult & { data?: { pngBase64: string } }> => {
+    const metrics = await send('Page.getLayoutMetrics')
     const size = metrics?.cssContentSize ?? metrics?.contentSize
     const width = Math.ceil(Number(size?.width) || 0)
     const height = Math.ceil(Number(size?.height) || 0)
     if (width <= 0 || height <= 0) return { ok: false, error: '拿不到页面尺寸,整页截图失败' }
 
-    const dpr = await readDevicePixelRatio(dbg)
+    const dpr = await readDevicePixelRatio(send)
     if (dpr == null) return { ok: false, error: '拿不到页面缩放比,整页截图失败' }
     const maxCssHeight = Math.floor(MAX_FULL_PAGE_DEVICE_PX / dpr)
     if (height > maxCssHeight) {
@@ -243,7 +261,7 @@ async function fullPageScreenshot(
       }
     }
 
-    const shot = await dbg.sendCommand('Page.captureScreenshot', {
+    const shot = await send('Page.captureScreenshot', {
       format: 'png',
       fromSurface: true,
       captureBeyondViewport: true,
@@ -254,18 +272,18 @@ async function fullPageScreenshot(
       return { ok: false, error: '整页截图返回为空(页面可能尚未渲染或过高)' }
     }
     return { ok: true, data: { pngBase64 } }
-  } catch (e) {
-    logError('整页截图失败', e)
-    return { ok: false, error: `整页截图失败:${String((e as Error).message ?? e)}` }
-  } finally {
-    if (attachedByUs) {
-      try {
-        dbg.detach()
-      } catch (e) {
-        logError('调试器 detach 失败', e)
-      }
+  })
+
+  if (res.ok) return res.value
+  // 附加失败 = 调试器被别人占着(最常见就是 DevTools)。不去抢,给出下一步
+  if (res.busy) {
+    return {
+      ok: false,
+      error: `整页截图需要临时附加调试器,附加失败(DevTools 是否已打开?):${res.detail}`
     }
   }
+  logError('整页截图失败', res.error)
+  return { ok: false, error: `整页截图失败:${String((res.error as Error)?.message ?? res.error)}` }
 }
 
 /** 轮询间隔(ms) */
