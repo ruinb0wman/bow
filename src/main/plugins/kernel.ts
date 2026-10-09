@@ -66,6 +66,12 @@ const EMPTY_PAGE_API: PluginPageApi = {
   focus: () => {},
   execute: () => Promise.reject(new Error('页面执行 API 尚未就绪')),
   uploadFiles: () => Promise.reject(new Error('页面执行 API 尚未就绪')),
+  fileChooser: {
+    arm: () => Promise.resolve({ ok: false, error: '页面执行 API 尚未就绪' }),
+    disarm: () => {},
+    armed: () => false,
+    answer: () => Promise.reject(new Error('页面执行 API 尚未就绪'))
+  },
   openDevToolsTab: () => {
     throw new Error('页面执行 API 尚未就绪')
   }
@@ -484,6 +490,12 @@ class PluginContextImpl implements PluginContext {
     focus: (tabId) => this.kernel.pages.focus(tabId),
     execute: (tabId, code, opts) => this.kernel.pages.execute(tabId, code, opts),
     uploadFiles: (opts) => this.kernel.pages.uploadFiles(opts),
+    fileChooser: {
+      arm: (tabId, hooks) => this.kernel.pages.fileChooser.arm(tabId, hooks),
+      disarm: (tabId) => this.kernel.pages.fileChooser.disarm(tabId),
+      armed: (tabId) => this.kernel.pages.fileChooser.armed(tabId),
+      answer: (tabId, opts) => this.kernel.pages.fileChooser.answer(tabId, opts)
+    },
     openDevToolsTab: (frontendUrl, title, activate, windowId) =>
       this.kernel.pages.openDevToolsTab(frontendUrl, title, activate, windowId)
   }

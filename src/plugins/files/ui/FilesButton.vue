@@ -11,15 +11,22 @@ import { FILES_EVENT } from '../shared'
 const api = window.browserAPI
 const unsubs: Array<() => void> = []
 
-function openPanel(): void {
-  void api.showOverlay({ id: 'plugin:files:panel', payload: undefined, placement: 'full' })
+function openPanel(payload?: unknown): void {
+  void api.showOverlay({ id: 'plugin:files:panel', payload, placement: 'full' })
 }
 
 onMounted(() => {
   unsubs.push(
-    api.plugins.onEvent((ev) => {
+    api.plugins.onEvent(async (ev) => {
       if (ev.id !== 'files' || ev.event !== FILES_EVENT.openPanel) return
-      openPanel()
+      // `plugin:event` 是**广播到所有窗口**的,而这次选择请求属于某一个标签 ——
+      // 只有拥有那个标签的窗口才该开面板(否则每个窗口都会弹一个)
+      const payload = ev.args as { tabId?: number } | undefined
+      if (typeof payload?.tabId === 'number') {
+        const tabs = await api.listTabs().catch(() => [])
+        if (!tabs.some((t) => t.id === payload.tabId)) return
+      }
+      openPanel(payload)
     })
   )
 })

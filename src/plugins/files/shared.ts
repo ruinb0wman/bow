@@ -34,6 +34,12 @@ export interface FilesSettings {
   roots: string[]
   /** 允许 `browser_fs_delete {permanent:true}`:不进系统回收站的删除 */
   allowPermanentDelete: boolean
+  /**
+   * 接管网站的文件选择框:点网页的上传按钮时不弹系统对话框,改由 bow 面板选文件。
+   * 代价:需要对**含 file input 的标签页**一直挂着调试器 → 那些标签页开着 DevTools 会让接管失效
+   * (DevTools 赢,我们收到 `onLost` 后不再自动重挂)。
+   */
+  interceptFileChooser: boolean
   /** 列目录的默认条数 */
   listLimit: number
 }
@@ -42,6 +48,7 @@ export const DEFAULT_FILES_SETTINGS: FilesSettings = {
   version: 1,
   roots: [],
   allowPermanentDelete: false,
+  interceptFileChooser: true,
   listLimit: DEFAULT_LIST_LIMIT
 }
 
@@ -49,6 +56,8 @@ export const DEFAULT_FILES_SETTINGS: FilesSettings = {
 export const FILES_EVENT = {
   /** 设置变更(工作目录增删 / 开关) */
   changed: 'changed',
+  /** 这次文件选择结束了(应答 / 取消 / 过期):让所有窗口收起「选文件」模式 */
+  chooserResolved: 'chooser-resolved',
   /** 请工具栏按钮把面板打开(主进程不能直接开浮层;密码插件的 `open-panel` 同路子) */
   openPanel: 'open-panel'
 } as const
@@ -184,6 +193,8 @@ export function normalizeFilesSettings(input: unknown): FilesSettings {
     version: DEFAULT_FILES_SETTINGS.version,
     roots,
     allowPermanentDelete: raw.allowPermanentDelete === true,
+    // 默认**开**:用户要的就是「在 bow 内部选文件」;显式 false 才关
+    interceptFileChooser: raw.interceptFileChooser !== false,
     listLimit: clampListLimit(raw.listLimit)
   }
 }

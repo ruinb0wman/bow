@@ -27,14 +27,24 @@
 >   (ARCHITECTURE §13-36),所以上传**没有纯插件实现** —— 改成了用户拍板的「核心出窄能力 + 插件留工具与面板」。
 >   顺手把 `target()`(MCP 专属窗口那套语义)抽成 `main/tabTarget.ts`,核心工具与插件 API 共用一份,避免漂移。
 >
-> **未做**:步骤 5(接管网站文件选择框 → 面板里选文件)。
+> - **步骤 5(已做)**:核心 `ctx.pages.fileChooser.{arm,disarm,armed,answer}` + 插件决策层
+>   (`plugins/files/chooser.ts`:开关 / 「页面有 file input 才挂」的探测 / 一次只攒一个请求 / 45s 超时 /
+>   面板进入「选文件」模式 / 手动接管)。设置页多一个开关,面板右上角多一个手动接管按钮。
+>
+> **全部步骤已完成**。剩下的是「已知限制」而不是待办:iframe 里的输入框取不到、SPA 懒创建输入框只能手动接管、
+> `.vue` 不参与类型检查(见 ARCHITECTURE §13 开发层第 9 条)。
 >
 > **真机已验证(2026-10-09,四轮 45 项)**:① 工具面 18/18;② 面板 17/17(CDP 驱动真窗口);
 > ③ saveDir/白名单 7/7(含真下一次);④ **上传 13/13** ——
 > **§8 第 2 条风险(change 事件)正式证伪**:`DOM.setFileInputFiles` 之后**浏览器自己会触发 `change` 与 `input`**
 > (实测各 1 次),页面能读到文件内容,不需要手动补 `dispatchEvent`。
-> 新增事实:iframe 里的 file input **用 selector 找不到**(按主文档查询)—— 步骤 5 的接管路径可能能覆盖(待验),
-> 已写进 README 的已知限制。
+> 新增事实:iframe 里的 file input **用 selector 找不到**(按主文档查询)—— 已写进 README 的已知限制。
+> ⑤ **接管选择框 15/15** —— **§8 第 1 条风险(成败点)证实成立**:
+> `Page.setInterceptFileChooserDialog {enabled:true,cancel:true}` 确实**抑制原生框**(真机上没有弹系统对话框)
+> 并回 `Page.fileChooserOpened {mode:'selectMultiple', backendNodeId}`;面板在那个窗口里自动打开、应答后网页
+> 收到文件且 `change` 触发 1 次;取消/关开关都能收回接管,关掉后点击不再被拦。
+> 顺带**真机抓到一处 `.vue` 里的 API 名写错**(`api.tabs.list()` 不存在,真名 `api.listTabs()`)——
+> 因为仓库的 `typecheck` 是 `tsc` 而不是 `vue-tsc`,`.vue` 的脚本根本没被检查过(已记进 ARCHITECTURE §13 开发层)。
 >
 > **实施中改掉的一处设计**:`browser_fs_roots` 与 `getSettings` 报的 roots 改成取 `resolveFileRoots()`
 > (**guard 真正放行的那份**,每次现读磁盘)而不是内存 store —— 真机验证时发现这两者一旦不同步

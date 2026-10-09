@@ -391,6 +391,7 @@ interface PluginUiContribution {
 | `content.inject` | `(spec) => void` | 移除规则并 `removeInsertedCSS` 所有已注入 key |
 | `content.refresh` | `(tabId?) => void` | 只重跑 CSS(不重跑 JS),用于规则变更后的即时反馈 |
 | `pages.activeTabId/focus/execute` | `execute(tabId, code, {timeoutMs=10000})` | 不回收(内核持有) |
+| `pages.fileChooser` | `arm(tabId, {onOpened, onLost}) => Promise<ArmResult>` / `disarm(tabId)` / `armed(tabId)` / `answer(tabId, {backendNodeId, files})` | 不回收(内核持有)。**接管网站的原生文件选择框**:`Page.setInterceptFileChooserDialog {enabled,cancel}` 抑制系统对话框,`Page.fileChooserOpened` 经 `onOpened` 送回插件(插件再决定弹自己的面板还是直接塞文件)。⚠️ 需要**一直**挂着该标签的调试器 ⇒ 该标签**开 DevTools 会终止接管**(`onLost`,不自动重挂);`disarm` 只在「本会话是我们挂的」时 detach。唯一调用方是文件管理插件 |
 | `pages.uploadFiles` | `({tabId?, files, selector?}) => Promise<PageUploadResult>` | 不回收(内核持有)。把本地文件塞进页面里的 `<input type=file>`(CDP `DOM.setFileInputFiles`);**插件拿不到 `webContents`**,所以这条只能由核心出能力。`tabId` 与核心页面类工具**同一套解析规则**(`tabTarget.ts`,所以省略时绝不动用户窗口);不弹对话框、不需要用户手势;调试器被 DevTools 占着时明确失败(`debuggerBusy: true`)。无 `selector` 时**只有页面上恰好一个** file input 才生效,多个会返回 `candidates` 让调用方自己挑 —— 唯一调用方是文件管理插件的 `browser_upload` |
 | `pages.openDevToolsTab` | `(frontendUrl, title?, activate?, windowId?) => number` | 不回收(内核持有)。把 CDP 前端接进标签页(设备检查插件用);`windowId` 缺省=聚焦窗口。参数是**已拼好的前端地址**:可能是 `@shared/devtools` 拼的 bow 自带那份,也可能是设备指定的 `https://…`(见 `device-inspect/shared.effectiveStrategy`);标签只允许 `devtools://` 或与入口同源的导航 |
 | `tabs.list/getActive` | `() => TabInfo[] / TabInfo \| null` | 只读;`list` 数据源是 `WindowManager.allTabs()`(**跨窗口**,每条带 `windowId`),`getActive` 是**聚焦窗口**的 `TabManager` |
@@ -546,7 +547,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `downloads` | — | ui, mcp | `list` `pause` `resume` `cancel` `retry` `remove` `clear` `openFile` `showInFolder` `getSettings` `setSettings` `pickDirectory` `revealDir` | `browser_list_downloads` `browser_download` | — | — | — | — | emit `changed` | `downloads.json`(记录)+ `downloads-settings.json`(目录 / 询问 / 保留条数) |
 | `passwords` | — | ui, shortcut | `status` `setup` `unlock` `lock` `list` `getEntry` `save` `remove` `copy` `readPageFields` `fillEntry` `beginFill` `changeMaster` `getSettings` `setSettings` `wipe` `exportBackup` `importBackup` | —(刻意不贡献 MCP 工具:与 AI 隔离) | — | —(按需 `pages.execute` 注入探测 / 下拉 / 填入脚本,不注入常驻脚本) | — | `Ctrl/Cmd+Shift+P` | emit `state-changed` `settings-changed` `open-panel` | `passwords.json`(AES-256-GCM 密文)+ `passwords-settings.json`(自动锁定 / 剪贴板 / 子域匹配);`exportBackup` 只写**密文副本**到 bow 下载目录;`importBackup` 校验形状后**整库替换**(已初始化时先把当前库导出一份再覆盖,导入后强制锁定) |
 | `pomo` | — | ui, mcp, shortcut | `getState` `getSettings` `setSettings` `start` `pause` `skip` `reset` `toggle` | `browser_pomo_status` `browser_pomo_start` `browser_pomo_pause` `browser_pomo_skip` | — | — | — | `Ctrl/Cmd+Shift+O` | emit `state` `phase-end` | `pomo.json`(设置 + 运行状态:阶段 / `endsAt` / 本轮计数 / 今日完成数;**只在状态转换时写盘**) |
-| `files` | — | ui, mcp | `getSettings` `setSettings` `pickRoots` `removeRoot` `openRoot` + 面板面:`list` `readText` `mkdir` `rename` `move` `copy` `remove` `pickDirectory` `openPath` `showInFolder` | `browser_fs_roots` `browser_fs_list` `browser_fs_info` `browser_fs_read` `browser_fs_write` `browser_fs_mkdir` `browser_fs_move` `browser_fs_copy` `browser_fs_delete` | — | — | — | — | emit `changed` `open-panel` | `files-settings.json`(工作目录白名单 + 允许永久删除);工具与面板**共用同一套操作层与 guard** |
+| `files` | — | ui, mcp | `getSettings` `setSettings` `pickRoots` `removeRoot` `openRoot` + 面板面:`list` `readText` `mkdir` `rename` `move` `copy` `remove` `pickDirectory` `openPath` `showInFolder` + 接管面:`chooserStatus` `answerChooser` `cancelChooser` `armTab` `disarmTab` | `browser_fs_roots` `browser_fs_list` `browser_fs_info` `browser_fs_read` `browser_fs_write` `browser_fs_mkdir` `browser_fs_move` `browser_fs_copy` `browser_fs_delete` `browser_upload` | — | — | — | — | on `tab:navigated`(页面有 file input 才挂接管) `tab:closed`;emit `changed` `open-panel` `chooser-resolved` | `files-settings.json`(工作目录白名单 + 允许永久删除 + 接管文件选择);工具与面板**共用同一套操作层与 guard**;决策层在 `plugins/files/chooser.ts`,CDP 在核心 |
 
 **渲染层侧**(`registry.ts` / 各插件 `ui.ts`)
 
@@ -1237,6 +1238,11 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 
 7. `npm run build` 不等于产出可用的应用;发布要 `npm run dist`(按当前平台打包,见 §11)。
 8. 外部化依赖必须进 `app.asar` 的 `node_modules`,否则双击一闪即退;`verify-dist.mjs` 是守门人。
+9. **`.vue` 里的 `<script setup>` 不参与类型检查**:`npm run typecheck` 用的是 `tsc`(不是 `vue-tsc`),
+   `*.vue` 被 `env.d.ts` 的 shim 收成「泛型组件」,里面的 `window.browserAPI.xxx()` 写错名字**不会报错**
+   (2026-10-09 实测:文件管理插件里写了不存在的 `api.tabs.list()`,typecheck 全绿、构建也过,
+   只有真机跑起来才发现面板根本不开)。改 `.vue` 里的 API 调用时**自己去 `src/preload/index.ts` 对名字**,
+   或者用真机/CDP 验一遍。想根治就换 `vue-tsc`(当时没做,是另一件事)。
 9. Windows 上不要用内联环境变量赋值,统一 `open-bow.mjs`。
 10. stdio 实例不参与单实例锁 → 开新会话前先关掉旧的 stdio 实例。
 11. 新增 `src/plugins/*/scripts.ts` 这类文件要登记进 `tsconfig.node.json` 的 include。
@@ -1313,7 +1319,16 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 15. 核心工具 strict 校验,插件工具**不** strict —— 写工具时要意识到这个不对称。
 16. 改工具语义必须同步 `MCP_INSTRUCTIONS`(它才是 LLM 的行为契约)。
 17. 延迟回复/竞态问题优先用「观察到本次开始」的判据解决,不要用固定宽限期赌(300ms 曾真机赌输)。
-18. **路径类工具必须自己校验**(插件工具不 strict,见 15):删除/写入/移动这类工具的**每个**入参路径都要过
+18. **插件要用 CDP 时,能力由核心出、插件只做决策**(`ctx.pages.uploadFiles` / `ctx.pages.fileChooser`):
+    插件拿不到 `webContents`(见第 36 条),而 `DOM.setFileInputFiles` / `Page.setInterceptFileChooserDialog`
+    只能经 `wc.debugger` 发。**不要**为此把 wc 或通用 `sendCommand` 暴露给插件 —— 那等于把任意页面控制交出去。
+    两条已实测的事实(2026-10-09 真机验过):
+    - `DOM.setFileInputFiles` 之后**浏览器自己会触发 `change` 与 `input`**,不要手动补 `dispatchEvent`
+      (补了会双触发,站点可能上传两次);
+    - `Page.setInterceptFileChooserDialog {enabled:true, cancel:true}` 确实**抑制原生框**并回
+      `Page.fileChooserOpened {mode, backendNodeId}`;`cancel:true` 不能省。
+    代价是接管要**一直**挂着调试器 ⇒ 该标签开 DevTools 会终止我们的会话(DevTools 赢,不抢)。
+19. **路径类工具必须自己校验**(插件工具不 strict,见 15):删除/写入/移动这类工具的**每个**入参路径都要过
     `main/plugins/fileRoots.ts` 的 `checkFilePath()`(白名单 + 对**最深的已存在祖先** `realpath` + deny 名单)。
     两个容易写错的点:包含判定**不能用 `startsWith`**(`/a/bc` 会被 `/a/b` 误判成在内,要用 `path.relative`);
     以及只 `resolve()` 不 `realpath` 的话,工作目录里一个指向 `/etc` 的符号链接就能把 AI 带出去。

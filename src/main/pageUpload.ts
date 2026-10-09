@@ -270,3 +270,170 @@ export async function uploadFilesToPage(
     lease.release()
   }
 }
+
+// ---------- 接管网站的文件选择框(点击上传按钮时,不弹原生框,改由 bow 面板选文件) ----------
+
+/**
+ * `Page.fileChooserOpened` 的参数(`frameId` 只在能拿到时才带)。
+ * `mode` 是 Chromium 给的两个值之一(单/多选),`backendNodeId` 是那个 file input 的节点 id。
+ */
+export interface FileChooserOpenedInfo {
+  mode: 'selectSingle' | 'selectMultiple'
+  backendNodeId: number
+  frameId?: string
+}
+
+export interface FileChooserHooks {
+  onOpened(info: FileChooserOpenedInfo): void
+  /** 接管掉了(DevTools 抢走 / 标签被关):调用方必须把状态收干净 */
+  onLost(reason: string): void
+}
+
+export type ArmResult = { ok: true; already: boolean } | { ok: false; error: string }
+
+interface ArmedSession {
+  dbg: WebContents['debugger']
+  hooks: FileChooserHooks
+  onMessage: (event: unknown, method: string, params: unknown) => void
+  onDetach: (event: unknown, reason: string) => void
+  release: () => void
+}
+
+/** 已接管的会话(按 webContents.id);`armed()` / `disarm()` / `answer()` 都查它 */
+const ARMED = new Map<number, ArmedSession>()
+
+/**
+ * 接管某个标签页的文件选择框:`Page.setInterceptFileChooserDialog {enabled,cancel}` 会**抑制原生框**
+ * 并把控制权交给协议层(事件 `Page.fileChooserOpened`)。调试器要**一直挂着**,所以:
+ * - DevTools 被唤起会终止本会话(`detach`)→ 我们收状态并回调 `onLost`,**不偷偷重挂**(会和 DevTools 打架);
+ * - 自己挂的才在 disarm 时 detach;别人(整页截图)挂着的复用。
+ */
+export async function armFileChooser(wc: WebContents, hooks: FileChooserHooks): Promise<ArmResult> {
+  if (wc.isDestroyed()) return { ok: false, error: '标签页已关闭' }
+  const existing = ARMED.get(wc.id)
+  if (existing) {
+    existing.hooks = hooks // 重新挂同一标签:只换回调,不重复下发
+    return { ok: true, already: true }
+  }
+
+  const lease = leaseDebugger(wc)
+  if (!lease.ok || !lease.dbg) return { ok: false, error: lease.error ?? '拿不到调试器' }
+  const dbg = lease.dbg
+  try {
+    await bestEffort(dbg, 'Page.enable')
+    await dbg.sendCommand('Page.setInterceptFileChooserDialog', { enabled: true, cancel: true })
+  } catch (e) {
+    lease.release()
+    return { ok: false, error: `开启文件选择器接管失败:${messageOf(e)}` }
+  }
+
+  const onMessage = (_event: unknown, method: string, params: unknown): void => {
+    if (method !== 'Page.fileChooserOpened') return
+    const raw = params as { mode?: unknown; backendNodeId?: unknown; frameId?: unknown } | null
+    const backendNodeId = Number(raw?.backendNodeId) || 0
+    if (!backendNodeId) return
+    const info: FileChooserOpenedInfo = {
+      mode: raw?.mode === 'selectMultiple' ? 'selectMultiple' : 'selectSingle',
+      backendNodeId,
+      ...(typeof raw?.frameId === 'string' ? { frameId: raw.frameId } : {})
+    }
+    try {
+      ARMED.get(wc.id)?.hooks.onOpened(info)
+    } catch (e) {
+      // 回调抛错不能把 CDP 事件处理拖垮(而且这里是同步栈,抛出去没人接)
+      console.error('[pageUpload] onOpened 回调抛错', e)
+    }
+  }
+  const onDetach = (_event: unknown, reason: string): void => {
+    const session = ARMED.get(wc.id)
+    ARMED.delete(wc.id)
+    try {
+      session?.hooks.onLost(String(reason ?? 'unknown'))
+    } catch {
+      // 同上
+    }
+  }
+  dbg.on('message', onMessage)
+  dbg.on('detach', onDetach)
+  // 标签被关时不保证还有 detach,自己兜一层,别把会话留在表里
+  wc.once('destroyed', () => {
+    ARMED.delete(wc.id)
+  })
+
+  ARMED.set(wc.id, { dbg, hooks, onMessage, onDetach, release: lease.release })
+  return { ok: true, already: false }
+}
+
+/** 取消接管;返回它本来是不是接管着的 */
+export function disarmFileChooser(wc: WebContents): boolean {
+  const session = ARMED.get(wc.id)
+  if (!session) return false
+  ARMED.delete(wc.id)
+  try {
+    session.dbg.off('message', session.onMessage)
+    session.dbg.off('detach', session.onDetach)
+  } catch {
+    // 已经断开:忽略
+  }
+  session.release()
+  return true
+}
+
+export function isFileChooserArmed(wc: WebContents): boolean {
+  return ARMED.has(wc.id)
+}
+
+/** 用 `backendNodeId` 读回那个输入框的现状(接管路径没有选择器可用) */
+async function readInputStateByNode(
+  dbg: WebContents['debugger'],
+  backendNodeId: number
+): Promise<FileInputState | null> {
+  try {
+    const resolved = await dbg.sendCommand('DOM.resolveNode', { backendNodeId })
+    const objectId = resolved?.object?.objectId
+    if (typeof objectId !== 'string' || !objectId) return null
+    const called = await dbg.sendCommand('Runtime.callFunctionOn', {
+      objectId,
+      returnByValue: true,
+      functionDeclaration: `function () {
+        return {
+          multiple: !!this.multiple,
+          accept: this.accept || '',
+          files: [...(this.files || [])].map((f) => ({ name: String(f.name || ''), size: Number(f.size || 0), type: String(f.type || '') }))
+        }
+      }`
+    })
+    if (called?.exceptionDetails) return null
+    const value = called?.result?.value
+    return value && typeof value === 'object' ? (value as FileInputState) : null
+  } catch {
+    return null
+  }
+}
+
+/** 应答一次被接管的选择请求(把文件塞给当时被点的那个输入框) */
+export async function answerFileChooser(
+  wc: WebContents,
+  opts: { backendNodeId: number; files: string[] }
+): Promise<PageUploadResult> {
+  const files = (opts.files ?? []).filter((f) => typeof f === 'string' && f.trim() !== '')
+  if (files.length === 0) return { ok: false, error: '没有要上传的文件' }
+  const backendNodeId = Number(opts.backendNodeId) || 0
+  if (!backendNodeId) return { ok: false, error: '没有待应答的文件选择请求' }
+  const session = ARMED.get(wc.id)
+  if (!session) {
+    return { ok: false, error: '这个标签页现在没有处于接管状态(可能开着 DevTools,或接管已被取消)' }
+  }
+  try {
+    await bestEffort(session.dbg, 'DOM.enable')
+    await session.dbg.sendCommand('DOM.setFileInputFiles', { backendNodeId, files })
+    const state = await readInputStateByNode(session.dbg, backendNodeId)
+    if (!state) return { ok: true } // 塞是塞进去了,只是读不回来(节点已从文档移除之类)
+    if (state.files.length === 0) {
+      return { ok: false, input: state, error: '文件已下发但输入框里仍然是空的(页面可能在 change 里立刻清空了它)' }
+    }
+    return { ok: true, input: state }
+  } catch (e) {
+    return { ok: false, error: messageOf(e) }
+  }
+}

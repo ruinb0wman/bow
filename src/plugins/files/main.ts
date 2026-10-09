@@ -39,6 +39,8 @@ import {
   type PathCheck
 } from '../../main/plugins/fileRoots'
 import { resolveDownloadsDir } from '../../main/plugins/exportFile'
+import { createChooserController, type ChooserStatus } from './chooser'
+import { HAS_FILE_INPUT_FN } from './scripts'
 import {
   DEFAULT_FILES_SETTINGS,
   DEFAULT_READ_MAX_BYTES,
@@ -269,7 +271,12 @@ export default {
 
     function commit(next: FilesSettings): FilesSettingsState {
       const denyList = fileRootsDenyList()
-      store.setRaw({ ...normalizeFilesSettings(next), roots: sanitizeRoots(next.roots, denyList) })
+      const normalized = normalizeFilesSettings(next)
+      store.setRaw({ ...normalized, roots: sanitizeRoots(next.roots, denyList) })
+      // 接管开关动过就同步一次:关掉要把已经挂上的全部收回(否则调试器会一直占着)
+      if (normalized.interceptFileChooser !== chooser.status().enabled) {
+        chooser.setEnabled(normalized.interceptFileChooser)
+      }
       const state = settingsState()
       ctx.ipc.emit(FILES_EVENT.changed, state)
       return state
@@ -525,6 +532,46 @@ export default {
       }
     }
 
+    /**
+     * 校验 + 归一一批待上传/待移动的路径(过白名单),返回绝对路径。
+     * 工具与面板、以及「接管选择框」那条路都走它 —— 语义只有一份。
+     */
+    async function guardFiles(raw: unknown[]): Promise<{ ok: true; abs: string[] } | { ok: false; error: string }> {
+      const abs: string[] = []
+      for (const item of raw) {
+        const check = checkFilePath(item)
+        if (!check.ok) return { ok: false, error: check.error }
+        const info = await infoPath(check.abs)
+        if (!info.exists || info.type === 'dir') return { ok: false, error: `只能上传文件,这个不是文件:${check.abs}` }
+        abs.push(check.abs)
+      }
+      if (abs.length === 0) return { ok: false, error: '没有要上传的文件' }
+      return { ok: true, abs }
+    }
+
+    // ---------- 接管网站的文件选择框(核心持有调试器,这里只做决策)----------
+
+    const chooser = createChooserController({
+      pages: ctx.pages,
+      probe: (tabId) =>
+        ctx.pages
+          .execute(tabId, HAS_FILE_INPUT_FN, { timeoutMs: 3000 })
+          .then((value) => value === true)
+          .catch(() => false),
+      guardFiles,
+      openPanel: (payload) => ctx.ipc.emit(FILES_EVENT.openPanel, payload),
+      notifyResolved: (tabId) => ctx.ipc.emit(FILES_EVENT.chooserResolved, { tabId }),
+      log: (...args) => ctx.log(...args)
+    })
+    chooser.setEnabled(settings().interceptFileChooser)
+    // 页面加载完才评估:探测「这一页有没有 file input」不占调试器,真正挂的时候才占
+    ctx.events.on('tab:navigated', (payload: { tabId?: number }) => {
+      if (typeof payload?.tabId === 'number') void chooser.evaluate(payload.tabId)
+    })
+    ctx.events.on('tab:closed', (tab: { id?: number }) => {
+      if (typeof tab?.id === 'number') chooser.onClosed(tab.id)
+    })
+
     // ---------- IPC ----------
 
     ctx.ipc.handle('getSettings', (): FilesSettingsState => settingsState())
@@ -658,6 +705,34 @@ export default {
       if (!check.ok) return { ok: false, error: check.error }
       const err = await shell.openPath(check.abs)
       return err ? { ok: false, error: err } : { ok: true, path: check.abs }
+    })
+
+    ctx.ipc.handle('chooserStatus', (): ChooserStatus => chooser.status())
+
+    ctx.ipc.handle('answerChooser', async (paths: unknown): Promise<FilesActionResult> => {
+      const list = Array.isArray(paths) ? paths : []
+      const result = await chooser.answer(list)
+      if (!result) return { ok: false, error: '现在没有待应答的文件选择请求(可能已经超时或被取消)' }
+      return result.ok ? { ok: true } : { ok: false, error: result.error }
+    })
+
+    ctx.ipc.handle('cancelChooser', (): FilesActionResult => {
+      chooser.cancel()
+      return { ok: true }
+    })
+
+    ctx.ipc.handle('armTab', async (tabId: unknown): Promise<FilesActionResult> => {
+      const id = Number(tabId)
+      if (!Number.isInteger(id) || id <= 0) return { ok: false, error: '标签 id 不合法' }
+      const result = await chooser.armNow(id)
+      return result.ok ? { ok: true } : { ok: false, error: result.error }
+    })
+
+    ctx.ipc.handle('disarmTab', (tabId: unknown): FilesActionResult => {
+      const id = Number(tabId)
+      if (!Number.isInteger(id) || id <= 0) return { ok: false, error: '标签 id 不合法' }
+      chooser.disarm(id)
+      return { ok: true }
     })
 
     ctx.ipc.handle('showInFolder', (path: unknown): FilesActionResult => {
@@ -874,21 +949,19 @@ export default {
         ]
         if (raw.length === 0) return errorContent('要传 path 或 paths')
 
-        const files: string[] = []
-        for (const item of raw) {
-          const check = checkFilePath(item)
-          if (!check.ok) return errorContent(check.error)
-          const info = await infoPath(check.abs)
-          if (!info.exists || info.type === 'dir') {
-            return errorContent(`只能上传文件,这个不是文件:${check.abs}`)
-          }
-          files.push(check.abs)
-        }
+        const tabId = typeof args.tabId === 'number' ? args.tabId : undefined
 
+        // 1) 有「点了上传按钮、被我们接管下来」的待应答请求 → 优先应答它(这才是那一下点击该有的结果)
+        const taken = await chooser.answer(raw, tabId)
+        if (taken) return taken.ok ? textContent({ ok: true, via: 'chooser', files: raw }) : errorContent(taken.error ?? '应答失败')
+
+        // 2) 否则直接往页面的 file input 里塞(不需要用户点过任何按钮)
+        const guarded = await guardFiles(raw)
+        if (!guarded.ok) return errorContent(guarded.error)
         try {
           const result = await ctx.pages.uploadFiles({
-            ...(typeof args.tabId === 'number' ? { tabId: args.tabId } : {}),
-            files,
+            ...(tabId === undefined ? {} : { tabId }),
+            files: guarded.abs,
             ...(str(args.selector).trim() ? { selector: str(args.selector).trim() } : {})
           })
           return reply(result)

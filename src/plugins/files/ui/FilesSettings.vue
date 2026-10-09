@@ -59,6 +59,13 @@ async function togglePermanent(event: Event): Promise<void> {
   })
 }
 
+async function toggleChooser(event: Event): Promise<void> {
+  const checked = (event.target as HTMLInputElement).checked
+  state.value = await api.plugins.invoke<FilesSettingsState>('files', 'setSettings', {
+    interceptFileChooser: checked
+  })
+}
+
 onMounted(() => {
   void refresh()
   unsubs.push(
@@ -100,6 +107,25 @@ onBeforeUnmount(() => {
       <b>下载目录永远在列表里</b>(标着「默认」,不可删)—— 否则你添了工作目录之后,
       <code>browser_download</code> 指定保存到下载目录反而会被拒。
       bow 自身的数据目录(密码库 / 书签 / 插件设置)永远不可操作。
+    </div>
+
+    <div class="section-title">网站的文件选择框</div>
+    <div class="set-row">
+      <label class="set-check">
+        <input
+          type="checkbox"
+          :checked="state?.settings.interceptFileChooser ?? true"
+          @change="toggleChooser"
+        />
+        接管网站的文件选择(改用 bow 面板选文件)
+      </label>
+    </div>
+    <div class="fs-hint">
+      开着的时候:网页里的上传按钮被点击后**不再弹系统文件框**,而是由「文件」面板让你在白名单里挑文件
+      (也可以让 AI 用 <code>browser_upload</code> 直接给文件)。
+      代价:需要在**含文件输入框的标签页**上一直挂着调试器,所以那些标签页**开着 DevTools 会让接管失效**
+      (以 DevTools 为准,不抢);SPA 那种「点了按钮才创建输入框」的页面探测不到,
+      可以在「文件」面板里手动接管当前标签页。
     </div>
 
     <div class="section-title">删除</div>

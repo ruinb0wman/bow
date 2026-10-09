@@ -24,7 +24,13 @@ const env = vi.hoisted(() => ({
   pickResult: { canceled: true, filePaths: [] as string[] },
   uploadCalls: [] as Array<{ tabId?: number; files: string[]; selector?: string }>,
   uploadResult: null as unknown,
-  uploadThrows: false
+  uploadThrows: false,
+  probeResult: false,
+  armCalls: [] as number[],
+  disarmCalls: [] as number[],
+  armHooks: null as { onOpened(info: { mode: string; backendNodeId: number }): void; onLost(reason: string): void } | null,
+  answerCalls: [] as Array<{ tabId: number; backendNodeId: number; files: string[] }>,
+  answerResult: { ok: true } as { ok: boolean; error?: string }
 }))
 
 vi.mock('electron', () => ({
@@ -52,11 +58,19 @@ interface Harness {
   handlers: Map<string, (...args: any[]) => unknown>
   tools: Array<{ name: string; handler: (args: Record<string, unknown>) => Promise<McpToolResult> }>
   pluginEvents: Array<{ event: string; args: unknown }>
+  /** 驱动内核事件总线(插件订阅的 tab:navigated / tab:closed) */
+  emitEvent(name: string, payload?: unknown): void
 }
 
 function harness(): Harness {
   const handlers = new Map<string, (...args: any[]) => unknown>()
-  const state: Harness = { handlers, tools: [], pluginEvents: [] }
+  const subscriptions = new Map<string, (payload: unknown) => void>()
+  const state: Harness = {
+    handlers,
+    tools: [],
+    pluginEvents: [],
+    emitEvent: (name, payload) => subscriptions.get(name)?.(payload)
+  }
   const storage = <T,>(opts: { file: string; defaults: T }) => {
     const file = join(env.userData, opts.file)
     let value: T = opts.defaults
@@ -86,7 +100,10 @@ function harness(): Harness {
       handle: (method: string, fn: (...args: any[]) => unknown) => handlers.set(method, fn),
       emit: (event: string, args?: unknown) => state.pluginEvents.push({ event, args })
     },
-    events: { on: () => {}, emit: () => {} },
+    events: {
+      on: (name: string, cb: (payload: unknown) => void) => subscriptions.set(name, cb),
+      emit: () => {}
+    },
     suggest: { register: () => {} },
     mcp: {
       tool: (name: string, _config: unknown, handler: (args: Record<string, unknown>) => Promise<McpToolResult>) => {
@@ -98,7 +115,7 @@ function harness(): Harness {
     pages: {
       activeTabId: () => null,
       focus: () => {},
-      execute: async () => ({}),
+      execute: async () => env.probeResult,
       openDevToolsTab: () => 0,
       uploadFiles: (opts: { tabId?: number; files: string[]; selector?: string }) => {
         env.uploadCalls.push(opts)
@@ -109,6 +126,21 @@ function harness(): Harness {
             input: { multiple: true, accept: '', files: opts.files.map((f) => ({ name: f, size: 1, type: '' })) }
           }
         )
+      },
+      fileChooser: {
+        arm: (tabId: number, hooks: typeof env.armHooks) => {
+          env.armCalls.push(tabId)
+          env.armHooks = hooks
+          return Promise.resolve({ ok: true, already: false })
+        },
+        disarm: (tabId: number) => {
+          env.disarmCalls.push(tabId)
+        },
+        armed: (tabId: number) => env.armCalls.includes(tabId) && !env.disarmCalls.includes(tabId),
+        answer: (tabId: number, opts: { backendNodeId: number; files: string[] }) => {
+          env.answerCalls.push({ tabId, backendNodeId: opts.backendNodeId, files: opts.files })
+          return Promise.resolve(env.answerResult)
+        }
       }
     },
     tabs: { list: () => [], getActive: () => null },
@@ -169,6 +201,12 @@ beforeEach(async () => {
   env.uploadCalls.length = 0
   env.uploadResult = null
   env.uploadThrows = false
+  env.probeResult = false
+  env.armCalls.length = 0
+  env.disarmCalls.length = 0
+  env.armHooks = null
+  env.answerCalls.length = 0
+  env.answerResult = { ok: true }
   writeSettings([root])
   h = harness()
   files.activate(h as unknown as PluginContext)
@@ -718,5 +756,88 @@ describe('browser_upload(把本地文件交给网页)', () => {
     const thrown = await run('browser_upload', { path: at('a.txt') })
     expect(thrown.isError).toBe(true)
     expect(thrown.data.error).toContain('页面执行 API 尚未就绪')
+  })
+})
+
+describe('接管网站的文件选择框(插件侧决策)', () => {
+  it('开关默认开;页面里有 file input 才在导航后自动接管', async () => {
+    expect((await call<{ settings: { interceptFileChooser: boolean } }>('getSettings')).settings.interceptFileChooser).toBe(true)
+
+    h.emitEvent('tab:navigated', { tabId: 5 })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(env.armCalls).toEqual([]) // 探测结果 false → 不挂
+
+    env.probeResult = true
+    h.emitEvent('tab:navigated', { tabId: 5 })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(env.armCalls).toEqual([5])
+    expect((await call<{ armedTabs: number[] }>('chooserStatus')).armedTabs).toEqual([5])
+  })
+
+  it('页面请求选文件 → chooserStatus 里能看到待应答请求', async () => {
+    env.probeResult = true
+    h.emitEvent('tab:navigated', { tabId: 5 })
+    await new Promise((r) => setTimeout(r, 0))
+    env.armHooks?.onOpened({ mode: 'selectSingle', backendNodeId: 33 })
+    const status = await call<{ pending: { tabId: number; backendNodeId: number } | null }>('chooserStatus')
+    expect(status.pending).toMatchObject({ tabId: 5, backendNodeId: 33 })
+  })
+
+  it('★ browser_upload 优先应答「点了上传按钮」的那次请求,而不是直接塞文件', async () => {
+    writeFileSync(at('a.txt'), 'a', 'utf-8')
+    env.probeResult = true
+    h.emitEvent('tab:navigated', { tabId: 5 })
+    await new Promise((r) => setTimeout(r, 0))
+    env.armHooks?.onOpened({ mode: 'selectSingle', backendNodeId: 33 })
+
+    const { data } = await run('browser_upload', { path: at('a.txt') })
+    expect(data).toMatchObject({ ok: true, via: 'chooser' })
+    expect(env.answerCalls).toEqual([{ tabId: 5, backendNodeId: 33, files: [at('a.txt')] }])
+    expect(env.uploadCalls).toEqual([]) // 没有走「直接塞」
+    expect((await call<{ pending: unknown }>('chooserStatus')).pending).toBeNull()
+  })
+
+  it('没有待应答请求时还是走「直接塞文件」', async () => {
+    writeFileSync(at('a.txt'), 'a', 'utf-8')
+    await run('browser_upload', { path: at('a.txt') })
+    expect(env.uploadCalls).toHaveLength(1)
+    expect(env.answerCalls).toEqual([])
+  })
+
+  it('answerChooser / cancelChooser / armTab / disarmTab 都通,且串上真 guard', async () => {
+    writeFileSync(at('a.txt'), 'a', 'utf-8')
+    writeFileSync(join(outside, 'x.txt'), 'x', 'utf-8')
+    env.probeResult = true
+    h.emitEvent('tab:navigated', { tabId: 5 })
+    await new Promise((r) => setTimeout(r, 0))
+    env.armHooks?.onOpened({ mode: 'selectMultiple', backendNodeId: 33 })
+
+    // 白名单外的文件:拒绝,而且请求还留着(可重试)
+    const bad = await call<{ ok: boolean; error?: string }>('answerChooser', [join(outside, 'x.txt')])
+    expect(bad.ok).toBe(false)
+    expect(env.answerCalls).toEqual([])
+
+    const ok = await call<{ ok: boolean }>('answerChooser', [at('a.txt')])
+    expect(ok.ok).toBe(true)
+    expect(env.answerCalls).toEqual([{ tabId: 5, backendNodeId: 33, files: [at('a.txt')] }])
+
+    env.armHooks?.onOpened({ mode: 'selectSingle', backendNodeId: 34 })
+    expect((await call<{ ok: boolean }>('cancelChooser')).ok).toBe(true)
+    expect((await call<{ pending: unknown }>('chooserStatus')).pending).toBeNull()
+
+    expect((await call<{ ok: boolean }>('disarmTab', 5)).ok).toBe(true)
+    expect(env.disarmCalls).toEqual([5])
+    expect((await call<{ ok: boolean; error?: string }>('armTab', 0)).ok).toBe(false)
+    expect((await call<{ ok: boolean }>('armTab', 6)).ok).toBe(true)
+    expect(env.armCalls).toContain(6)
+  })
+
+  it('关掉开关 → 已挂的接管全部收回', async () => {
+    env.probeResult = true
+    h.emitEvent('tab:navigated', { tabId: 5 })
+    await new Promise((r) => setTimeout(r, 0))
+    await call('setSettings', { interceptFileChooser: false })
+    expect(env.disarmCalls).toEqual([5])
+    expect((await call<{ armedTabs: number[] }>('chooserStatus')).armedTabs).toEqual([])
   })
 })

@@ -8,7 +8,7 @@
  *
  * 删除在这里**多一步点击确认**(AI 那条路刻意没有确认框,因为会卡住自动化;人在这里点是另一回事)。
  */
-import { computed, onMounted, ref, type Component } from 'vue'
+import { computed, onMounted, ref, watch, type Component } from 'vue'
 import {
   AlertTriangle,
   ArrowUp,
@@ -39,8 +39,11 @@ import {
   type FilesSettingsState,
   type FsEntry
 } from '../shared'
+import type { ChooserStatus } from '../chooser'
 
 defineOptions({ inheritAttrs: false })
+
+const props = defineProps<{ payload?: { mode?: string; tabId?: number; multiple?: boolean } }>()
 
 const api = window.browserAPI
 const emit = defineEmits<{ 'overlay-event': [event: string, args?: unknown] }>()
@@ -58,8 +61,15 @@ const renaming = ref('')
 const renameValue = ref('')
 const newDir = ref(false)
 const newDirName = ref('')
+/** 「网页正等着选文件」那次请求(不是 null 就处于选择模式) */
+const pick = ref<{ tabId: number; multiple: boolean } | null>(null)
+/** 接管状态(主进程说了算) */
+const chooser = ref<ChooserStatus | null>(null)
+/** 本窗口当前标签是不是接管着(手动接管/取消用它) */
+const activeTabId = ref<number | null>(null)
 const deleteArmed = ref(false)
 let noticeTimer: number | undefined
+let chooserTimer: number | undefined
 
 const entries = computed<FsEntry[]>(() => listing.value?.entries ?? [])
 const checkedEntries = computed<FsEntry[]>(() => entries.value.filter((e) => checked.value.has(e.path)))
@@ -103,6 +113,10 @@ function flash(text: string): void {
   }, 3000)
 }
 function requestClose(): void {
+  if (chooserTimer) {
+    window.clearInterval(chooserTimer)
+    chooserTimer = undefined
+  }
   emit('overlay-event', 'close-request')
 }
 function onShellEvent(event: string, args?: unknown): void {
@@ -148,8 +162,13 @@ async function refresh(): Promise<void> {
 
 function toggle(entry: FsEntry): void {
   const next = new Set(checked.value)
-  if (next.has(entry.path)) next.delete(entry.path)
-  else next.add(entry.path)
+  if (next.has(entry.path)) {
+    next.delete(entry.path)
+  } else {
+    // 网页要的是单选(没有 multiple)时,勾第二个就把前一个顶掉
+    if (pick.value && !pick.value.multiple) next.clear()
+    next.add(entry.path)
+  }
   checked.value = next
   deleteArmed.value = false
 }
@@ -277,18 +296,97 @@ function isTextish(name: string): boolean {
   )
 }
 
+async function refreshChooser(): Promise<void> {
+  try {
+    chooser.value = await api.plugins.invoke<ChooserStatus>('files', 'chooserStatus')
+    activeTabId.value = (await api.getActiveTab())?.id ?? null
+  } catch {
+    chooser.value = null
+  }
+  // 选择模式里没人应答(面板被关掉 / 超时)时,主进程会把请求清掉 —— 这里跟着退出
+  if (pick.value && !chooser.value?.pending) {
+    pick.value = null
+    checked.value = new Set()
+  }
+}
+
+function enterPick(payload: { tabId?: number; multiple?: boolean } | undefined): void {
+  if (!payload || typeof payload.tabId !== 'number') return
+  pick.value = { tabId: payload.tabId, multiple: payload.multiple !== false }
+  checked.value = new Set()
+  void refreshChooser()
+}
+
+async function submitPick(): Promise<void> {
+  const target = pick.value
+  if (!target) return
+  const paths = checkedEntries.value.map((e) => e.path)
+  if (paths.length === 0) {
+    error.value = '先勾选要上传的文件'
+    return
+  }
+  const result = await api.plugins.invoke<{ ok: boolean; error?: string }>('files', 'answerChooser', paths)
+  if (!result.ok) {
+    error.value = result.error ?? '上传失败'
+    return
+  }
+  pick.value = null
+  checked.value = new Set()
+  flash(`已交给网页 ${paths.length} 个文件`)
+  void refreshChooser()
+}
+
+async function cancelPick(): Promise<void> {
+  await api.plugins.invoke('files', 'cancelChooser')
+  pick.value = null
+  checked.value = new Set()
+  flash('已取消这次文件选择')
+  void refreshChooser()
+}
+
+async function toggleArm(): Promise<void> {
+  const tabId = activeTabId.value
+  if (tabId === null) return
+  const armed = (chooser.value?.armedTabs ?? []).includes(tabId)
+  const result = await api.plugins.invoke<{ ok: boolean; error?: string }>(
+    'files',
+    armed ? 'disarmTab' : 'armTab',
+    tabId
+  )
+  if (!result.ok) error.value = result.error ?? '操作失败'
+  await refreshChooser()
+}
+
 function onToggleHidden(event: Event): void {
   showHidden.value = (event.target as HTMLInputElement).checked
   void refresh()
 }
 
+watch(
+  () => props.payload,
+  (payload) => {
+    if (payload?.mode === 'pick-upload') enterPick(payload)
+  }
+)
+
 onMounted(async () => {
   await loadSettings()
   const first = settings.value?.roots[0]?.path ?? ''
   if (first) await load(first)
+  if (props.payload?.mode === 'pick-upload') enterPick(props.payload)
+  await refreshChooser()
+  // 选择模式里轮询一下:主进程会惰性清掉超时的请求,这里跟着退出(= 用户在原生框上按 Esc 的效果)
+  chooserTimer = window.setInterval(() => void refreshChooser(), 3000)
   api.plugins.onEvent((ev) => {
-    if (ev.id !== 'files' || ev.event !== FILES_EVENT.changed) return
-    settings.value = ev.args as FilesSettingsState
+    if (ev.id !== 'files') return
+    if (ev.event === FILES_EVENT.changed) settings.value = ev.args as FilesSettingsState
+    if (ev.event === FILES_EVENT.chooserResolved) {
+      const args = ev.args as { tabId?: number } | undefined
+      if (!pick.value || args?.tabId === pick.value.tabId) {
+        pick.value = null
+        checked.value = new Set()
+      }
+    }
   })
 })
 </script>
@@ -309,6 +407,19 @@ onMounted(async () => {
           显示隐藏项
         </label>
         <span class="fs-spacer" />
+        <button
+          v-if="activeTabId !== null"
+          class="btn"
+          :class="{ primary: (chooser?.armedTabs ?? []).includes(activeTabId) }"
+          :title="
+            (chooser?.armedTabs ?? []).includes(activeTabId)
+              ? '本窗口当前标签页正在接管文件选择(点击取消)'
+              : '接管本窗口当前标签页的文件选择(页面点了按钮才出现输入框时用它)'
+          "
+          @click="toggleArm"
+        >
+          {{ (chooser?.armedTabs ?? []).includes(activeTabId) ? '文件选择:接管中' : '接管文件选择' }}
+        </button>
         <button class="win-btn" title="关闭" @click="requestClose"><X :size="13" /></button>
       </div>
 
@@ -324,6 +435,11 @@ onMounted(async () => {
         <button class="btn" :disabled="loading" @click="refresh"><RefreshCw :size="12" />刷新</button>
       </div>
 
+      <div v-if="pick" class="fs-alert pick">
+        <Link2 :size="13" />
+        网页(标签 {{ pick.tabId }})正在请求选择文件{{ pick.multiple ? '(可多选)' : '(只能选 1 个)' }}:
+        勾选下面的文件,再点「上传选中的」。
+      </div>
       <div v-if="error" class="fs-alert err">{{ error }}</div>
       <div v-else-if="notice" class="fs-alert">{{ notice }}</div>
 
@@ -404,6 +520,12 @@ onMounted(async () => {
         </button>
         <button class="btn" :disabled="!onlyOne" @click="reveal">显示位置</button>
         <span class="fs-spacer" />
+        <template v-if="pick">
+          <button class="btn" @click="cancelPick">取消这次选择</button>
+          <button class="btn primary" :disabled="checked.size === 0" @click="submitPick">
+            上传选中的 {{ checked.size }} 个文件
+          </button>
+        </template>
         <span v-if="checked.size > 0" class="fs-count">已选 {{ checked.size }} 项</span>
         <template v-if="deleteArmed">
           <span class="fs-danger"><AlertTriangle :size="12" />删除 {{ checked.size }} 项?</span>
@@ -418,6 +540,9 @@ onMounted(async () => {
       <div class="fs-hint">
         只能在这些工作目录里操作(与 AI 共用同一份白名单)。删除默认移入<b>系统回收站</b>(可恢复);
         覆盖已有文件在面板里不会发生 —— 重命名撞名会被拒绝。
+        <template v-if="chooser && !chooser.enabled">
+          网站文件选择接管已关闭(可在「设置 → 文件管理」打开;开着时网页的上传按钮改由本面板选文件)。
+        </template>
       </div>
     </div>
   </ModalShell>
@@ -512,6 +637,14 @@ onMounted(async () => {
 }
 .fs-alert.err {
   color: var(--danger);
+}
+.fs-alert.pick {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 .fs-body {
   display: flex;
