@@ -245,6 +245,23 @@ export interface PageSnapshot {
   elements: SnapshotElement[]
 }
 
+/**
+ * `browser_read` 的返回体(正文抽取 → markdown)。
+ *
+ * `mode` 说明正文是从哪来的,调用方可用它判断这次结果可不可信:
+ * - `selector` —— 显式 selector 指定的子树(不做噪声剪枝)
+ * - `main`     —— 自动定位到的正文容器(常规情况)
+ * - `wide`     —— 正文容器抽出来的东西明显不成比例,放宽到整个 body
+ */
+export interface PageRead {
+  title: string
+  url: string
+  mode: 'selector' | 'main' | 'wide'
+  markdown: string
+  chars: number
+  truncated: boolean
+}
+
 export interface ActionResult {
   ok: boolean
   error?: string

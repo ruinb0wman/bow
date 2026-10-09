@@ -42,15 +42,23 @@ class StubElement {
 class StubInput {}
 Object.defineProperty(StubInput.prototype, 'value', valueDesc)
 
-/** 造一个假元素:覆盖 snapshot / click / type / scroll 注入脚本会用到的全部成员 */
+/** 造一个假元素:覆盖 snapshot / click / type / scroll / read 注入脚本会用到的全部成员 */
 function makeElement(spec: FakeElement): Record<string, unknown> {
   const el: Record<string, unknown> = {
+    nodeType: 1,
     tagName: (spec.tag ?? 'button').toUpperCase(),
     id: '',
     innerText: spec.text ?? '',
     textContent: spec.text ?? '',
     isContentEditable: false,
     labels: [],
+    // READ_FN 的正文定位会用到这几个面;返回空即「没有可分析的子树」
+    children: [],
+    childNodes: [],
+    parentElement: null,
+    matches: () => false,
+    querySelector: () => null,
+    querySelectorAll: () => [],
     closest: () => null,
     getBoundingClientRect: () =>
       spec.visible === false ? { x: 0, y: 0, width: 0, height: 0 } : { x: 1, y: 1, width: 10, height: 10 },
@@ -145,6 +153,8 @@ export class FakeWc extends EventEmitter {
   raw = new Map<string, unknown>()
   /** 这些 code 会抛错(browser_eval 错误路径用) */
   throwOn = new Set<string>()
+  /** 假 body 的纯文本(`browser_read` 走 document.body 时的正文) */
+  bodyText = '假页面正文'
   /** 收到的原生按键事件 */
   sentEvents: unknown[] = []
   /** findInPage 调用记录(页内查找) */
@@ -229,6 +239,33 @@ export class FakeWc extends EventEmitter {
     const document = {
       title: 'Fake Page',
       activeElement: null,
+      // READ_FN 会在正文定位失手时退到 document.body(整页放宽,并跳过链接农场);
+      // 给它一具能读出行内文本的假 body —— 注意 `children` 要有东西,
+      // 否则会被判定为「整页没有任何可读内容」。
+      body: (() => {
+        const text = { nodeType: 3, nodeValue: this.bodyText }
+        const child = {
+          nodeType: 1,
+          tagName: 'DIV',
+          children: [],
+          childNodes: [text],
+          parentElement: null,
+          textContent: this.bodyText,
+          matches: () => false,
+          querySelectorAll: () => [],
+          getAttribute: () => null
+        }
+        return {
+          nodeType: 1,
+          tagName: 'BODY',
+          children: [child],
+          childNodes: [child],
+          parentElement: null,
+          textContent: this.bodyText,
+          matches: () => false,
+          getAttribute: () => null
+        }
+      })(),
       documentElement: { clientHeight: 800, scrollTop: 0, scrollHeight: 2000 },
       scrollingElement: null,
       querySelectorAll: (): unknown[] => [...this.elements.values()].map(makeElement),

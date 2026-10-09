@@ -1,9 +1,9 @@
 /** 页面操作:通过 executeJavaScript 注入执行,带统一超时与错误包装 */
 
 import type { WebContents } from 'electron'
-import type { ActionResult, PageSnapshot } from '@shared/types'
+import type { ActionResult, PageRead, PageSnapshot } from '@shared/types'
 import { logError } from './logger'
-import { CLICK_FN, SCROLL_FN, SNAPSHOT_FN, TYPE_FN } from './pageScripts'
+import { CLICK_FN, READ_FN, SCROLL_FN, SNAPSHOT_FN, TYPE_FN } from './pageScripts'
 
 const EXEC_TIMEOUT = 10_000
 
@@ -58,6 +58,27 @@ export async function pageClick(wc: WebContents, selector: string): Promise<Acti
 
 export async function pageType(wc: WebContents, selector: string, text: string, clear: boolean): Promise<ActionResult> {
   return lift(await runInPage(wc, TYPE_FN, [selector, text, clear]))
+}
+
+export interface PageReadOptions {
+  /** 只读这棵子树;省略则自动定位正文 */
+  selector?: string
+  /** 最多返回多少字符(页面侧截断),默认 12000 */
+  maxChars?: number
+}
+
+/**
+ * 正文抽取 → markdown。页面侧自己完成正文定位与噪声剔除,主进程只做转发。
+ * `READ_FN` 把失败放在 result.error 里(与 CLICK/TYPE/SCROLL 同形),
+ * 所以同样要过 `lift()` 提升为顶层失败。
+ */
+export async function pageRead(
+  wc: WebContents,
+  opts: PageReadOptions = {}
+): Promise<ActionResult & { data?: PageRead }> {
+  const res = lift(await runInPage(wc, READ_FN, [{ selector: opts.selector, maxChars: opts.maxChars }]))
+  if (!res.ok) return res
+  return { ...res, data: (res.result ?? undefined) as PageRead | undefined }
 }
 
 export async function pageScroll(

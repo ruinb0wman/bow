@@ -17,6 +17,7 @@ import { imageContent, textContent } from './plugins/mcpResult'
 import { mcpActivity } from './mcpActivity'
 import {
   pageClick,
+  pageRead,
   pageSnapshot,
   pageScreenshot,
   pageScroll,
@@ -35,6 +36,7 @@ export const CORE_MCP_TOOL_NAMES = [
   'browser_search',
   'browser_eval',
   'browser_snapshot',
+  'browser_read',
   'browser_click',
   'browser_type',
   'browser_press_key',
@@ -94,6 +96,7 @@ export const MCP_INSTRUCTIONS = `这是一个真实的多标签浏览器窗口(�
    传 waitUntil: 'load' 等到加载完成。等异步渲染仍然用 browser_wait,不要重复调用同一个工具探路。
 
 工具选型
+- 读网页正文/文章/文档内容 → browser_read(自动剥导航与广告后输出 markdown,比截图或自己写 eval 都省 token)
 - 读结构化数据、批量取值 → browser_eval(最省 token)
 - 定位可点 / 可输入元素 → browser_snapshot
 - 判断样式、布局、视觉效果 → browser_screenshot;要看滚动到视口外的内容就传 fullPage: true
@@ -146,6 +149,14 @@ export const MCP_INSTRUCTIONS = `这是一个真实的多标签浏览器窗口(�
   删目录必须 recursive: true。工作目录本身不能被删/被移走。
 - browser_fs_move / browser_fs_copy 的 to 指向**已存在的目录**时,东西会被放进去(与 mv 一致),
   以返回体里的 path 为准;目标已存在同样必须 overwrite: true。
+
+读取页面正文(browser_read)
+- 只读内容、不操作页面时用它:**自动定位正文容器**、剔掉导航/侧栏/广告/评论/脚本,输出 markdown。
+- 返回体里 mode 说明正文从哪来:「main」=自动定位(常规),「selector」=你指定的子树,「wide」=自动定位失手、放宽到整个 body。
+  **看到 wide 就当作「抽取可能不准」**,换 browser_snapshot 或 browser_eval 再看一眼。
+- maxChars 默认 12000;返回 truncated: true 时末尾会写明正文总长 —— 用 selector 收窄到具体区块再读,
+  或分段读,**不要**直接猜剩下部分的内容。
+- 页面上正文之外的界面文字(筛选器、分页、推荐位)不在输出里是预期行为,不要因为看不到就去反复 eval。
 
 边界
 - bow:// 内部页面标签不支持页面类工具,会被明确拒绝。
@@ -307,6 +318,30 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
       const res = await pageSnapshot(view.view.webContents, maxElements)
       if (!res.ok) return textContent(res)
       return textContent({ ok: true, tabId: view.info.id, data: res.data })
+    }
+  )
+
+  tool(
+    'browser_read',
+    {
+      tabId: z.number().optional(),
+      selector: z.string().optional().describe('只读这棵子树(CSS 选择器);省略则自动定位正文'),
+      maxChars: z
+        .number()
+        .int()
+        .positive()
+        .max(200_000)
+        .optional()
+        .describe('最多返回多少字符,默认 12000;超出会在末尾标记 truncated')
+    },
+    async ({ tabId, selector, maxChars }) => {
+      const { view, fail } = target(tabId)
+      if (!view) return textContent({ ok: false, error: fail })
+      const res = await pageRead(view.view.webContents, { selector, maxChars })
+      if (!res.ok) return textContent({ ok: false, tabId: view.info.id, error: res.error })
+      const data = res.data
+      if (!data) return textContent({ ok: false, tabId: view.info.id, error: '页面没有返回可读内容' })
+      return textContent({ ok: true, tabId: view.info.id, ...data })
     }
   )
 

@@ -53,7 +53,7 @@ src/
                                  无 electron 依赖所以纯 node 单测也能 import)
     ipc.ts                       chrome UI ↔ 主进程的 IPC 面(标签/导航/设置/浮层/布局/插件)
     stores.ts                    JsonStore(原子写)+ 核心 settings.json + 分屏布局 split-layouts.json
-    mcp.ts                       核心 MCP 工具(19 个)+ MCP_INSTRUCTIONS + 服务器构建
+    mcp.ts                       核心 MCP 工具(20 个)+ MCP_INSTRUCTIONS + 服务器构建
     mcpHttp.ts                   无状态 StreamableHTTP 端点(回环 + Host 校验 + 可选 Bearer)
     mcpActivity.ts               在途工具调用计数器(进程级单例 mcpActivity)
     plugins/                     插件内核(见 §5.5)
@@ -617,7 +617,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 
 传输层可注入(`startMcpServer(deps, transport?)`),测试用 `InMemoryTransport` 免真实 stdio 与显示环境。
 
-### 6.2 核心工具表(19 个)
+### 6.2 核心工具表(20 个)
 
 所有核心工具经 `tool()` helper 注册:`inputSchema: z.object(shape).strict()`,处理器被
 `mcpActivity.wrapTool(name, …)` 包一层。
@@ -628,6 +628,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `browser_search` | **query**, engine, tabId, waitUntil, timeoutMs | engine 取设置;waitUntil `'load'` | 同上 + `engine` |
 | `browser_eval` | **code**, tabId | — | `{ok,result}`;`undefined` → `result:null` |
 | `browser_snapshot` | tabId, maxElements | 200(上限 1000) | `{ok,tabId,data:{title,url,elements[]}}` |
+| `browser_read` | tabId, selector, maxChars | maxChars 12000(上限 200000) | `{ok,tabId,title,url,mode,markdown,chars,truncated}`;`mode` ∈ `selector`/`main`/`wide`;抽不到正文时 `{ok:false,error}` 并指向该用哪个工具 |
 | `browser_wait` | tabId, selector, state, timeoutMs | state `'visible'`;等元素 10000 / 等加载 15000 | 有 selector → `{ok,tabId,selector,state,waited:true}`;无 → 走 `idle` |
 | `browser_click` | **selector**, tabId, waitUntil, timeoutMs | waitUntil `'none'` | `{ok,tabId,selector,result,waited?,loadedUrl?}` |
 | `browser_type` | text(**必填**), selector, clear, tabId | clear `true` | `{ok,tabId,typed,value}`;省略 selector = 当前聚焦元素 |
@@ -651,9 +652,9 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 `browser_logseq_graph`(笔记的关系图谱,只读)、
 `browser_fs_roots` `browser_fs_list` `browser_fs_info` `browser_fs_read` `browser_fs_write` `browser_fs_mkdir`
 `browser_fs_move` `browser_fs_copy` `browser_fs_delete` `browser_upload`(文件管理:白名单内的本地文件操作 + 上传到网页)
-—— 共 30 个,合计 **49** 个工具。
+—— 共 30 个,合计 **50** 个工具。
 
-静态计数来源:`CORE_MCP_TOOL_NAMES`(19)+ `ctx.mcp.tool(...)` 的调用点
+静态计数来源:`CORE_MCP_TOOL_NAMES`(20)+ `ctx.mcp.tool(...)` 的调用点
 (`bookmarks/main.ts:137,165`、
 `device-inspect/main.ts:451,493,510,531,554,574,612,642,666,698,731`、
 `downloads/main.ts:500,529`、

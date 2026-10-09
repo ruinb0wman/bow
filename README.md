@@ -230,7 +230,7 @@ pi 的 MCP 适配器默认是**代理模式**:工具 schema 不常驻上下文,�
       "cwd": "/absolute/path/to/browser",
       "lifecycle": "lazy",
       "idleTimeout": 0,
-      "directTools": ["browser_navigate", "browser_snapshot", "browser_wait", "browser_click", "browser_eval"]
+      "directTools": ["browser_navigate", "browser_snapshot", "browser_read", "browser_wait", "browser_click", "browser_eval"]
     }
   }
 }
@@ -350,6 +350,7 @@ npm run test:mcp:http
 | `browser_wait {tabId?, selector?, state?, timeoutMs?}` | 等页面加载完成(省略 selector)或等元素达到 attached/visible/hidden/detached 状态 |
 | `browser_eval {code, tabId?}` | 在页面上下文执行任意 JavaScript,返回最后一个表达式的值 |
 | `browser_snapshot {tabId?, maxElements?}` | 页面可操作元素快照(title/url + 可点击输入元素列表,含稳定 CSS 选择器) |
+| `browser_read {tabId?, selector?, maxChars?}` | 读正文:自动定位正文容器、剥掉导航/侧栏/广告/评论后输出 markdown(默认最多 12000 字符,超出标记 `truncated`);`selector` 可只读某个子树 |
 | `browser_click {selector, tabId?, waitUntil?, timeoutMs?}` | 点击元素(注入真实事件序列);默认不等待,点击会跳转时传 `waitUntil: 'load'` |
 | `browser_type {selector?, text, clear?, tabId?}` | 输入文字(React 兼容),省略 selector 输入到当前聚焦元素 |
 | `browser_press_key {key, tabId?, waitUntil?, timeoutMs?}` | 按键:Enter / Tab / Escape / ArrowDown / Ctrl+W / F5 等;返回 `ok` 仅代表事件已投递,按键会触发跳转时传 `waitUntil: 'load'`;F5 与 Ctrl+R 会等到重新加载完成 |
@@ -391,7 +392,7 @@ npm run test:mcp:http
 
 > 插件导出的文件落在 bow 下载目录,见「数据存储」一节。
 
-典型 AI 工作流:`browser_new_tab`/`browser_navigate`(已等到加载完成)→ `browser_wait` 等目标元素渲染出来 → `browser_snapshot` 找到结果链接的选择器 → `browser_click` → `browser_screenshot` 确认 → `browser_type`/`browser_click` 填表。
+典型 AI 工作流:读网页内容用 `browser_read`(省 token,自动去导航噪声);操作页面则 `browser_new_tab`/`browser_navigate`(已等到加载完成)→ `browser_wait` 等目标元素渲染出来 → `browser_snapshot` 找到结果链接的选择器 → `browser_click` → `browser_screenshot` 确认 → `browser_type`/`browser_click` 填表。
 
 ## MCP 行为约定
 

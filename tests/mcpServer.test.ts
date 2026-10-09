@@ -99,6 +99,7 @@ describe('MCP 服务器:握手与工具面', () => {
       'browser_search',
       'browser_eval',
       'browser_snapshot',
+      'browser_read',
       'browser_click',
       'browser_type',
       'browser_press_key',
@@ -446,6 +447,39 @@ describe('MCP 服务器:页面操作', () => {
     expect(res.data.data.title).toBe('Fake Page')
     expect(res.data.data.elements).toHaveLength(2)
     expect(res.data.data.elements.map((e: { tag: string }) => e.tag)).toEqual(['a', 'input'])
+    await client.close()
+  })
+
+  it('read 返回抽取出的 markdown 与来源标记;selector 命中时走 selector 模式', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs, 'https://read.example/')
+    const res = await call(client, 'browser_read', {})
+    expect(res.isError).toBe(false)
+    expect(res.data.url).toBe('https://read.example/')
+    expect(res.data.title).toBe('Fake Page')
+    expect(res.data.markdown).toContain('假页面正文')
+    expect(res.data.mode).toBe('wide') // 假 DOM 里没有正文候选,退到整个 body
+    expect(res.data.chars).toBe(String(res.data.markdown).length)
+    expect(res.data.truncated).toBe(false)
+    await client.close()
+  })
+
+  it('read:页面侧抽不到东西时把失败提升到顶层(isError),不是 ok:true', async () => {
+    const { client, tabs } = await setup()
+    const wc = browsingTab(tabs)
+    const res = await call(client, 'browser_read', { selector: '#bad' })
+    expect(res.isError).toBe(true)
+    expect(res.data.ok).toBe(false)
+    expect(res.data.error).toContain('未找到选择器: #bad')
+    await client.close()
+  })
+
+  it('read 拒绝未知参数(strict schema,不静默丢弃)', async () => {
+    const { client, tabs } = await setup()
+    browsingTab(tabs)
+    const res = await call(client, 'browser_read', { maxChar: 100 })
+    expect(res.isError).toBe(true)
+    expect(res.text).toContain("Unrecognized key(s) in object: 'maxChar'")
     await client.close()
   })
 

@@ -5,7 +5,7 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 
 # bow 浏览器(MCP 服务器 `browser`)
 
-本地 Electron 多标签浏览器,49 个工具(19 核心 + 30 插件,随插件启停浮动);**你的每次操作用户都实时可见**,所以破坏性操作前先说明意图。
+本地 Electron 多标签浏览器,50 个工具(20 核心 + 30 插件,随插件启停浮动);**你的每次操作用户都实时可见**,所以破坏性操作前先说明意图。
 默认操作目标是 bow 为你自动创建并复用的 **agent 专属窗口**(标题带「· Agent」),**不会动用户正在浏览的窗口**。
 
 ## 第一步:确认工具怎么调
@@ -22,6 +22,7 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 
 | 目标 | 用哪个 | 理由 |
 | --- | --- | --- |
+| 读网页正文/文章/文档内容 | `browser_read` | 自动到正文容器、剥导航/侧栏/广告后输出 markdown;比截图与手写 `browser_eval` 都省 token。返回体里的 `mode=wide` 表示正文定位可能不准;`truncated` 时用 `selector` 收窄再读 |
 | 读结构化数据、批量取值 | `browser_eval` | 最省 token,一次拿回需要的字段 |
 | 定位可点/可输入元素 | `browser_snapshot` | 返回稳定 CSS 选择器,别自己猜 |
 | 判断样式、布局、视觉效果 | `browser_screenshot` | 只在需要肉眼判断时 |
@@ -74,6 +75,7 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 - ❌ 每次都全量快照 200 个元素 → ✅ 先小后大,必要时配合 `browser_eval` 精确定位
 - ❌ `navigate` 后立刻 `snapshot` 抓异步页 → ✅ 先 `browser_wait`
 - ❌ 用截图代替取值 → ✅ `browser_eval` 更省、更准
+- ❌ 为了读文章正文现写抽取 JS / 截长图 → ✅ `browser_read`(它返回的 markdown 已经是纯净正文)
 - ❌ 页面没动就重复同一调用 → ✅ 先 `browser_wait`,或 `browser_get_info` 看 `loading`
 - ❌ 连续多次 `browser_new_tab` → ✅ 复用标签,用 `tabId` 指定目标
 

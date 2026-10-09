@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url'
 
 const PROJECT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const SERVER_NAME = 'browser'
-const CORE_TOOLS = ['browser_navigate', 'browser_snapshot', 'browser_wait', 'browser_click', 'browser_eval']
+const CORE_TOOLS = ['browser_navigate', 'browser_snapshot', 'browser_read', 'browser_wait', 'browser_click', 'browser_eval']
 /** 能力索引 skill:代理模式下工具 schema 不常驻上下文,靠它把「能做什么 / 怎么做」放进上下文 */
 const SKILL_NAME = 'bow-browser'
 const SKILL_REL = join('.pi', 'skills', SKILL_NAME, 'SKILL.md')

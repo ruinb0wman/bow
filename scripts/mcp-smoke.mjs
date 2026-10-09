@@ -91,6 +91,7 @@ const names = tools.map((t) => t.name)
 console.log(`✓ 工具数: ${names.length} -> ${names.join(', ')}`)
 assert(names.includes('browser_navigate') && names.includes('browser_screenshot'), '工具清单完整')
 assert(names.includes('browser_wait'), '等待工具 browser_wait 已注册')
+assert(names.includes('browser_read'), '阅读工具 browser_read 已注册')
 // 插件贡献的工具应随插件激活一并注册(书签插件 / 设备检查插件)
 assert(names.includes('browser_add_bookmark'), '书签插件已贡献 MCP 工具')
 // 笔记插件:关系图谱工具应在册(它需要选了图才有数据,冒烟只验注册面)
@@ -215,6 +216,35 @@ const snap = await client.callTool({ name: 'browser_snapshot', arguments: { tabI
 const snapText = JSON.parse(snap.content[0].text)
 console.log(`✓ browser_snapshot: ${snapText.data?.elements?.length ?? 0} 个元素, title=${snapText.data?.title}`)
 assert(Array.isArray(snapText.data?.elements), '快照含元素列表')
+
+// 3.1 阅读通道:正文抽取 → markdown。断言不依赖具体站点文案(example.com 的文案会变):
+//     比的是「抽出来的东西比原始 HTML 小一个量级」与「返回体自洽」
+const rawLen = JSON.parse(
+  (await client.callTool({ name: 'browser_eval', arguments: { tabId, code: 'document.documentElement.outerHTML.length' } }))
+    .content[0].text
+).result
+const read = await client.callTool({ name: 'browser_read', arguments: { tabId } })
+assert(read.isError !== true, 'browser_read 不应报错', read.content[0].text)
+const readText = JSON.parse(read.content[0].text)
+assert(typeof readText.markdown === 'string' && readText.markdown.length > 0, 'browser_read 返回非空 markdown', readText)
+assert(readText.chars === readText.markdown.length, 'chars 与实际 markdown 长度一致', readText)
+assert(['selector', 'main', 'wide'].includes(readText.mode), `mode 取值为三种之一,实际 ${readText.mode}`)
+assert(readText.truncated === false, '默认上限下不应标记截断')
+assert(rawLen > readText.chars, `抽取后应比原始 HTML 小(html ${rawLen} vs read ${readText.chars})`)
+console.log(`✓ browser_read: mode=${readText.mode}, ${rawLen} → ${readText.chars} 字符`)
+
+// 3.2 截断必须在返回体里说出来,并给出下一步怎么做
+const cut = await client.callTool({ name: 'browser_read', arguments: { tabId, maxChars: 60 } })
+const cutText = JSON.parse(cut.content[0].text)
+assert(cutText.truncated === true, 'maxChars 触发 truncated', cutText)
+assert(cutText.markdown.includes('已截断'), '截断处给出提示', cutText.markdown.slice(-80))
+console.log(`✓ browser_read 截断提示: ${cutText.markdown.length} 字符`)
+
+// 3.3 选择器不存在必须是明确失败(不能返回空 markdown 让模型以为页面是空的)
+const readBad = await client.callTool({ name: 'browser_read', arguments: { tabId, selector: '#bow-definitely-not-here' } })
+assert(readBad.isError === true, 'browser_read 未知 selector 应报错', readBad.content[0].text)
+assert(String(readBad.content[0].text).includes('未找到选择器'), '报错应指出选择器不存在')
+console.log('✓ browser_read 未知 selector 已报错')
 
 // 3.5 等待原语:browser_wait 等元素
 const wOk = await client.callTool({
