@@ -383,6 +383,7 @@ npm run test:mcp:http
 | `browser_fs_move {from, to, overwrite?}` | 移动 / 重命名;`to` 是已存在的目录时会被放进去(以返回体的 `path` 为准);工作目录本身不许被移走(由「文件管理」插件提供) |
 | `browser_fs_copy {from, to, overwrite?, recursive?}` | 复制文件或目录(目录必须 `recursive: true`)(由「文件管理」插件提供) |
 | `browser_fs_delete {path, recursive?, permanent?}` | **默认移入系统回收站(可恢复)**;`permanent: true` 需在设置页打开「允许永久删除」;删目录要 `recursive: true`(由「文件管理」插件提供) |
+| `browser_upload {path?, paths?, selector?, tabId?}` | 把一个或多个**本地文件**塞进**网页**的 `<input type=file>`(CDP 直接设置,不弹任何文件对话框)。推荐:先本工具(传 `selector`),再 `browser_click` 点提交;省略 `selector` 时只有页面上恰好一个文件框才生效,多个会返回候选清单(由「文件管理」插件提供) |
 | `browser_pomo_status` | 查看番茄钟状态:当前阶段(专注 / 短休息 / 长休息)、是否在跑、剩余时间、本轮第几个、今日完成数(由「番茄钟」插件提供) |
 | `browser_pomo_start` / `browser_pomo_pause` | 开始 / 继续、暂停番茄钟的当前阶段(由「番茄钟」插件提供) |
 | `browser_pomo_skip` | 跳过当前阶段进入下一阶段(跳过不增加今日完成数)(由「番茄钟」插件提供) |
@@ -782,6 +783,12 @@ MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生
 工具栏的「文件」按钮打开一个面板:在白名单内逐层浏览(roots 下拉 + 面包屑 + 上一级 + 显示隐藏项),
 选中后可以新建目录 / 重命名 / 移动到… / 复制到… / 删除 / 用系统程序打开 / 在文件夹里显示;
 点文本文件名会在右侧预览(只读,最多 64 KiB)。
+
+给 AI 的工具面里除了 `browser_fs_*` 还有一个 **`browser_upload`**:把白名单内的本地文件塞进**网页**的
+`<input type=file>`(CDP `DOM.setFileInputFiles`),不弹任何文件对话框、也不需要用户手势。推荐流程是
+「先 `browser_upload` 设置文件 → 再 `browser_click` 点提交按钮」;省略 `selector` 时只有在页面恰好一个文件框
+时才生效,多个会返回候选清单让你/它自己挑。⚠️ 已知限制:输入框在 **iframe** 里时 `selector` 找不到它
+(当前按主文档查询)。
 
 同一个插件的 `browser_fs_*` 那 9 个工具给 AI 用**同一套语义与同一条白名单** ——
 面板里点删除与 AI 调 `browser_fs_delete` 走的是同一段代码(主进程里一份操作层,两个入口)。

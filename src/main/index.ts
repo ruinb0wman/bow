@@ -13,6 +13,8 @@ import { setupTabShortcuts } from './tabShortcuts'
 import { onTabActivated as onFindTabActivated, onTabClosed as onFindTabClosed, onTabNavigated as onFindTabNavigated } from './findBar'
 import { loadRendererEntry } from './rendererEntry'
 import { startMcpServer, CORE_MCP_TOOL_NAMES } from './mcp'
+import { createTabTargets } from './tabTarget'
+import { uploadFilesToPage } from './pageUpload'
 import { applyBrowserIdentity } from './ua'
 import { acquireSingletonLock } from './singleInstance'
 import { collectOpenTargets, defaultOpenTargetDeps } from './openArgs'
@@ -304,6 +306,13 @@ app.whenReady().then(async () => {
       const ctx = (windowId != null ? windows!.byId(windowId) : null) ?? windows!.focused()
       if (!ctx) throw new Error('没有可用窗口')
       return ctx.tabs.createInspectorTab(url, title, activate ?? true).id
+    },
+    // 上传文件(文件管理插件用):标签解析与核心页面类工具**同一套**(tabTarget.ts),
+    // 所以省略 tabId 时绝不会落到用户正在看的窗口。
+    uploadFiles: async (opts) => {
+      const hit = createTabTargets(() => windows!).target(opts.tabId)
+      if (!hit.view || !hit.ctx) return { ok: false, error: hit.fail ?? '没有可用的标签页' }
+      return uploadFilesToPage(hit.view.view.webContents, { files: opts.files, selector: opts.selector })
     }
   })
   kernel.setBroadcaster((channel, payload) => windows!.broadcast(channel, payload))

@@ -672,9 +672,13 @@ export default {
 
     const str = (raw: unknown): string => (typeof raw === 'string' ? raw : '')
 
-    /** 工具层的统一收尾:结果对象 → MCP 返回体(`ok:false` 会被 mcpResult 标成 isError) */
+    /**
+     * 工具层的统一收尾:结果对象 → MCP 返回体。
+     * **不能只取 error 字段** —— `browser_upload` 失败时还要带回 `candidates`(多个输入框时让 LLM 自己挑)、
+     * 成功时带回 `input`(页面侧真实的 files)。
+     */
     const reply = (result: { ok: boolean; error?: string }): McpToolResult =>
-      result.ok ? textContent(result) : errorContent(result.error ?? '操作失败')
+      result.ok ? textContent(result) : textContent({ ...result, error: result.error ?? '操作失败' })
 
     /** guard 失败的收尾 */
     const guardReply = (check: PathCheck): McpToolResult | null =>
@@ -848,6 +852,50 @@ export default {
         return reply(
           await copyPath(from.abs, to.abs, { overwrite: args.overwrite === true, recursive: args.recursive === true })
         )
+      }
+    )
+
+    ctx.mcp.tool(
+      'browser_upload',
+      {
+        description:
+          '把一个或多个**本地文件**塞进**网页**的 `<input type=file>`(CDP 直接设置,不弹任何文件对话框)。推荐流程:先本工具(传 selector),再用 browser_click 点提交按钮。省略 selector 时只有当页面恰好一个文件输入框才生效;多个就用 browser_snapshot 拿选择器。省略 tabId 时作用于 MCP 专属窗口的活动标签',
+        inputSchema: {
+          path: z.string().optional().describe('要上传的单个文件路径(与 paths 二选一)'),
+          paths: z.array(z.string()).optional().describe('要上传的多个文件路径'),
+          selector: z.string().optional().describe('目标文件输入框的 CSS 选择器;省略 = 页面上唯一那个 file input'),
+          tabId: z.number().int().optional().describe('目标标签;省略 = MCP 专属窗口的活动标签')
+        }
+      },
+      async (args): Promise<McpToolResult> => {
+        const raw = [
+          ...(Array.isArray(args.paths) ? args.paths : []),
+          ...(typeof args.path === 'string' && args.path.trim() ? [args.path] : [])
+        ]
+        if (raw.length === 0) return errorContent('要传 path 或 paths')
+
+        const files: string[] = []
+        for (const item of raw) {
+          const check = checkFilePath(item)
+          if (!check.ok) return errorContent(check.error)
+          const info = await infoPath(check.abs)
+          if (!info.exists || info.type === 'dir') {
+            return errorContent(`只能上传文件,这个不是文件:${check.abs}`)
+          }
+          files.push(check.abs)
+        }
+
+        try {
+          const result = await ctx.pages.uploadFiles({
+            ...(typeof args.tabId === 'number' ? { tabId: args.tabId } : {}),
+            files,
+            ...(str(args.selector).trim() ? { selector: str(args.selector).trim() } : {})
+          })
+          return reply(result)
+        } catch (e) {
+          // EMPTY_PAGE_API(内核还没注入页面 API)会 reject
+          return errorContent(`上传失败:${describeError(e)}`)
+        }
       }
     )
 

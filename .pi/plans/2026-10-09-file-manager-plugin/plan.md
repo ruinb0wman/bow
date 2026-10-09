@@ -20,8 +20,21 @@
 >     「目录在前」的列表、大小/时间列、7 个工具按钮、提示文案、点文件名出预览、新建目录落盘、重命名落盘、
 >     删除两步确认 + 真的进回收站;并截了一张面板图核对排版(见下面的字体说明)。
 >
-> **未做**:步骤 4/5(`browser_upload` + 接管网站文件选择框)、6(堵 `browser_download.saveDir`)。
-> ⇒ **`browser_download {url, saveDir}` 仍是不受白名单约束的写盘旁路**,见 §3.7。
+> - **步骤 6(已做)**:`browser_download` 的 `saveDir` 接上同一套白名单;生效白名单改成「你配的 ∪ 下载目录」
+>   (否则添了工作目录之后,`saveDir` 指下载目录反而会被拒,而不传 saveDir 的同一次下载照样写进去)。
+> - **步骤 4(已做)**:核心新增 **`ctx.pages.uploadFiles`**(`main/pageUpload.ts`,CDP `DOM.setFileInputFiles`)
+>   + 插件的 `browser_upload` 工具。⚠️ **方案里有个错误假设被实施时打脸**:插件**拿不到 `webContents`**
+>   (ARCHITECTURE §13-36),所以上传**没有纯插件实现** —— 改成了用户拍板的「核心出窄能力 + 插件留工具与面板」。
+>   顺手把 `target()`(MCP 专属窗口那套语义)抽成 `main/tabTarget.ts`,核心工具与插件 API 共用一份,避免漂移。
+>
+> **未做**:步骤 5(接管网站文件选择框 → 面板里选文件)。
+>
+> **真机已验证(2026-10-09,四轮 45 项)**:① 工具面 18/18;② 面板 17/17(CDP 驱动真窗口);
+> ③ saveDir/白名单 7/7(含真下一次);④ **上传 13/13** ——
+> **§8 第 2 条风险(change 事件)正式证伪**:`DOM.setFileInputFiles` 之后**浏览器自己会触发 `change` 与 `input`**
+> (实测各 1 次),页面能读到文件内容,不需要手动补 `dispatchEvent`。
+> 新增事实:iframe 里的 file input **用 selector 找不到**(按主文档查询)—— 步骤 5 的接管路径可能能覆盖(待验),
+> 已写进 README 的已知限制。
 >
 > **实施中改掉的一处设计**:`browser_fs_roots` 与 `getSettings` 报的 roots 改成取 `resolveFileRoots()`
 > (**guard 真正放行的那份**,每次现读磁盘)而不是内存 store —— 真机验证时发现这两者一旦不同步

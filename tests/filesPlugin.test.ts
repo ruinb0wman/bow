@@ -21,7 +21,10 @@ const env = vi.hoisted(() => ({
   trashed: [] as string[],
   opened: [] as string[],
   revealed: [] as string[],
-  pickResult: { canceled: true, filePaths: [] as string[] }
+  pickResult: { canceled: true, filePaths: [] as string[] },
+  uploadCalls: [] as Array<{ tabId?: number; files: string[]; selector?: string }>,
+  uploadResult: null as unknown,
+  uploadThrows: false
 }))
 
 vi.mock('electron', () => ({
@@ -92,7 +95,22 @@ function harness(): Harness {
     },
     net: { onBeforeRequest: () => {}, onBeforeSendHeaders: () => {}, onHeadersReceived: () => {} },
     content: { inject: () => {}, refresh: () => {} },
-    pages: { activeTabId: () => null, focus: () => {}, execute: async () => ({}), openDevToolsTab: () => 0 },
+    pages: {
+      activeTabId: () => null,
+      focus: () => {},
+      execute: async () => ({}),
+      openDevToolsTab: () => 0,
+      uploadFiles: (opts: { tabId?: number; files: string[]; selector?: string }) => {
+        env.uploadCalls.push(opts)
+        if (env.uploadThrows) return Promise.reject(new Error('页面执行 API 尚未就绪'))
+        return Promise.resolve(
+          (env.uploadResult as object) ?? {
+            ok: true,
+            input: { multiple: true, accept: '', files: opts.files.map((f) => ({ name: f, size: 1, type: '' })) }
+          }
+        )
+      }
+    },
     tabs: { list: () => [], getActive: () => null },
     shortcuts: { register: () => {} }
   }
@@ -148,6 +166,9 @@ beforeEach(async () => {
   env.opened.length = 0
   env.revealed.length = 0
   env.pickResult = { canceled: true, filePaths: [] }
+  env.uploadCalls.length = 0
+  env.uploadResult = null
+  env.uploadThrows = false
   writeSettings([root])
   h = harness()
   files.activate(h as unknown as PluginContext)
@@ -171,7 +192,8 @@ describe('插件契约', () => {
         'browser_fs_move',
         'browser_fs_read',
         'browser_fs_roots',
-        'browser_fs_write'
+        'browser_fs_write',
+        'browser_upload'
       ].sort()
     )
   })
@@ -646,5 +668,55 @@ describe('浏览面板的 IPC 面(与 MCP 工具共用同一套语义)', () => {
     expect((await call<{ ok: boolean }>('openPath', join(outside, 'x'))).ok).toBe(false)
     expect((await call<{ ok: boolean }>('showInFolder', env.userData)).ok).toBe(false)
     expect(env.opened).toHaveLength(1)
+  })
+})
+
+describe('browser_upload(把本地文件交给网页)', () => {
+  it('白名单内的文件 → 交给核心的 uploadFiles(不带多余参数)', async () => {
+    writeFileSync(at('a.txt'), 'a', 'utf-8')
+    const { data } = await run('browser_upload', { path: at('a.txt') })
+    expect(data.ok).toBe(true)
+    expect(env.uploadCalls).toEqual([{ files: [at('a.txt')] }])
+  })
+
+  it('白名单外的文件被拒,而且根本不去碰页面', async () => {
+    writeFileSync(join(outside, 'x.txt'), 'x', 'utf-8')
+    const { data, isError } = await run('browser_upload', { path: join(outside, 'x.txt') })
+    expect(isError).toBe(true)
+    expect(data.error).toContain('工作目录')
+    expect(env.uploadCalls).toEqual([])
+  })
+
+  it('目录不是文件 → 拒;selected 路径也会被 guard 拦', async () => {
+    mkdirSync(at('sub'))
+    expect((await run('browser_upload', { path: at('sub') })).data.error).toContain('不是文件')
+    expect(env.uploadCalls).toEqual([])
+  })
+
+  it('path 与 paths 合并;selector / tabId 透传', async () => {
+    writeFileSync(at('a.txt'), 'a', 'utf-8')
+    writeFileSync(at('b.txt'), 'b', 'utf-8')
+    await run('browser_upload', { path: at('a.txt'), paths: [at('b.txt')], selector: '#f', tabId: 7 })
+    expect(env.uploadCalls).toEqual([{ files: [at('b.txt'), at('a.txt')], selector: '#f', tabId: 7 }])
+  })
+
+  it('既没 path 也没 paths → 明确报错', async () => {
+    const { data } = await run('browser_upload', {})
+    expect(data.error).toContain('path')
+    expect(env.uploadCalls).toEqual([])
+  })
+
+  it('核心返回失败 → isError;核心抛错(API 未就绪)→ 变成可读错误', async () => {
+    writeFileSync(at('a.txt'), 'a', 'utf-8')
+    env.uploadResult = { ok: false, error: '页面上没有 input[type=file]', debuggerBusy: false }
+    const failed = await run('browser_upload', { path: at('a.txt') })
+    expect(failed.isError).toBe(true)
+    expect(failed.data.error).toContain('input[type=file]')
+
+    env.uploadResult = null
+    env.uploadThrows = true
+    const thrown = await run('browser_upload', { path: at('a.txt') })
+    expect(thrown.isError).toBe(true)
+    expect(thrown.data.error).toContain('页面执行 API 尚未就绪')
   })
 })

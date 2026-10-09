@@ -78,6 +78,18 @@ export class FakeDebugger {
   devicePixelRatio: number | null = 1.25
   /** Page.captureScreenshot 返回的 base64;null = 空图 */
   shotData: string | null = Buffer.from('fake-fullpage-png').toString('base64')
+  /** DOM.querySelector 的返回(nodeId;0 = 没找到) */
+  queryNodeId = 0
+  /** DOM.querySelectorAll('input[type=file]') 的返回 */
+  fileInputNodeIds: number[] = []
+  /** nodeId → DOM.describeNode 的属性扁平数组([name,value,…]) */
+  nodeAttributes = new Map<number, string[]>()
+  /**
+   * upload 的 Runtime.evaluate 读回:页面侧 `input.files` 的真实状态。
+   * null = 没设(那就按整页截图那条路返回 devicePixelRatio)。
+   */
+  uploadState: { multiple: boolean; accept: string; files: Array<{ name: string; size: number; type: string }> } | null =
+    null
 
   isAttached(): boolean {
     return this.attached
@@ -97,7 +109,15 @@ export class FakeDebugger {
     this.calls.push({ method, params })
     if (this.sendError) throw this.sendError
     if (method === 'Page.getLayoutMetrics') return this.metrics
+    if (method === 'DOM.getDocument') return { root: { nodeId: 1 } }
+    if (method === 'DOM.querySelector') return { nodeId: this.queryNodeId }
+    if (method === 'DOM.querySelectorAll') return { nodeIds: this.fileInputNodeIds }
+    if (method === 'DOM.describeNode') {
+      const nodeId = Number((params as { nodeId?: number } | undefined)?.nodeId ?? 0)
+      return { node: { attributes: this.nodeAttributes.get(nodeId) ?? [] } }
+    }
     if (method === 'Runtime.evaluate') {
+      if (this.uploadState) return { result: { value: this.uploadState } }
       return { result: this.devicePixelRatio == null ? {} : { value: this.devicePixelRatio } }
     }
     if (method === 'Page.captureScreenshot') return { data: this.shotData }

@@ -69,6 +69,10 @@ src/
       exportFile.ts              导出到 bow 下载目录(目录解析与下载插件同源;书签 / 密码共用)
       fileRoots.ts               本地文件访问策略(白名单 + realpath + deny 名单);文件管理插件的**每个**入参路径
                                   与下载插件的 saveDir 都过它(白名单的唯一来源:每次现读 files-settings.json,不缓存不写)
+      tabTarget.ts               「tabId 指哪个标签 / 哪个窗口」的唯一实现(MCP 专属窗口 / 拒内部页 / 没标签就建 about:blank);
+                                  核心 MCP 工具与插件 pages.uploadFiles 共用 —— 两处各写一份必漂移
+      pageUpload.ts              「把本地文件塞进网页 <input type=file>」的 CDP 实现(DOM.setFileInputFiles);
+                                  核心出窄能力,文件管理插件只做决策(插件拿不到 webContents,见 §13 第 36 条)
       pickJsonFile.ts            弹系统文件选择框并读回 UTF-8 文本(书签 / 密码的导入共用)
   plugins/<id>/                 内置插件(自包含,每插件一个目录)
     main.ts                     主进程侧:manifest + capabilities + activate(ctx)
@@ -387,6 +391,7 @@ interface PluginUiContribution {
 | `content.inject` | `(spec) => void` | 移除规则并 `removeInsertedCSS` 所有已注入 key |
 | `content.refresh` | `(tabId?) => void` | 只重跑 CSS(不重跑 JS),用于规则变更后的即时反馈 |
 | `pages.activeTabId/focus/execute` | `execute(tabId, code, {timeoutMs=10000})` | 不回收(内核持有) |
+| `pages.uploadFiles` | `({tabId?, files, selector?}) => Promise<PageUploadResult>` | 不回收(内核持有)。把本地文件塞进页面里的 `<input type=file>`(CDP `DOM.setFileInputFiles`);**插件拿不到 `webContents`**,所以这条只能由核心出能力。`tabId` 与核心页面类工具**同一套解析规则**(`tabTarget.ts`,所以省略时绝不动用户窗口);不弹对话框、不需要用户手势;调试器被 DevTools 占着时明确失败(`debuggerBusy: true`)。无 `selector` 时**只有页面上恰好一个** file input 才生效,多个会返回 `candidates` 让调用方自己挑 —— 唯一调用方是文件管理插件的 `browser_upload` |
 | `pages.openDevToolsTab` | `(frontendUrl, title?, activate?, windowId?) => number` | 不回收(内核持有)。把 CDP 前端接进标签页(设备检查插件用);`windowId` 缺省=聚焦窗口。参数是**已拼好的前端地址**:可能是 `@shared/devtools` 拼的 bow 自带那份,也可能是设备指定的 `https://…`(见 `device-inspect/shared.effectiveStrategy`);标签只允许 `devtools://` 或与入口同源的导航 |
 | `tabs.list/getActive` | `() => TabInfo[] / TabInfo \| null` | 只读;`list` 数据源是 `WindowManager.allTabs()`(**跨窗口**,每条带 `windowId`),`getActive` 是**聚焦窗口**的 `TabManager` |
 | `service.onMcpHttpReady` | `(cb) => void` | 订阅 `MCP_HTTP_READY_EVENT` |
@@ -637,15 +642,15 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `browser_screenshot` | tabId, fullPage | fullPage falsy | **image content**(`image/png`);失败才是 text |
 | `browser_get_info` | tabId | — | `{ok,info:TabInfo}`(info 带 `windowId`) |
 
-插件工具 29 个:`browser_add_bookmark` `browser_list_bookmarks`(书签)、
+插件工具 30 个:`browser_add_bookmark` `browser_list_bookmarks`(书签)、
 `device_list_targets` `device_inspect` `device_snapshot` `device_tap` `device_type` `device_press_key`
 `device_scroll` `device_console` `device_eval` `device_screenshot` `device_connect`(设备检查)、
 `browser_list_downloads` `browser_download`(下载)、
 `browser_pomo_status` `browser_pomo_start` `browser_pomo_pause` `browser_pomo_skip`(番茄钟)、
 `browser_logseq_graph`(笔记的关系图谱,只读)、
 `browser_fs_roots` `browser_fs_list` `browser_fs_info` `browser_fs_read` `browser_fs_write` `browser_fs_mkdir`
-`browser_fs_move` `browser_fs_copy` `browser_fs_delete`(文件管理:白名单内的本地文件操作)
-—— 共 29 个,合计 **48** 个工具。
+`browser_fs_move` `browser_fs_copy` `browser_fs_delete` `browser_upload`(文件管理:白名单内的本地文件操作 + 上传到网页)
+—— 共 30 个,合计 **49** 个工具。
 
 静态计数来源:`CORE_MCP_TOOL_NAMES`(19)+ `ctx.mcp.tool(...)` 的调用点
 (`bookmarks/main.ts:137,165`、
@@ -653,7 +658,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 `downloads/main.ts:500,529`、
 `pomo/main.ts:229,238,249,260`、
 `logseq/main.ts:703`、
-`files/main.ts:279,300,342,378,423,473,497,552,598`)。
+`files/main.ts:687,708,737,751,770,796,813,834,858,902`)。
 ⚠️ 实际工具面**随插件启停变化**:停用 device-inspect 就少 11 个,停用 downloads 就少 2 个。
 
 ⚠️ 插件工具的 schema **不做 strict 校验**(走 `kernel.mcp` 声明快照),未知参数会被静默丢弃。
@@ -1402,6 +1407,9 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 36. **插件拿不到标签页的 `webContents`**:`tabId` 是 `TabManager` 自己的计数器(`ids.allocTabId()`),
     **不等于** `webContents.id`,而 `PluginContext` 也没有暴露 wc。所以「用某个标签页的页面上下文发起下载/请求」
     这件事只能走 `ctx.pages.execute`(主世界执行 JS),不能自己拿 wc 调 `webContents.downloadURL`。
+    **需要 CDP 的场景由核心出窄能力、插件只做决策**:目前唯一一条是 `ctx.pages.uploadFiles`
+    (`main/pageUpload.ts` —— `DOM.setFileInputFiles` 只能经 `wc.debugger` 发)。不要把 wc 或通用 `sendCommand`
+    暴露给插件:那等于把「任意页面控制」交给插件层,而这条限制是刻意的。
 37. **测这类功能必须用隔离的 `--user-data-dir`**:只设 `BOW_USER_DATA_DIR` 不会隔离单实例锁
     (见 `src/main/ua.ts` 的 `hasExplicitUserData()` 只用于跳过旧路径钉定)。E2E 脚本都传
     `--user-data-dir=$TMP/…` 才能与用户正在跑的 bow 并存。

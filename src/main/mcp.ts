@@ -8,8 +8,8 @@ import { z } from 'zod'
 import type { WebContents } from 'electron'
 import type { ActionResult, SearchEngineId } from '@shared/types'
 import { isHttpUrl, searchUrl } from '@shared/url'
-import type { TabRecord } from './tabManager'
 import type { WindowContext, WindowRegistry } from './windows'
+import { createTabTargets } from './tabTarget'
 import { getSettingsStore } from './stores'
 import type { PluginKernel } from './plugins/kernel'
 import type { McpToolSpec } from './plugins/mcpHost'
@@ -124,6 +124,16 @@ export const MCP_INSTRUCTIONS = `这是一个真实的多标签浏览器窗口(�
 - 恢复下载的行为由服务器决定(支不支持 Range);万一浏览器丢弃了已收字节(记录里 restarted 为 true),
   说明这次是从头下的 —— 不要自己去推。
 
+上传本地文件到网页(browser_upload)
+- 往网页的 <input type=file> 里塞本地文件(CDP 直接设置),**不弹任何文件对话框**,也不需要用户手势。
+- **推荐流程:先 browser_upload 设好文件,再用 browser_click 点提交按钮。**
+- selector 省略时,只有页面上**恰好一个**文件输入框才生效;有多个会返回 candidates 候选清单 ——
+  那时用 browser_snapshot 拿到目标框的选择器再传 selector。输入框在 iframe 里时找不到(按主文档查询)。
+- 文件必须落在 browser_fs_roots 列出的工作目录里(越界会在碰页面之前被拒);
+  单选(没有 multiple)的文件框只能传一个;返回体里的 input.files 是**页面侧真实看到**的文件
+  (填上了但页面在 change 里清空的话会明确报失败)。
+- 传完之后的提交由网页自己决定:多数站点靠 change 事件(浏览器会自动触发,你不用管)。
+
 本地文件(browser_fs_*)
 - 这组工具操作的是**真实磁盘**,与网页无关。**第一步先调 browser_fs_roots** 看允许的工作目录(你配的 ∪ bow 的下载目录)——
   目录之外的路径一律被拒(包括符号链接指向外面的情况),不要凭猜测拼绝对路径。
@@ -179,33 +189,9 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
   // 内部页面标签(如 bow://settings)持有应用 preload,一律不作为页面工具的操作目标。
   //
   // 软隔离:显式传 tabId 时允许任何窗口(包括用户的),所以「帮我看看这个页面」这类请求仍然可行。
-  const agentCtx = (): WindowContext | null => windows.agentWindow() ?? windows.createAgentWindow()
-
-  const target = (
-    tabId?: number
-  ): { view: TabRecord | null; ctx: WindowContext | null; fail: string | null } => {
-    if (tabId != null) {
-      const hit = windows.byTabId(tabId)
-      if (!hit) return { view: null, ctx: null, fail: `标签 ${tabId} 不存在` }
-      if (hit.record.info.internal) {
-        return { view: null, ctx: null, fail: `标签 ${tabId} 是浏览器内部页面(设置 / DevTools 前端),不支持页面操作` }
-      }
-      return { view: hit.record, ctx: hit.ctx, fail: null }
-    }
-    const ctx = agentCtx()
-    if (!ctx) return { view: null, ctx: null, fail: '无法创建 MCP 专属窗口' }
-    let hit = ctx.tabs.getActiveBrowsingView()
-    if (!hit) {
-      // 只有内部页面标签(或没有任何标签):新建空白标签作为操作目标
-      const t = ctx.tabs.create('about:blank')
-      hit = ctx.tabs.getView(t.id)
-    }
-    if (!hit) return { view: null, ctx, fail: '没有活动标签' }
-    return { view: hit, ctx, fail: null }
-  }
-
-  /** 取标签页的 WebContents(等待类工具用) */
-  const wcOf = (tabId: number): WebContents | null => windows.byTabId(tabId)?.record.view.webContents ?? null
+  //
+  // 实现已抽到 `tabTarget.ts` —— 插件的 `pages.uploadFiles` 要用**同一套**语义,两处各写一份必漂移。
+  const { agentCtx, target, wcOf } = createTabTargets(() => windows)
 
   /**
    * 等到指定标签导航到 expectUrl 并加载完成;拿不到视图时返回失败体。
