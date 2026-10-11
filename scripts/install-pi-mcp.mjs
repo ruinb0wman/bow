@@ -11,7 +11,11 @@
  *   npm run mcp:install -- --http       # 安装 HTTP 版(浏览器常驻,多客户端可共享)
  *   npm run mcp:install -- --dry-run    # 只打印将写入的内容
  *   npm run mcp:install -- --remove     # 卸载
- *   npm run mcp:install -- --direct-core  # 额外把核心 5 个工具提升为 pi 原生工具
+ *   npm run mcp:install -- --direct-core  # 额外把核心 6 个工具提升为 pi 原生工具
+ *
+ * 写的是 **pi 内置 MCP**(0.99+)的配置格式:`url`/`command` + `description` + `exposure`/`toolExposure`。
+ * pi-mcp-adapter 专属的 `lifecycle` / `idleTimeout` / `directTools` / 顶层 `settings.toolPrefix`
+ * 都不再由本脚本写入(内置会忽略它们,且内置默认就是开机常驻、整会话不关)。
  *
  * 其它参数:--port <n> --token <t> --direct-all --project
  *
@@ -26,7 +30,9 @@ import { fileURLToPath } from 'node:url'
 const PROJECT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const SERVER_NAME = 'browser'
 const CORE_TOOLS = ['browser_navigate', 'browser_snapshot', 'browser_read', 'browser_wait', 'browser_click', 'browser_eval']
-/** 能力索引 skill:代理模式下工具 schema 不常驻上下文,靠它把「能做什么 / 怎么做」放进上下文 */
+/** 进系统提示的一句话(内置 MCP 用它给服务器做索引) */
+const SERVER_DESCRIPTION = '本地 bow 浏览器(Electron 多标签)的 MCP 服务器;操作对用户实时可见'
+/** 能力索引 skill:codemode 曝光下工具 schema 不常驻上下文,靠它把「能做什么 / 怎么做」放进上下文 */
 const SKILL_NAME = 'bow-browser'
 const SKILL_REL = join('.pi', 'skills', SKILL_NAME, 'SKILL.md')
 
@@ -42,7 +48,7 @@ if (has('--help') || has('-h')) {
 
   npm run mcp:install                     安装 stdio 版(pi 自动拉起浏览器)
   npm run mcp:install -- --http           安装 HTTP 版(浏览器常驻,多客户端可共享)
-  npm run mcp:install -- --direct-core    额外把核心 5 个工具提升为原生工具
+  npm run mcp:install -- --direct-core    额外把核心 6 个工具提升为原生工具
   npm run mcp:install -- --direct-all     额外把全部工具提升为原生工具
   npm run mcp:install -- --dry-run        只打印将写入的内容
   npm run mcp:install -- --remove         卸载(配置 + skill)
@@ -52,7 +58,6 @@ if (has('--help') || has('-h')) {
   --port <n>          HTTP 模式端口,默认 8765
   --token <t>         HTTP 模式 Bearer 令牌(默认取 MCP_HTTP_TOKEN)
   --no-skill          不安装 bow-browser skill(默认会装)
-  --tool-prefix <m>   同时设置 settings.toolPrefix(none / server / short)
 `)
   process.exit(0)
 }
@@ -64,10 +69,8 @@ const dryRun = has('--dry-run')
 const remove = has('--remove')
 const project = has('--project')
 const withSkill = !has('--no-skill')
-const toolPrefix = opt('--tool-prefix', '')
-if (toolPrefix && !['none', 'server', 'short'].includes(toolPrefix)) {
-  console.error(`--tool-prefix 只支持 none / server / short,收到: ${toolPrefix}`)
-  process.exit(2)
+if (argv.some((a) => a.startsWith('--tool-prefix'))) {
+  console.warn('· --tool-prefix 已废弃:pi 内置 MCP 的工具名固定为 mcp__<服务器>__<工具>,已忽略')
 }
 const target = project
   ? join(process.cwd(), '.pi', 'mcp.json')
@@ -104,20 +107,19 @@ function buildEntry() {
   const entry = useHttp
     ? {
         url: `http://127.0.0.1:${port}/mcp`,
-        // 常驻服务:允许浏览器还没起来就先配置好,起来后自动重连
-        lifecycle: 'keep-alive'
+        // 常驻端点:pi 启动时连一次,断开后下次调用自动重连
+        description: SERVER_DESCRIPTION
       }
     : {
         command: 'npm',
         args: ['run', 'mcp'],
         cwd: PROJECT,
-        // 浏览器没有单实例锁:空闲断开后再连会多开一个窗口,因此禁用空闲断开
-        lifecycle: 'lazy',
-        idleTimeout: 0
+        description: SERVER_DESCRIPTION
       }
   if (useHttp && token) entry.headers = { Authorization: `Bearer ${token}` }
-  if (has('--direct-all')) entry.directTools = true
-  else if (has('--direct-core')) entry.directTools = CORE_TOOLS
+  // pi 内置 MCP:服务器默认 codemode 曝光,用 exposure/toolExposure 提升可见性
+  if (has('--direct-all')) entry.exposure = 'direct'
+  else if (has('--direct-core')) entry.toolExposure = Object.fromEntries(CORE_TOOLS.map((t) => [t, 'direct']))
   return entry
 }
 
@@ -130,7 +132,6 @@ if (remove) delete servers[SERVER_NAME]
 else servers[SERVER_NAME] = entry
 
 const next = { ...config, mcpServers: servers }
-if (toolPrefix) next.settings = { ...(config.settings ?? {}), toolPrefix }
 const output = JSON.stringify(next, null, 2) + '\n'
 
 const skillIsSource = resolve(skillTarget) === resolve(skillSource)
@@ -138,7 +139,10 @@ const skillIsSource = resolve(skillTarget) === resolve(skillSource)
 console.log(`目标文件: ${target}`)
 console.log(`模式:     ${remove ? '卸载' : useHttp ? `HTTP(127.0.0.1:${port})` : 'stdio(pi 自动拉起浏览器)'}`)
 if (previous && !remove) console.log('覆盖:     该条目已存在,将被替换')
-if (toolPrefix) console.log(`前缀:     settings.toolPrefix → ${toolPrefix}(影响所有服务器)`)
+if (!remove) {
+  const exposure = has('--direct-all') ? 'exposure=direct(全部工具)' : has('--direct-core') ? `toolExposure:核心 ${CORE_TOOLS.length} 个 direct` : '默认 codemode(工具不进上下文)'
+  console.log(`曝光:     ${exposure}`)
+}
 if (Object.keys(servers).length > 1) {
   console.log(`保留:     其它 ${Object.keys(servers).length - (remove ? 0 : 1)} 个服务器不受影响`)
 }
@@ -192,6 +196,6 @@ if (!remove && withSkill) {
   console.log('需要时直接输入该命令强制加载(参数跟在后面即可)。')
 }
 if (!remove && !has('--direct-all') && !has('--direct-core')) {
-  console.log('\n提示:代理模式下工具 schema 不常驻上下文,模型需先 describe。')
+  console.log('\n提示:codemode 曝光下工具 schema 不常驻上下文,模型得先 tool_search 或用脚本搜。')
   console.log('     若发现模型不主动调用,可重跑并加 --direct-core,把常用工具提升为原生工具。')
 }

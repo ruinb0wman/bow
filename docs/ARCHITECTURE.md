@@ -1092,7 +1092,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | 脚本 | 职责 |
 | --- | --- |
 | `open-bow.mjs` | 跨平台拼环境变量再 spawn electron(解决 Windows 无内联赋值);支持 `--dry-run`;首个参数精确为 `stdio`/`http` 才算模式,其余参数原序透传为「打开目标」 |
-| `install-pi-mcp.mjs` | 写 `~/.pi/agent/mcp.json`(或 `--project`),支持 `--http` `--direct-core` `--direct-all` `--tool-prefix` `--no-skill` `--remove` `--dry-run`;`directTools` 核心 5 个 = `browser_navigate` `browser_snapshot` `browser_wait` `browser_click` `browser_eval` |
+| `install-pi-mcp.mjs` | 写 `~/.pi/agent/mcp.json`(或 `--project`)的 **pi 内置 MCP** 格式,支持 `--http` `--direct-core` `--direct-all` `--no-skill` `--remove` `--dry-run`;核心 6 个走 `toolExposure` 的 `direct` = `browser_navigate` `browser_snapshot` `browser_read` `browser_wait` `browser_click` `browser_eval`。不再写 adapter 专属的 `lifecycle` / `idleTimeout` / `directTools` / `settings.toolPrefix`(`--tool-prefix` 保留但只警告) |
 | `dist.mjs` | 打包(按当前平台选 `--win`/`--linux`/`--mac`,含镜像注入;显式传参则完全交给调用方,并把本次目标的 `app.asar` 交给自检) |
 | `verify-dist.mjs` + `lib/externalRequires.mjs` | 从 bundle 扫出运行时外部依赖(`require` / `from` / **动态 `import()`**),逐个核对是否进了 `app.asar`(缺一个就 `bow` 一闪即退);终端插件的 node-pty 就是靠动态 import 惰性加载的,漏扫这一形式等于自检有盲区;自动扫描时优先当前平台的 `*-unpacked` 目录 |
 | `ensure-electron.mjs` | postinstall:确保 electron 二进制就位(走镜像) |

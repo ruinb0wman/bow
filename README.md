@@ -195,8 +195,8 @@ node scripts/dist.mjs -- --win portable # 试别的 target
 ```bash
 npm run mcp:install                  # stdio 版:pi 自动拉起浏览器
 npm run mcp:install -- --http        # HTTP 版:连常驻端点(它默认就开着,无需先跑 mcp:http)
-npm run mcp:install -- --direct-core # 额外把核心 5 个工具提升为 pi 原生工具
-npm run mcp:install -- --tool-prefix none  # 同时把 settings.toolPrefix 设为 none
+npm run mcp:install -- --direct-core # 额外把核心 6 个工具提升为 pi 原生工具
+npm run mcp:install -- --direct-all  # 把全部工具提升为原生工具(≈10k token,慎用)
 npm run mcp:install -- --dry-run     # 只看会写入什么
 npm run mcp:install -- --remove      # 卸载(配置 + skill)
 ```
@@ -206,13 +206,14 @@ npm run mcp:install -- --remove      # 卸载(配置 + skill)
 它还会把能力索引 skill 一并装到 `~/.pi/agent/skills/bow-browser/`(`--no-skill` 可跳过)。
 改完要**重启 pi**(服务器清单与 skill 都在启动时加载)。
 
-### pi 适配器推荐配置(能力索引 + 定向直挂)
+### pi 内置 MCP 的推荐配置(能力索引 + 定向直挂)
 
-pi 的 MCP 适配器默认是**代理模式**:工具 schema 不常驻上下文,模型必须先 `describe` 才拿到参数 ——
-约 200 token/服务器换上下文干净,但模型常常不主动去 describe。它同时支持两条更好的路子,推荐组合使用:
+pi 0.99 起自带 MCP 支持(不再需要 pi-mcp-adapter)。它默认按 **`codemode`** 曝光:
+工具可以被 codemode 脚本调用,但不声明给模型 —— 约 200 token/服务器换上下文干净,
+代价是模型得先 `tool_search` 或写脚本去找。两条更好的路子,推荐组合使用:
 
-1. **`directTools`:高频工具直挂为原生工具**(schema 进上下文,0 跳)。成本参考:5 个 ≈1k token、
-   20 个 ≈4k、50 个 ≈10k,代理工具 ≈200。
+1. **`toolExposure`:高频工具直挂为原生工具**(schema 进上下文,0 跳)。成本参考:6 个 ≈1k token、
+   20 个 ≈4k、50 个 ≈10k。
 2. **skill 做能力索引**:`description` 常驻(几十~百 token),正文按需加载 —— 放"什么场景用哪个工具、
    按什么顺序、有哪些反模式"。本仓库的 `.pi/skills/bow-browser/SKILL.md` 就是它,
    以 `/skill:bow-browser` 注册;模型不一定会主动加载,需要时直接敲该命令强制加载。
@@ -221,39 +222,37 @@ pi 的 MCP 适配器默认是**代理模式**:工具 schema 不常驻上下文,�
 
 ```json
 {
-  "settings": { "toolPrefix": "none" },
   "mcpServers": {
-    "codegraph": { "command": "codegraph", "args": ["serve", "--mcp"], "directTools": true },
     "browser": {
-      "command": "npm",
-      "args": ["run", "mcp"],
-      "cwd": "/absolute/path/to/browser",
-      "lifecycle": "lazy",
-      "idleTimeout": 0,
-      "directTools": ["browser_navigate", "browser_snapshot", "browser_read", "browser_wait", "browser_click", "browser_eval"]
+      "url": "http://127.0.0.1:8765/mcp",
+      "description": "本地 bow 浏览器(Electron 多标签)的 MCP 服务器;操作对用户实时可见",
+      "toolExposure": {
+        "browser_navigate": "direct",
+        "browser_snapshot": "direct",
+        "browser_read": "direct",
+        "browser_wait": "direct",
+        "browser_click": "direct",
+        "browser_eval": "direct"
+      }
     }
   }
 }
 ```
 
-browser 那半边一条命令就能装好:`npm run mcp:install -- --direct-core --tool-prefix none`。
+browser 那半边一条命令就能装好:`npm run mcp:install -- --http --direct-core`。
 
 几个容易踩的点:
 
-- **`toolPrefix: "none"`**:默认的 `server` 模式会把服务器名再拼一遍 —— 本仓库工具已自带 `browser_` 前缀,
-  codegraph 的工具名也自带 `codegraph_`,默认模式下会变成 `browser_browser_navigate`、
-  `codegraph_codegraph_search` 这种双重前缀(本仓库会话里就能观察到)。两个服务器都自带命名空间,
-  设 `none` 最干净。
-- **`directTools` 数组用工具原始名**,不带前缀。
-- **`directTools` 从缓存注册**(`~/.pi/agent/mcp-cache.json`),不是实时连接:首次配好后那一轮仍走代理,
-  缓存后台填充,**重启 pi** 才生效;工具面变了(比如新增 `browser_wait`)先 `/mcp reconnect browser` 再重启。
-- **更推荐 subagent 定向注册**,不污染主会话上下文:
-  ```yaml
-  tools:
-    - mcp:browser                        # 该服务器全部工具
-    - mcp:codegraph/codegraph_explore    # 或只给具体工具
-  ```
-- 试效果不用改配置:`MCP_DIRECT_TOOLS=browser pi`、`MCP_DIRECT_TOOLS=__none__ pi`。
+- **工具名固定是 `mcp__<服务器>__<工具>`**:`mcp__browser__browser_eval`。内置没有 `toolPrefix`
+  这类开关(pi-mcp-adapter 的 `toolPrefix: "none"` 在内置里没有等价物),判断工具在不在要按
+  `mcp__browser__*` 匹配,别按裸名精确匹配。
+- **`toolExposure` 的键用工具的原始名**(`browser_eval`,不带 `mcp__browser__` 前缀),支持 `*` 通配,
+  精确名优先于通配;值取 `direct` / `deferred` / `codemode` / `hidden`。
+- **内置没有懒启动/空闲断开**:配置里 enabled 的服务器在每个会话启动时全部连接并常驻到会话结束。
+  `lifecycle` / `idleTimeout` 是 pi-mcp-adapter 的字段,内置会忽略。stdio 模式下浏览器由 pi 作为
+  子进程拉起并保持整个会话,空闲不会断开 —— 所以不存在"断开重连多开窗口"的问题。
+- `pi mcp list` 会标出与服务器默认曝光不同的工具(如 `[direct]`),可用来核对 `toolExposure` 是否生效。
+- 改完配置要**重启 pi**(或 `/reload`),服务器清单与 skill 都在启动时加载。
 
 ### 手动配置
 
@@ -268,14 +267,13 @@ browser 那半边一条命令就能装好:`npm run mcp:install -- --direct-core 
       "browser": {
         "command": "npm",
         "args": ["run", "mcp"],
-        "cwd": "$PROJECT",
-        "lifecycle": "lazy",
-        "idleTimeout": 0
+        "cwd": "$PROJECT"
       }
     }
   }
   ```
-  HTTP 版则写成 `{"url": "http://127.0.0.1:8765/mcp", "lifecycle": "keep-alive"}`。
+  HTTP 版则写成 `{"url": "http://127.0.0.1:8765/mcp"}`。
+  (`lifecycle` / `idleTimeout` / `directTools` 是 pi-mcp-adapter 的字段,内置 MCP 会忽略,别写。)
 
 MCP 模式下浏览器窗口照常弹出,AI 的所有操作你都能实时看到。stdio 模式下 AI 断开连接后浏览器保持运行,
 可继续手动使用。注意 **stdio 实例不参与单实例锁**(见「单实例」一节):它可能与常驻实例并存,

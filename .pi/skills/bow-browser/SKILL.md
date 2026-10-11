@@ -10,13 +10,15 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 
 ## 第一步:确认工具怎么调
 
+pi 内置 MCP 把每个工具注册为 `mcp__<服务器>__<工具>` —— 本服务器的 `browser_eval` 就是 `mcp__browser__browser_eval`。
+当前曝光分两档:
+
 | 情况 | 做法 |
 | --- | --- |
-| 工具列表里已有 `browser_*` | 直接调用 |
-| 只有一部分(常见:核心几个在,其余不在) | 在的直接调,不在的走下面的代理三步 |
-| 一个都没有(默认代理模式) | `mcp({search:"browser"})` → `mcp({describe:"<工具名>"})` → `mcp({tool:"<工具名>", args:{...}})` |
+| 工具列表里有 `mcp__browser__<名字>` | 直接调用(核心 6 个是 `direct`,常驻在工具列表里) |
+| 不在列表里(插件 / 长尾工具,默认 `codemode` 曝光) | 用 `tool_search` 把工具声明出来再调,或写 codemode 脚本 `searchTools()` 找到后调 |
 
-**永远不要凭记忆猜参数** —— 代理模式下的 schema 不在上下文里。工具名可能被加了前缀(如 `bow_browser_navigate`),以实际列表为准。
+**永远不要凭记忆猜参数** —— `codemode` 曝光下 schema 不在上下文里,先 `tool_search` / `describeTool()` 拿到再调。
 
 ## 工具选型
 
