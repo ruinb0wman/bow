@@ -213,11 +213,26 @@ export interface SpawnSpec {
 
 /** 配置 → node-pty 的 spawn 参数(空 cwd 落到主目录) */
 export function buildSpawnSpec(profile: TerminalProfile, opts: { homedir: string }): SpawnSpec {
-  return {
-    file: profile.shell.trim(),
-    args: [...profile.args],
-    cwd: profile.cwd.trim() || opts.homedir
-  }
+  return spawnSpecOf(profile.shell, profile.args, profile.cwd, opts.homedir)
+}
+
+/**
+ * 内核事件 `terminal:run` 带来的命令 → spawn 参数。与 `buildSpawnSpec` 共用同一套归一化:
+ * 可执行文件去空白、空 cwd 落主目录;参数**逐项原样**(它们在参数里合法地含空格)。
+ */
+export function buildCommandSpawn(request: TerminalRunSpec, opts: { homedir: string }): SpawnSpec {
+  return spawnSpecOf(request.file, request.args, request.cwd ?? '', opts.homedir)
+}
+
+/** `terminal:run` 里真正与 spawn 有关的三项(与 @shared/terminalRun 的请求同形,只是去掉名字) */
+export interface TerminalRunSpec {
+  file: string
+  args: string[]
+  cwd?: string
+}
+
+function spawnSpecOf(file: string, args: readonly string[], cwd: string, homedir: string): SpawnSpec {
+  return { file: file.trim(), args: [...args], cwd: cwd.trim() || homedir }
 }
 
 /**
@@ -237,7 +252,7 @@ export function cleanEnv(env: Record<string, string | undefined>): Record<string
   out.TERM = 'xterm-256color'
   out.COLORTERM = 'truecolor'
   // 告诉终端里的编码代理「你在 bow 的终端里」:pi 的桥接扩展用它做门禁
-  // (见 `integrations/pi/bow-agent-state.ts`),别的终端不会收到这条,所以不会乱发 OSC。
+  // (见 `packages/pi-bow/extensions/bow-agent-state.ts`),别的终端不会收到这条,所以不会乱发 OSC。
   out.BOW_TERMINAL = '1'
   return out
 }
@@ -524,14 +539,14 @@ export interface TerminalSessionClosedMessage {
  * 契约放 shared 而不放 `./piBridge` 的原因:`./piBridge` 是主进程侧模块(用 node:path + 注入的 fs),
  * 渲染层不该 import 它;设置页要的只是下面这几个类型。
  * 两侧共享的不变式(文件名 `bow-agent-state.ts` / 归属标记 `managed by bow` / 源路径
- * `integrations/pi/`)由 `tests/piBridgeExtension.test.ts` 钉住 —— 改一处必须同步改脚本与这里。
+ * `packages/pi-bow/extensions/`)由 `tests/piBridgeExtension.test.ts` 钉住 —— 改一处必须同步改脚本与这里。
  */
 export interface PiBridgeStatus {
   /** pi 的 agent 目录(默认 `~/.pi/agent`,可被 `PI_CODING_AGENT_DIR` 覆盖) */
   agentDir: string
   /** 安装目标:`<agentDir>/extensions/bow-agent-state.ts` */
   target: string
-  /** 源文件:`<appPath>/integrations/pi/bow-agent-state.ts` */
+  /** 源文件:`<appPath>/packages/pi-bow/extensions/bow-agent-state.ts` */
   source: string
   /** pi 的 agent 目录存在吗(pi 装过没有) */
   agentDirExists: boolean

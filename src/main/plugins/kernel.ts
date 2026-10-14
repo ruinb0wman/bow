@@ -30,7 +30,9 @@ import { McpHost } from './mcpHost'
 import { McpHttpHost, MCP_HTTP_READY_EVENT } from './mcpHttpHost'
 import { NetHookHost } from './netHooks'
 import { ContentHookHost } from './contentHooks'
-import type { McpToolConfig, McpToolHandler, PluginContext, PluginMain, PluginPageApi, PluginServiceApi, PluginStorage } from './types'
+import { FileOpenerHost } from './fileOpeners'
+import type { LocalFileOpenerSpec } from './fileOpeners'
+import type { McpToolConfig, McpToolHandler, PluginContext, PluginMain, PluginPageApi, PluginServiceApi, PluginStorage, PluginTabHost } from './types'
 
 const SUGGEST_LIMIT = 9
 
@@ -83,6 +85,10 @@ export class PluginKernel {
   readonly mcpHttp = new McpHttpHost()
   readonly net = new NetHookHost()
   readonly content = new ContentHookHost()
+  /** 本地文件认领(启动参数里的 file:// 目标先问它);插件停用时自动摘除 */
+  readonly fileOpeners = new FileOpenerHost((id, phase, e) =>
+    logError(`插件认领本地文件${phase === 'match' ? '匹配' : '打开'}失败`, id, e)
+  )
 
   private stateStore: JsonStore<{ version: number; disabled: string[] }>
   private contexts = new Map<string, PluginContextImpl>()
@@ -94,6 +100,7 @@ export class PluginKernel {
   private broadcaster: ((channel: string, payload: unknown) => void) | null = null
   private uiHost: PluginUiHost | null = null
   private tabProvider: () => PluginTabApi = () => EMPTY_TABS
+  private tabHost: PluginTabHost | null = null
   private pageApi: PluginPageApi = EMPTY_PAGE_API
   /** 代理状态上报的落地端(main/agentNotify.ts);窗口就绪后由 index.ts 注入 */
   private agentReporter: ((report: AgentSignal & { tabId: number }) => void) | null = null
@@ -138,6 +145,25 @@ export class PluginKernel {
 
   setTabProvider(fn: () => PluginTabApi): void {
     this.tabProvider = fn
+  }
+
+  /** 注入「建内部页标签」的落地端(窗口就绪后由 index.ts 接线);未注入时返回 null,不抛 */
+  setTabHost(host: PluginTabHost): void {
+    this.tabHost = host
+  }
+
+  /** `ctx.tabs.openInternal` 的实现:插件身份只用于日志(能力本身与插件无关) */
+  openInternalTab(pluginId: string, page: Parameters<PluginTabHost['openInternal']>[0], opts?: { windowId?: number }): number | null {
+    if (!this.tabHost) {
+      logError('标签宿主未就绪,插件无法开内部页', pluginId, page)
+      return null
+    }
+    try {
+      return this.tabHost.openInternal(page, opts)
+    } catch (e) {
+      logError('插件开内部页失败', pluginId, page, e)
+      return null
+    }
   }
 
   /** 注入 MCP HTTP 服务所需的内核运行时依赖(窗口/标签就绪后调用) */
@@ -320,6 +346,11 @@ export class PluginKernel {
     }
   }
 
+  /** `ctx.fileOpeners.register` 的实现(disposer 由上下文登记,插件停用时自动摘除) */
+  addFileOpener(pluginId: string, opener: LocalFileOpenerSpec): () => void {
+    return this.fileOpeners.add(pluginId, opener)
+  }
+
   emitEvent(name: string, payload?: unknown): void {
     const set = this.subscribers.get(name)
     if (!set) return
@@ -452,6 +483,12 @@ class PluginContextImpl implements PluginContext {
     }
   }
 
+  readonly fileOpeners = {
+    register: (opener: LocalFileOpenerSpec): void => {
+      this.disposers.push(this.kernel.addFileOpener(this.id, opener))
+    }
+  }
+
   readonly suggest = {
     register: (provider: SuggestProvider): void => {
       this.disposers.push(this.kernel.addProvider(this.id, provider))
@@ -500,9 +537,10 @@ class PluginContextImpl implements PluginContext {
       this.kernel.pages.openDevToolsTab(frontendUrl, title, activate, windowId)
   }
 
-  readonly tabs: PluginTabApi = {
+  readonly tabs: PluginTabApi & PluginTabHost = {
     list: () => this.kernel.tabs.list(),
-    getActive: () => this.kernel.tabs.getActive()
+    getActive: () => this.kernel.tabs.getActive(),
+    openInternal: (page, opts) => this.kernel.openInternalTab(this.id, page, opts)
   }
 
   readonly service: PluginServiceApi = {

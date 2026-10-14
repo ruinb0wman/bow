@@ -1,5 +1,6 @@
 import { app, BrowserWindow, screen, shell } from 'electron'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { TabManager } from './tabManager'
 import { OverlayManager } from './overlay'
 import { installCloseConfirm } from './closeConfirm'
@@ -25,6 +26,7 @@ import { applyBrowserIdentity } from './ua'
 import { acquireSingletonLock } from './singleInstance'
 import { collectOpenTargets, defaultOpenTargetDeps } from './openArgs'
 import { PluginKernel } from './plugins/kernel'
+import type { LocalFileMode } from './plugins/fileOpeners'
 import { BUILTIN_PLUGINS } from './plugins/builtin'
 import { AGENT_WINDOW_TITLE, WindowManager } from './windows'
 import type { WindowContext, WindowRole } from './windows'
@@ -104,6 +106,15 @@ const initialTargets = IS_MCP_STDIO
       onSkip: (arg, reason) => log('忽略启动参数', arg, reason)
     })
 
+/**
+ * `--edit` 开关:注册表里的「编辑」动词(以及工具栏的「用编辑器打开…」)用它表达
+ * 「这个文件要**编辑**而不是浏览」。`collectOpenTargets` 会把 `--`开头的参数当开关丢掉,
+ * 所以这里独立读一次。
+ */
+function hasEditFlag(argv: string[]): boolean {
+  return argv.includes('--edit')
+}
+
 // 必须在 app ready 之前取锁。第二个实例拿到锁失败后会触发已有实例的 second-instance,
 // 由后者**开一个新窗口**,自己则直接退出(不创建窗口)。
 const hasSingletonLock = acquireSingletonLock({
@@ -118,16 +129,39 @@ app.on('second-instance', (_e, argv, workingDirectory) => {
   const targets = collectOpenTargets(argv, app.isPackaged ? 1 : 2, defaultOpenTargetDeps(workingDirectory), {
     onSkip: (arg, reason) => log('忽略启动参数', arg, reason)
   })
-  createWindowContext(targets, 'user')
+  createWindowContext(targets, 'user', hasEditFlag(argv) ? 'edit' : 'open')
 })
 
+/**
+ * 开一个启动目标。本地文件先让插件认领一把(典型:编辑器插件把它换成 nvim 标签页),
+ * 没人认领才照旧开标签。认领是同步的,所以这里的时序与以前完全一样。
+ *
+ * 认领只在「本地文件」这条通路上生效:http(s) 目标与地址栏输入的那条通路不经过这里。
+ */
+function openLaunchTarget(tabs: TabManager, target: string, mode: LocalFileMode): void {
+  if (target.startsWith('file:')) {
+    let path: string | null = null
+    try {
+      path = fileURLToPath(target)
+    } catch {
+      // 非本机 file URL(带 host 等)→ 交给标签页自己处理
+      path = null
+    }
+    if (path && kernel.fileOpeners.claim(path, mode)) {
+      log('本地文件已由插件认领', path, mode)
+      return
+    }
+  }
+  tabs.create(target)
+}
+
 /** 建一个窗口 + 它的 TabManager / OverlayManager,登记进注册表并接线 */
-function createWindowContext(targets: string[], role: WindowRole = 'user'): WindowContext {
+function createWindowContext(targets: string[], role: WindowRole = 'user', mode: LocalFileMode = 'open'): WindowContext {
   const win = createWindow(role)
   const tabs = new TabManager(win, windows!.ids)
   const overlay = new OverlayManager(win, tabs)
   const ctx = windows!.register(win, tabs, overlay, role)
-  wireWindowContext(ctx, targets)
+  wireWindowContext(ctx, targets, mode)
   log('创建窗口', ctx.id, role, targets.length > 0 ? `目标 ${targets.length} 个` : '(主页)')
   return ctx
 }
@@ -136,7 +170,7 @@ function createWindowContext(targets: string[], role: WindowRole = 'user'): Wind
  * 单个窗口的运行时接线。第一个窗口与后续窗口共用同一条路径 —— 这样「hook 必须先于窗口创建」
  * 之外的每一条约束都只有一处实现。
  */
-function wireWindowContext(ctx: WindowContext, targets: string[]): void {
+function wireWindowContext(ctx: WindowContext, targets: string[], mode: LocalFileMode = 'open'): void {
   const { window: win, tabs, overlay } = ctx
 
   // agent 窗口的轻标识:标题固定带后缀。chrome 页面的 document.title(index.html 的 <title>Bow</title>)
@@ -210,7 +244,7 @@ function wireWindowContext(ctx: WindowContext, targets: string[]): void {
     // 放在这里而不是更早,是为了保证 registerIpc() 已挂好 tabs-changed 广播。
     if (tabs.listTabs().length > 0) return
     if (targets.length > 0) {
-      for (const target of targets) tabs.create(target)
+      for (const target of targets) openLaunchTarget(tabs, target, mode)
       return
     }
     tabs.create(getSettingsStore().get().homepage)
@@ -278,6 +312,13 @@ app.whenReady().then(async () => {
     list: () => windows!.allTabs(),
     getActive: () => windows!.focused()?.tabs.getActiveTabInfo() ?? null
   }))
+  // 插件建内部页标签的唯一入口(ctx.tabs.openInternal)。只认内部页 —— 收窄能力,见 PluginTabHost 的注释
+  kernel.setTabHost({
+    openInternal: (page, opts) => {
+      const wc = (opts?.windowId === undefined ? null : windows!.byId(opts.windowId)) ?? windows!.focused()
+      return wc?.tabs.openInternal(page)?.id ?? null
+    }
+  })
   // 页面执行 API:主世界执行 JS(元素框选等交互式脚本),带超时保护
   kernel.setPageApi({
     activeTabId: () => windows!.focused()?.tabs.getActiveTabInfo()?.id ?? null,
@@ -358,7 +399,7 @@ app.whenReady().then(async () => {
 
   // 首个窗口:命令行 / 文件管理器传来的目标各开一个标签,否则开主页。
   // stdio 模式下浏览器是 MCP 客户端的子进程 —— 这个窗口就是 agent 的,标成 agent 角色。
-  createWindowContext(initialTargets, IS_MCP_STDIO ? 'agent' : 'user')
+  createWindowContext(initialTargets, IS_MCP_STDIO ? 'agent' : 'user', hasEditFlag(process.argv) ? 'edit' : 'open')
 
   registerIpc(windows, kernel)
 

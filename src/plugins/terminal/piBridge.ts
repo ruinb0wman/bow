@@ -13,19 +13,25 @@
  * 3. I/O 全部注入(`PiBridgeIo`):这样这段逻辑能在 vitest 里用临时目录跑真 fs,
  *    也能在需要时用假 fs 测边界(目录不存在 / 读不到源 / 目标不是 bow 的)。
  *
- * ⚠️ 源的定位依赖打包配置:`app.getAppPath()/integrations/pi/bow-agent-state.ts`。
- * 所以 `package.json` 的 `build.files` 必须包含 `integrations` 目录,否则打包版里
+ * ⚠️ 源的定位依赖打包配置:`app.getAppPath()/packages/pi-bow/extensions/bow-agent-state.ts`。
+ * 所以 `package.json` 的 `build.files` 必须包含这个目录,否则打包版里
  * `sourceAvailable` 为 false(设置页会把它显示出来,而不是静默失败)。
+ *
+ * 「两份实现」现在是「包内那份源 + 本文件 + 安装脚本」:`packages/pi-bow/` 是 pi 插件的家,
+ * 一键接入读的就是它,不再有生成副本。
+ *
+ * ⚠️ 源文件必须**自包含**(只 import `node:` 与 pi 的类型):它会被单独复制进 pi 的扩展目录。
  */
 
 import { join } from 'node:path'
+import { windowsPathToWsl } from '@shared/localFile'
 import type { PiBridgeResult, PiBridgeStatus, PiBridgeWslHint } from './shared'
 
 export const PI_BRIDGE_FILENAME = 'bow-agent-state.ts'
 /** 与安装脚本逐字一致;也是「这文件是不是 bow 装的」的判据 */
 export const PI_BRIDGE_MARKER = 'managed by bow'
 /** 源文件相对应用根目录的位置(打包后的 asar 里也走这条相对路径) */
-export const PI_BRIDGE_SOURCE_REL = ['integrations', 'pi', PI_BRIDGE_FILENAME] as const
+export const PI_BRIDGE_SOURCE_REL = ['packages', 'pi-bow', 'extensions', PI_BRIDGE_FILENAME] as const
 
 /** 注入的 I/O(node:fs 的一小部分;测试可全用真实 fs + 临时目录) */
 export interface PiBridgeIo {
@@ -68,15 +74,10 @@ function readSource(io: PiBridgeIo, source: string): string | null {
 }
 
 /**
- * Windows 路径 → WSL 里的挂载路径:`C:\Users\me\.pi\x.ts` → `/mnt/c/Users/me/.pi/x.ts`。
- * 按默认的 automount root(`/mnt`)换算;不是盘符路径(如 UNC `\\wsl$\…`)时返回 null ——
- * 那种情况给不出一行可靠的命令,宁可不说,也不要给一条复制过去就跑不通的命令。
+ * 路径换算的唯一实现搬到了 `@shared/localFile`(编辑器插件的 `pathStyle: 'wsl'` 也要用)。
+ * 这里 re-export 是为了 keep 住本模块的对外面(调用方与测试不用改)。
  */
-export function windowsPathToWsl(path: string): string | null {
-  const m = /^([A-Za-z]):[\\/](.+)$/.exec(path)
-  if (!m) return null
-  return `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}`
-}
+export { windowsPathToWsl }
 
 /**
  * 「bow 在 Windows、pi 在 WSL2 里跑」时的提醒:标题栏那个按钮装的是 **Windows** 的家目录,

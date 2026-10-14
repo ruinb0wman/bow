@@ -8,11 +8,27 @@ import type {
   PluginTabApi,
   SuggestProvider
 } from '@shared/plugins'
+import type { InternalPageId } from '@shared/internalPages'
+import type { LocalFileOpenerSpec } from './fileOpeners'
 import type { AgentSignal } from '@shared/agentState'
 import type { HotkeySpec } from '@shared/shortcuts'
 import type { McpHttpStatus } from './mcpHttpHost'
 import type { McpActivitySnapshot } from '../mcpActivity'
 import type { ArmResult, FileChooserOpenedInfo, PageUploadResult } from '../pageUpload'
+
+/**
+ * 插件建标签的**唯一**入口:只允许内部页(`bow://settings|terminal|logseq`)。
+ *
+ * 为什么只出这一条窄能力:标签与窗口是核心资源(ARCHITECTURE §13-36 同一条边界 —— 插件拿不到
+ * webContents)。插件需要的是「开一个 bow://terminal 页,并知道它的 tabId」,而不是「随便开标签」;
+ * 收窄到内部页后,插件既不能导航用户的浏览标签,也不能开任意 URL。
+ *
+ * 与 `ctx.pages.openDevToolsTab` 同构:核心建资源,插件只做决策。未注入时返回 `null`(插件必须处理)。
+ */
+export interface PluginTabHost {
+  /** 建一个内部页标签并激活,返回 tabId;没有可用窗口时返回 null */
+  openInternal(page: InternalPageId, opts?: { windowId?: number }): number | null
+}
 
 export interface PluginStorage<T> {
   get(): T
@@ -164,8 +180,13 @@ export interface PluginContext {
   }
   /** 页面执行(主世界 JS),用于元素框选等交互式脚本 */
   pages: PluginPageApi
-  /** 只读标签信息 */
-  tabs: PluginTabApi
+  /** 只读标签信息 + 建**内部页**标签(见 PluginTabHost) */
+  tabs: PluginTabApi & PluginTabHost
+  /**
+   * 认领本地文件的打开方式(见 `main/plugins/fileOpeners.ts`)。
+   * 注册顺序 = 询问顺序;认领成功就不要别人再开标签了。停用时自动摘除。
+   */
+  fileOpeners: { register(opener: LocalFileOpenerSpec): void }
   /** 后台服务(如 MCP HTTP 端点):内核持有资源,插件只做启停决策 */
   service: PluginServiceApi
   /** 注册主进程全局热键(任意焦点下生效,含页面内);停用时自动回收 */

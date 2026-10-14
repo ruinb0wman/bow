@@ -29,7 +29,9 @@ npm run test:mcp:http  # 真机冒烟测试(连已常驻的 HTTP 浏览器)
 npm run test:e2e:device  # 设备检查的假手机 E2E(真 Electron + 真 MCP,不需要真机/显示环境)
 npm run test:e2e:agent   # 代理状态 E2E(假 pi 往 pty 打 OSC → 角标 / 系统通知 / 点击进标签)
 npm run test:e2e:tabid   # 长按 Shift 的 tabId 徽标 E2E(真 Electron:裸 Shift 链路 + 徽标几何 + 复制)
+npm run test:e2e:editor  # 编辑器 E2E(真 Electron + 真 nvim:`--edit a.txt` 进编辑器、`.html` 照旧开标签)
 npm run pi:install-status   # 把状态桥扩展装进 pi(~/.pi/agent/extensions/),终端里的 pi 才有完整状态联动
+npm run pi:install-plugin   # 整包接入:pi install ./packages/pi-bow(状态桥 + MCP 注册 + skill + /bow)
 node scripts/open-bow.mjs http --dry-run   # 只看 HTTP 模式将注入的环境变量与端点
 npm run mcp:install -- --help   # 把浏览器 MCP 写进 pi 的配置(幂等、可回滚)
 node scripts/open-bow.mjs -- a.html https://x.com   # 启动并打开(文件管理器/终端用的就是这个形态)
@@ -175,6 +177,51 @@ node scripts/dist.mjs -- --win portable # 试别的 target
 - MCP 的 `browser_navigate` / `browser_new_tab` **仍然只接受 http/https**:本地文件只能由人打开,
   AI 读不到任意本地文件。
 
+## 编辑器(把本地文件交给 nvim)
+
+「编辑器」插件**不做编辑器本体**:它把*一个本地文件*翻译成*终端标签里的一条命令*(默认
+`wsl.exe -e nvim /mnt/c/…`),由终端插件去 spawn —— 所以编辑体验就是 nvim,而终端已有的东西
+(回放、复制粘贴、字号、代理状态角标)全都照旧可用,**零新增依赖**。
+
+三条入口:
+
+| 入口 | 怎么用 | 认不认扩展名白名单 |
+| --- | --- | --- |
+| 双击 / 「打开方式」 | 先把某类文件在「设置 → 默认应用」里指给 bow,然后双击 | 按白名单(默认:纯文本 + 常见代码,约 40 个) |
+| 右键「用 bow 编辑」 | 右键文件 →(Win11 在「显示更多选项」里)→「用 bow 编辑」;命令行里就是 `bow.exe --edit "%1"` | 不看白名单 |
+| 工具栏「用编辑器打开…」(`</>` 按钮) | 点一下 → 选文件(可多选) | 不看白名单,任何文件都能送进去 |
+
+设置页 →「插件设置 → 编辑器」可改三件事:**可执行文件 / 参数模板**(`{file}` 是文件路径占位符)、
+**路径写法**(`wsl` 会把 `C:\a\b.txt` 换算成 `/mnt/c/a/b.txt`)、**扩展名白名单**;还有
+「测试」(开一个空编辑器)、「用编辑器打开…」,以及 Windows 上的「注册 / 撤销注册 / 打开系统默认应用设置」。
+
+工作目录会设成**文件所在目录**(`wsl.exe` 自己把 `C:\tmp` 映射成 `/mnt/c/tmp`),所以 nvim 里的
+`:e` / `gf` 找相对路径能用。路径换算不出(UNC `\\wsl$\…`)时**不认领**:回落成浏览器标签并记一条日志,
+不猜路径。需要终端插件在场(它负责 spawn);终端插件被停用时文件不会被认领。
+
+### Windows 上的注册(设置 → 插件设置 → 编辑器 → 注册)
+
+| 注册了什么 | 键 |
+| --- | --- |
+| 文件类型 ProgID(`open` / `edit` 动词都指向 `"bow.exe" --edit "%1"`) | `HKCU\Software\Classes\bowEditor` |
+| 「打开方式 / 更多应用」候选 | `…\Classes\.<ext>\OpenWithProgids` + `…\Applications\bow.exe\SupportedTypes` |
+| 右键「用 bow 编辑」(**与该扩展名当前的默认程序无关**) | `…\Classes\SystemFileAssociations\.<ext>\shell\bow-edit` |
+| 「设置 → 默认应用」里能展开 bow | `…\Clients\StartMenuInternet\bow\Capabilities\FileAssociations`(与默认浏览器插件共用) |
+
+- **只注册成候选**:不写 `Classes\.<ext>` 的默认值 —— 双击什么进编辑器完全由你在「设置 → 默认应用」里决定。
+- **必须手动点一次**(UserChoice 哈希 + UserChoice Protection Driver),设置页会列出步骤并给一个直达按钮。
+- Win11 的传统右键动词落在**「显示更多选项」**里(进主菜单要 MSIX 打包的 shell 扩展,本插件不做)。
+- **撤销只删自己写的值与自己建的键**:`Classes\.<ext>` 的默认值、`RegisteredApplications\bow` 一律不碰;
+  撤销清单 = 注册时记下的 `lastRegistered` ∪ 当前白名单,所以改小清单之后再撤销也不会留残渣。
+- 状态里「注册了没有」与「系统当前把 .txt 交给谁」是两件事,分开报(逐扩展名一行,非默认的行给修法)。
+
+已知限制:
+
+- nvim 要自己装。Windows 侧默认走 **WSL 里的 nvim**;装的是 Windows 原生 nvim 就把可执行文件改成
+  `nvim.exe`、参数改成 `{file}`、路径写法改成「原样」。
+- 白名单以外的文件类型**没有右键入口**(只保留「编辑」动词的直接代价)—— 用工具栏那个按钮补。
+- 不做 nvim 预检测:起不来时终端标签里显示 pty 的原始报错(与 shell 起不来一样)。
+
 ## 给 AI 工具配置 MCP
 
 > **跨平台启动**:两个 MCP 启动脚本都经由 `scripts/open-bow.mjs` 设置环境变量。
@@ -206,6 +253,11 @@ npm run mcp:install -- --remove      # 卸载(配置 + skill)
 它还会把能力索引 skill 一并装到 `~/.pi/agent/skills/bow-browser/`(`--no-skill` 可跳过)。
 改完要**重启 pi**(服务器清单与 skill 都在启动时加载)。
 
+> **pi 用户其实不需要这个脚本**:`pi install <bow 仓库>/packages/pi-bow` 之后,bow 的 MCP 服务器由包内扩展
+> **每会话注册**(不写 `mcp.json`、不用重启),能力索引 skill 也随包分发,`/bow` 看状态与临时开关。
+> 两者同名(`browser`)时 **`mcp.json` 优先** —— 不想被覆盖就删掉文件里那条,改由插件包负责。
+> 脚本保留给**不用 pi 插件**的场景:其它 MCP 客户端、CI、只想改配置文件。
+
 ### pi 内置 MCP 的推荐配置(能力索引 + 定向直挂)
 
 pi 0.99 起自带 MCP 支持(不再需要 pi-mcp-adapter)。它默认按 **`codemode`** 曝光:
@@ -215,7 +267,7 @@ pi 0.99 起自带 MCP 支持(不再需要 pi-mcp-adapter)。它默认按 **`code
 1. **`toolExposure`:高频工具直挂为原生工具**(schema 进上下文,0 跳)。成本参考:6 个 ≈1k token、
    20 个 ≈4k、50 个 ≈10k。
 2. **skill 做能力索引**:`description` 常驻(几十~百 token),正文按需加载 —— 放"什么场景用哪个工具、
-   按什么顺序、有哪些反模式"。本仓库的 `.pi/skills/bow-browser/SKILL.md` 就是它,
+   按什么顺序、有哪些反模式"。本仓库的 `packages/pi-bow/skills/bow-browser/SKILL.md` 就是它,
    以 `/skill:bow-browser` 注册;模型不一定会主动加载,需要时直接敲该命令强制加载。
 
 推荐的全局 `~/.pi/agent/mcp.json`:
@@ -239,7 +291,8 @@ pi 0.99 起自带 MCP 支持(不再需要 pi-mcp-adapter)。它默认按 **`code
 }
 ```
 
-browser 那半边一条命令就能装好:`npm run mcp:install -- --http --direct-core`。
+browser 那半边一条命令就能装好:`npm run mcp:install -- --http --direct-core`;
+如果用 pi,**更省事的是整包**:`pi install <bow 仓库>/packages/pi-bow`(见上面的提示)。
 
 几个容易踩的点:
 
@@ -557,9 +610,12 @@ npm run test:mcp:http
   - **任务完成**(pi 的 `agent_settled` —— 重试/压缩/排队续跑都真的结束了)→ 弹「pi 已完成」系统通知,带上会话名;
   - **点系统通知 = 进入对应标签**:切标签 + 把窗口提到前台 + 把键盘焦点交给那个终端(标签已经关了则什么都不做);
   - 通知一律 **silent**(不出声),不看窗口是否聚焦(在 bow 里也照发)。
-  接入(两种都行):**设置页 → 终端 → Pi 状态联动 → 安装**(点一下就好,装完在 pi 里重开或 `/reload` 生效),
-  或者命令行 `npm run pi:install-status`(幂等,`--uninstall` 可撤;需要 pi ≥ 0.84.4)。
-  不想动 pi 配置、只想试一次:`pi --extension <仓库>/integrations/pi/bow-agent-state.ts`。
+  接入(**三选一,别同时装**):
+  ① 整包(推荐)`pi install <bow 仓库>/packages/pi-bow` —— 顺带拿到 MCP 自动注册、skill 与 `/bow` 命令;
+  ② **设置页 → 终端 → Pi 状态联动 → 安装**(离线可用,只装这一个文件;装完在 pi 里重开或 `/reload` 生效);
+  ③ 命令行 `npm run pi:install-status`(幂等,`--uninstall` 可撤;需要 pi ≥ 0.84.4)。
+  ① 与 ②③ 同时装的话,同一个 pi 进程里会有两个扩展都发 OSC(状态变化重复上报一遍)——bow 侧幂等,只是噪音。
+  不想动 pi 配置、只想试一次:`pi --extension <仓库>/packages/pi-bow/extensions/bow-agent-state.ts`。
   - 📁 **pi 会把 `~/.pi/agent/extensions/` 下的每个 `*.ts` 都加载**,没有登记表 —— 所以这个目录里
     可能同时躺着**别的宿主**留下的同类扩展(比如 herdr 装的那份)。这不是重复:每个扩展自己拿环境变量
     门禁(bow 看 `BOW_TERMINAL=1`,herdr 看 `HERDR_ENV=1`),在别人的终端里一步就返回、什么都不做;
@@ -569,8 +625,8 @@ npm run test:mcp:http
     而发行版里的 pi 读的是 **WSL 的 `~/.pi/agent/extensions`** —— 后者要自己放一份。
     **这一段不需要你手写命令**:只要你的终端配置里有 `wsl.exe`,设置页就会把那条命令显示出来并可一键复制
     (它是拿主进程算出的 `/mnt/<盘>/…` 路径拼的,见 `src/plugins/terminal/piBridge.ts` 的 `wslHint`);
-    命令行等价写法:从 WSL 里 `cp /mnt/c/…/bow/integrations/pi/bow-agent-state.ts ~/.pi/agent/extensions/`,
-    或在 WSL 里直接跑 `node scripts/install-pi-agent-state.mjs`。
+    命令行等价写法:从 WSL 里 `cp /mnt/c/…/bow/packages/pi-bow/extensions/bow-agent-state.ts ~/.pi/agent/extensions/`,
+    或在 WSL 里直接跑 `node scripts/install-pi-agent-state.mjs`(整包则要在 WSL 里能访问到那个仓库路径,再 `pi install`)。
   - ⚠️ **`shell` 是 `wsl.exe` 时**:bow 会自动把 `BOW_TERMINAL` 列进 `WSLENV`(否则 Windows 的变量进不了发行版,
     扩展会认不出 bow —— 实测:不列是空、列了是 `1`)。若你用别的容器/远程终端做类似的事,就在那边 `export BOW_TERMINAL=1`。
   **不装也能用一半**:靠 pi 内建的 `terminal.showTerminalProgress`(默认关)至少能显示「正在执行」,
@@ -713,7 +769,7 @@ npm run test:mcp:http
 - **常规**:默认搜索引擎、主页(主页留空视为放弃修改并回填已存值)。分屏布局改在工具栏的「分屏」面板里保存/套用/删除。
 - **快捷键**:按分类列出全部键位(标签 / 地址栏与导航 / 分屏与布局 / 视图与面板 / 终端 / 笔记 / 窗口),纯参考清单、**不注册任何热键**;macOS 上的 `⌘` 差异与平台受限组合(`Ctrl+←/→`)在条目里单独注明。`Ctrl+Shift+方向` 分屏 / `Alt+Shift+方向` 调大小**在设置页里也管用**(由页面自己调 IPC;输入框里仍是按词选择)。
 - **插件管理**:运行时启停(立即生效并持久化)、能力标签、核心提示;有设置分区的插件可一键跳到对应分区。
-- **插件设置**:CORS 放行 / 浏览历史 / **书签**(导入导出) / 终端 / 笔记 / 下载 / **密码**(加密备份的导出与导入) / 番茄钟 等分区直接内联展示(取消旧版的嵌套弹窗)。
+- **插件设置**:CORS 放行 / 浏览历史 / **书签**(导入导出) / 终端 / 笔记 / 下载 / **密码**(加密备份的导出与导入) / **编辑器** / 番茄钟 等分区直接内联展示(取消旧版的嵌套弹窗)。
   「终端」分区里有 shell 配置与外观,还有 **Pi 状态联动** —— 点一下把状态桥扩展装进 pi(或卸载),
   装完终端里的 pi 就会把「执行中 / 等待确认 / 已完成」显示成标签角标与系统通知(见「终端」一节);
   如果你的终端配置里有 `wsl.exe`(bow 在 Windows、pi 在 WSL2),这一段还会多出一条
@@ -726,7 +782,7 @@ npm run test:mcp:http
 
 ## 插件体系
 
-书签、历史、CORS 放行、MCP HTTP 服务、默认浏览器、设备检查、终端、笔记、下载、密码、番茄钟、文件管理都是内置插件。插件是**仓库内编译期模块**(无动态代码执行),
+书签、历史、CORS 放行、MCP HTTP 服务、默认浏览器、设备检查、终端、笔记、下载、密码、番茄钟、文件管理、编辑器都是内置插件。插件是**仓库内编译期模块**(无动态代码执行),
 可在「设置页 → 插件管理」里运行时启停(无需重启),状态持久化到 `plugins.json`;停用时内核自动回收其 IPC、
 建议源、MCP 工具、网络钩子与已注入 CSS。
 
@@ -1022,7 +1078,7 @@ BOW_E2E_BIN=dist/linux-unpacked/bow npm run test:e2e:agent                      
 
 后半段还验**设置页 → 终端 → Pi 状态联动**的一键接入:`PI_CODING_AGENT_DIR` 指向临时目录,
 脚本点侧栏进分区、点「安装」→ 断言文件真的落盘且带 `managed by bow` 标记 → 点「卸载」→ 断言文件没了。
-`BOW_E2E_BIN` 指向打包后的可执行文件时,额外验一遍「源码能从 `app.asar` 里读到」(就靠 `build.files` 里的 `integrations`)。
+`BOW_E2E_BIN` 指向打包后的可执行文件时,额外验一遍「源码能从 `app.asar` 里读到」(就靠 `build.files` 里的 `packages/pi-bow/extensions`)。
 
 与设备 E2E 一样:独立 userData + 独立调试端口,不会碰你正在跑的 bow。
 
@@ -1051,6 +1107,18 @@ BOW_E2E_BIN=dist/linux-unpacked/bow npm run test:e2e:agent                      
 `tests/terminalAgentSignal.test.ts`(假 pty 跑真插件代码)、`tests/piBridge.test.ts`(真 fs + 临时目录验证一键接入的归属/幂等)。
 端到端那层(`npm run test:e2e:agent`)需要能跑 Electron 的机器或 `LD_LIBRARY_PATH` 补库(见上)。
 
+## 编辑器 E2E(真 nvim)
+
+```bash
+npm run build && npm run test:e2e:editor                      # 开发产物(out/),本机 PATH 上要有 nvim
+BOW_E2E_BIN=dist/linux-unpacked/bow npm run test:e2e:editor   # 验打包版
+```
+
+两次启动分别验路由的两半:带 `--edit` 时白名单外的文件也进编辑器(右键「用 bow 编辑」的语义);
+不带时只看扩展名白名单 —— `.txt` 进编辑器、`.html` 照旧开 `file://` 标签。
+断言读的是终端页面的 xterm buffer(所以能证明 **nvim 真的把那个文件打开了**,不是"标签开出来了")。
+Windows 上跑这条脚本需要 WSL 里装了 nvim(默认配置就是 `wsl.exe -e nvim {file}`)。
+
 ## 架构速览
 
 > 逐文件职责地图、插件契约(`PluginContext` 全 API)、七类扩展点、MCP 工具表、
@@ -1076,7 +1144,8 @@ src/
   shared/        三端共享:类型、URL 解析、内部页面标识、设置页导航模型、标签组记账、嵌套分屏树与几何、
                  代理状态协议/角标映射与通知文案(agentState.ts)、
                  书签树/历史/模糊匹配/建议合并/URL 匹配纯逻辑
-  integrations/  给外部工具装的辅助文件(pi/ 里是终端状态桥扩展)
+  packages/pi-bow/ pi 插件包(**唯一真相源**):状态桥扩展、bow MCP 自动注册、/bow 命令、能力索引 skill
+                 (装法:pi install ./packages/pi-bow,或设置页→终端→Pi 状态联动)
 tests/           vitest 单元测试(url 解析、内部页面、设置导航、书签树、历史、模糊建议、插件注册表/匹配/边界、代理状态与通知)
 ```
 

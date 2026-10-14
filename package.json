@@ -15,7 +15,7 @@
     "files": [
       "out/**/*",
       "package.json",
-      "integrations/**/*"
+      "packages/pi-bow/extensions/bow-agent-state.ts"
     ],
     "asarUnpack": [
       "**/node_modules/node-pty/**"
@@ -61,13 +61,15 @@
     "mcp:http": "npm run build && node scripts/open-bow.mjs http",
     "mcp:install": "node scripts/install-pi-mcp.mjs",
     "pi:install-status": "node scripts/install-pi-agent-state.mjs",
+    "pi:install-plugin": "pi install ./packages/pi-bow",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
     "test:mcp": "node scripts/mcp-smoke.mjs",
     "test:mcp:http": "node scripts/mcp-smoke.mjs --http",
     "test:e2e:device": "node scripts/e2e-device-inspect.mjs",
     "test:e2e:agent": "node scripts/e2e-agent-status.mjs",
-    "test:e2e:tabid": "node scripts/e2e-tab-id-reveal.mjs"
+    "test:e2e:tabid": "node scripts/e2e-tab-id-reveal.mjs",
+    "test:e2e:editor": "node scripts/e2e-editor-open.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

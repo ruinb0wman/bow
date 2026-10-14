@@ -11,6 +11,9 @@
  *    终端页按自己的 tabId 过滤(`TERMINAL_EVENTS.data`);页面 → 主进程的按键/resize 直接 `plugins.invoke`。
  *    插件侧对输出做 8ms 合批,避免高频输出把 IPC 打爆。
  * 4. `pty.kill()` 在 Windows(ConPTY)下会连进程树一起回收,所以这里只管调用,不做 PID 追踪。
+ * 5. **别的插件可以让它在指定标签里跑一条命令**(内核事件 `terminal:run`,见 `@shared/terminalRun`)。
+ *    发起方负责先拿到 tabId(`ctx.tabs.openInternal`),这里只存待办、等终端页 attach 时才 spawn ——
+ *    尺寸与回放这些事因此仍然只有一条路径。
  */
 
 import { app } from 'electron'
@@ -21,11 +24,14 @@ import { delimiter, join } from 'node:path'
 import type { PluginContext, PluginMain, PluginStorage } from '../../main/plugins/types'
 import { BOW_SIGNAL_VERSION, OscSignalParser } from '@shared/agentState'
 import type { AgentSignal } from '@shared/agentState'
+import { TERMINAL_RUN_EVENT, parseTerminalRunRequest } from '@shared/terminalRun'
+import type { TerminalRunRequest } from '@shared/terminalRun'
 import { installPiBridge, piBridgeStatus, uninstallPiBridge } from './piBridge'
 import type { PiBridgeEnv, PiBridgeIo } from './piBridge'
 import {
   MAX_SESSIONS,
   TERMINAL_EVENTS,
+  buildCommandSpawn,
   buildSpawnSpec,
   cleanEnv,
   defaultSettings,
@@ -132,6 +138,11 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
   let ptyError: string | null = null
   let onBeforeQuit: (() => void) | null = null
   const sessions = new Map<number, Session>()
+  /**
+   * `terminal:run` 待办:标签还没 attach 时先存着,attach 时优先它。
+   * 用掉即删(spawn 失败保留 —— 刷新一下就能重试);标签关闭时一并清。
+   */
+  const pendingRuns = new Map<number, TerminalRunRequest>()
 
   // ---------- node-pty ----------
 
@@ -194,6 +205,7 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
 
   function killSession(tabId: number, reason: string): void {
     const session = sessions.get(tabId)
+    pendingRuns.delete(tabId)
     if (!session) return
     sessions.delete(tabId)
     if (session.flushTimer) clearTimeout(session.flushTimer)
@@ -252,7 +264,12 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
 
     const settings = store!.get()
     const profile = defaultProfile(settings)
-    const spec = buildSpawnSpec(profile, { homedir: homedir() })
+    // 内核事件 `terminal:run` 指定的命令优先(编辑器插件用这条路开 nvim);没有就用默认 shell profile,即今天的行为。
+    const run = pendingRuns.get(tabId)
+    const spec = run ? buildCommandSpawn(run, { homedir: homedir() }) : buildSpawnSpec(profile, { homedir: homedir() })
+    // 标签标题用命令名(`nvim(a.txt)`):终端页拿 `profileName` 当标题,前端不用改一行
+    const profileId = run ? 'command' : profile.id
+    const profileName = run ? (run.name ?? spec.file) : profile.name
 
     let mod: PtyModule
     try {
@@ -273,8 +290,8 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
       })
       const session: Session = {
         tabId,
-        profileId: profile.id,
-        profileName: profile.name,
+        profileId,
+        profileName,
         proc,
         replay: emptyReplay(),
         cols,
@@ -308,14 +325,16 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
         if (sessions.get(tabId) === session) sessions.delete(tabId)
         clearAgent(session)
         context?.ipc.emit(TERMINAL_EVENTS.exit, { tabId, code: exitCode })
-        context?.log('shell 退出', tabId, profile.name, 'code=', exitCode)
+        context?.log('shell 退出', tabId, profileName, 'code=', exitCode)
       })
-      context?.log('会话已创建', tabId, profile.name, spec.file, spec.args.join(' '), 'cwd=', spec.cwd)
+      context?.log('会话已创建', tabId, profileName, spec.file, spec.args.join(' '), 'cwd=', spec.cwd)
+      // 命令已交出去:用掉即删(spawn 失败会走到下面的 catch,pending 留着等下一次 attach 重试)
+      if (run) pendingRuns.delete(tabId)
       return describe(session)
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
-      context?.logError('启动 shell 失败', profile.name, spec.file, message)
-      return { ok: false, error: `启动 ${profile.name} 失败:${message}` }
+      context?.logError('启动 shell 失败', profileName, spec.file, message)
+      return { ok: false, error: `启动 ${profileName} 失败:${message}` }
     }
   }
 
@@ -405,7 +424,7 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
       ctx.ipc.handle('listCandidates', () => candidates())
 
       // ---------- pi 状态桥的一键接入(设置页 → 终端)----------
-      // 源取自应用根目录下的 `integrations/pi/bow-agent-state.ts`(必须进 build.files,
+      // 源取自应用根目录下的 `packages/pi-bow/extensions/bow-agent-state.ts`(必须进 build.files,
       // 否则打包版里 sourceAvailable 为 false —— 设置页会把这句话显示出来,不静默失败)。
       const bridgeIo = realPiBridgeIo()
       const bridgeEnv = (): PiBridgeEnv => ({
@@ -437,12 +456,30 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
         if (Number.isInteger(id)) killSession(id, 'tab-closed')
       })
 
+      // 别的插件(目前是编辑器)要求「在这个标签里跑这条命令」——见 @shared/terminalRun。
+      // 只存不跑:真正 spawn 要等终端页 attach(那时才知道尺寸),时序不变式在模块注释里。
+      ctx.events.on(TERMINAL_RUN_EVENT, (payload: unknown) => {
+        const request = parseTerminalRunRequest(payload)
+        if (!request) {
+          ctx.logError('terminal:run 负载不合法,已忽略', payload)
+          return
+        }
+        if (sessions.has(request.tabId)) {
+          // 那个标签已经跑着 shell 了:没法把一条命令塞进正在运行的会话,说清楚而不是默默丢掉
+          ctx.logError('terminal:run 的目标标签已有会话,已忽略', request.tabId)
+          return
+        }
+        pendingRuns.set(request.tabId, request)
+        ctx.log('待办命令已登记', request.tabId, request.file, request.args.join(' '))
+      })
+
       onBeforeQuit = (): void => killAll('app-quit')
       app.on('before-quit', onBeforeQuit)
       ctx.log('终端已就绪', `平台=${process.platform}`, `默认 shell=${defaultProfile(store.get()).shell}`)
     },
 
     deactivate(): void {
+      pendingRuns.clear()
       if (onBeforeQuit) {
         app.removeListener('before-quit', onBeforeQuit)
         onBeforeQuit = null

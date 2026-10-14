@@ -7,7 +7,7 @@
 > 带 ⚠️ 的段落是**实测/验证过的坑**,不是推测。
 >
 > **配套文档**:`README.md`(面向使用者的操作说明:安装、部署、MCP 接入)、
-> `.pi/skills/bow-browser/SKILL.md`(给 AI 的工具能力索引,随 `npm run mcp:install` 安装)、
+> `packages/pi-bow/skills/bow-browser/SKILL.md`(给 AI 的工具能力索引,随 pi 插件包分发;`npm run mcp:install` 会把它装到 `~/.pi/agent/skills/`)、
 > `FIX-PLAN.md`(⚠️ 已完成的历史计划,见 §12)。
 
 ---
@@ -77,6 +77,10 @@ src/
       pageUpload.ts              「把本地文件塞进网页 <input type=file>」的 CDP 实现(DOM.setFileInputFiles);
                                   核心出窄能力,文件管理插件只做决策(插件拿不到 webContents,见 §13 第 36 条)
       pickJsonFile.ts            弹系统文件选择框并读回 UTF-8 文本(书签 / 密码的导入共用)
+      fileOpeners.ts             FileOpenerHost:本地文件认领注册表(启动参数里的 file:// 目标先问一圈插件,
+                                  认领了就不开浏览器标签)。纯逻辑;编辑器插件是唯一使用者
+      registryOps.ts             Windows 注册表原语(reg.exe 参数 / 解析 / AssocQueryString 探测 / exeStem /
+                                  formatRegCommand)。默认浏览器与编辑器两个插件共用一份
   plugins/<id>/                 内置插件(自包含,每插件一个目录)
     main.ts                     主进程侧:manifest + capabilities + activate(ctx)
     ui.ts                       渲染层侧:slots / overlays / settingsSections
@@ -92,6 +96,10 @@ src/
     format.ts | graph.ts | graphForce.ts   笔记插件的 Logseq 文件格式解析 / 索引与反链 / 图谱到 force-graph 的纯胶水(纯逻辑,主进程与渲染层共用;
                                           这几个文件名也要登记到 tsconfig 的 include。图谱的布局与渲染是唯一引第三方库 `force-graph` 的地方)
     registration.ts | linuxDesktop.ts | windowsRegistry.ts   平台实现 / 注册计划(新文件须登记到 tsconfig.node.json 的 include)
+    shared.ts | windowsRegistry.ts | registration.ts (编辑器插件)  设置模型 + 命令拼装 + 路由判定 / Windows
+                                          注册计划(ProgID + OpenWithProgids + SystemFileAssociations 动词 +
+                                          Capabilities)/ 注册编排。**不做编辑器本体**:把文件翻译成
+                                          `terminal:run` 交给终端插件 spawn(见 §5.9)
   preload/index.ts              contextBridge 暴露 window.browserAPI
   renderer/
     index.html + src/App.vue            chrome UI:标签栏/工具栏/地址栏/插件插槽
@@ -110,7 +118,7 @@ src/
     url.ts          地址栏输入解析 + 搜索引擎表 + DEFAULT_SETTINGS
     groups.ts       标签组记账(标签栏一项 = 一个组:分屏/摘窗格/塌缩/焦点/拆组;纯函数)
     split.ts        嵌套分屏树(LayoutNode)+ 几何(computeLayout)+ 布局形状/预设归一化
-    localFile.ts    本地路径形态判定(isFileUrl / looksLikeLocalPath / expandHome)
+    localFile.ts    本地路径形态判定(isFileUrl / looksLikeLocalPath / expandHome / windowsPathToWsl)
     internalPages.ts bow:// 内部页面标识与 parse(settings 单例 / terminal·logseq 可多开 + `openIn:'pane'` 顶替聚焦窗格,见 singleton / openIn 两轴)
     settingsNav.ts  设置页侧栏导航模型
     pluginMatch.ts  URL 通配 / host 与子域匹配
@@ -122,11 +130,13 @@ src/
     ua.ts           bowUserAgent() 纯函数
     devtools.ts     DevTools 前端 URL 构造(tabManager 与设备检查插件共用的唯一来源)
     agentState.ts   代理状态协议与纯逻辑:OSC 信号解析(1337;bow + pi 内建 9;4 降级)、角标映射、通知文案
+    terminalRun.ts  内核事件 `terminal:run` 的契约 + 负载校验(插件 → 插件,见 §5.9)
 tests/            vitest 测试文件 + 3 个测试替身(fakeTabs/fakeWc/fakeKernel)
-integrations/pi/  给 pi 装的辅助文件(bow-agent-state.ts = 状态桥扩展,由 scripts/install-pi-agent-state.mjs 写入 ~/.pi/agent/extensions/)
+packages/pi-bow/  pi 插件包(**唯一真相源**):extensions/bow-agent-state.ts = 状态桥扩展、
+                  bow-mcp.ts = bow MCP 自动注册、bow-command.ts = /bow 命令;
+                  skills/bow-browser/SKILL.md = 能力索引。装法与不变式见 §11
 scripts/          构建与运维脚本(见 §11)
 docs/             本文件 + opencode-session-header.md
-.pi/skills/bow-browser/SKILL.md      给 AI 的能力索引(由 mcp:install 同步到 ~/.pi/agent/skills/)
 ```
 
 ---
@@ -398,6 +408,8 @@ interface PluginUiContribution {
 | `pages.uploadFiles` | `({tabId?, files, selector?}) => Promise<PageUploadResult>` | 不回收(内核持有)。把本地文件塞进页面里的 `<input type=file>`(CDP `DOM.setFileInputFiles`);**插件拿不到 `webContents`**,所以这条只能由核心出能力。`tabId` 与核心页面类工具**同一套解析规则**(`tabTarget.ts`,所以省略时绝不动用户窗口);不弹对话框、不需要用户手势;调试器被 DevTools 占着时明确失败(`debuggerBusy: true`)。无 `selector` 时**只有页面上恰好一个** file input 才生效,多个会返回 `candidates` 让调用方自己挑 —— 唯一调用方是文件管理插件的 `browser_upload` |
 | `pages.openDevToolsTab` | `(frontendUrl, title?, activate?, windowId?) => number` | 不回收(内核持有)。把 CDP 前端接进标签页(设备检查插件用);`windowId` 缺省=聚焦窗口。参数是**已拼好的前端地址**:可能是 `@shared/devtools` 拼的 bow 自带那份,也可能是设备指定的 `https://…`(见 `device-inspect/shared.effectiveStrategy`);标签只允许 `devtools://` 或与入口同源的导航 |
 | `tabs.list/getActive` | `() => TabInfo[] / TabInfo \| null` | 只读;`list` 数据源是 `WindowManager.allTabs()`(**跨窗口**,每条带 `windowId`),`getActive` 是**聚焦窗口**的 `TabManager` |
+| `tabs.openInternal` | `(page: InternalPageId, { windowId? }) => number \| null` | 不回收(内核持有)。**插件唯一的建标签入口**,且只允许内部页(settings/terminal/logseq)—— 插件仍不能导航用户的浏览标签、不能开任意 URL。宿主未注入(窗口还没建好)或宿主抛错时**返回 null 而不是抛**。与 `pages.openDevToolsTab` 同一条分工:核心建资源,插件只做决策。唯一调用方是编辑器插件 |
+| `fileOpeners.register` | `({ match(path, mode), open(path, mode) }) => void` | 从 `FileOpenerHost` 移除。**核心在开本地文件之前先问一圈**(`src/main/index.ts` 的 `openLaunchTarget`):第一个 `match` 命中且 `open` 返回 true 的插件说了算,谁都没认领就照旧开 `file://` 标签 —— 最坏情况回到旧行为,不会「双击没反应」。`match`/`open` 抛错只记日志并继续问下一个。认领只影响**启动参数**那条通路(双击 / 右键 / `bow --edit`),地址栏与网页链接不经过它。`mode: 'edit'` = 命令行带了 `--edit`。唯一调用方是编辑器插件 |
 | `service.onMcpHttpReady` | `(cb) => void` | 订阅 `MCP_HTTP_READY_EVENT` |
 | `service.mcpHttp.start/stop/restart/status` | 见 §6.5 | 内核持有监听;`stop()` 固定以 `source:'plugin'` 调用 |
 | `service.activity.snapshot/onChange` | 见 §6.6 | `onChange` 的取消订阅进 disposer |
@@ -440,6 +452,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `content` | `main/plugins/contentHooks.ts` | 显式登记的 webContents 才注入;CSS 可按 URL 动态生成 |
 | `shortcut` | `main/tabShortcuts.ts` → `kernel.handleHotkey()` | 核心快捷键未命中才轮到插件 |
 | `service` | `main/plugins/mcpHttpHost.ts` | 内核持有监听,插件只做启停决策(`onMcpHttpReady`) |
+| 本地文件认领 | `main/plugins/fileOpeners.ts` + `main/index.ts` 的 `openLaunchTarget()` | 顺序询问,第一个认领的说了算;没人认领回落成开 `file://` 标签 |
 
 #### `net` 细节
 
@@ -550,6 +563,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `downloads` | — | ui, mcp | `list` `pause` `resume` `cancel` `retry` `remove` `clear` `openFile` `showInFolder` `getSettings` `setSettings` `pickDirectory` `revealDir` | `browser_list_downloads` `browser_download` | — | — | — | — | emit `changed` | `downloads.json`(记录)+ `downloads-settings.json`(目录 / 询问 / 保留条数) |
 | `passwords` | — | ui, shortcut | `status` `setup` `unlock` `lock` `list` `getEntry` `save` `remove` `copy` `readPageFields` `fillEntry` `beginFill` `changeMaster` `getSettings` `setSettings` `wipe` `exportBackup` `importBackup` | —(刻意不贡献 MCP 工具:与 AI 隔离) | — | —(按需 `pages.execute` 注入探测 / 下拉 / 填入脚本,不注入常驻脚本) | — | `Ctrl/Cmd+Shift+P` | emit `state-changed` `settings-changed` `open-panel` | `passwords.json`(AES-256-GCM 密文)+ `passwords-settings.json`(自动锁定 / 剪贴板 / 子域匹配);`exportBackup` 只写**密文副本**到 bow 下载目录;`importBackup` 校验形状后**整库替换**(已初始化时先把当前库导出一份再覆盖,导入后强制锁定) |
 | `pomo` | — | ui, mcp, shortcut | `getState` `getSettings` `setSettings` `start` `pause` `skip` `reset` `toggle` | `browser_pomo_status` `browser_pomo_start` `browser_pomo_pause` `browser_pomo_skip` | — | — | — | `Ctrl/Cmd+Shift+O` | emit `state` `phase-end` | `pomo.json`(设置 + 运行状态:阶段 / `endsAt` / 本轮计数 / 今日完成数;**只在状态转换时写盘**) |
+| `editor` | — | ui | `getSettings` `setSettings` `status` `register` `unregister` `openSystemSettings` `test` `pickFile` | — | — | — | — | — | 认领本地文件(`ctx.fileOpeners`);emit `terminal:run`(让终端插件在指定标签里跑 `wsl.exe -e nvim <file>`) | `editor.json`(命令模板 / 路径写法 / 扩展名白名单 + `lastRegistered`)。Windows 注册:ProgID `bowEditor`(open/edit 都指向 `--edit "%1"`)、`OpenWithProgids`、`SystemFileAssociations\.<ext>\shell\bow-edit`、`Capabilities\FileAssociations`(与 `default-browser` 共用,值名不重叠);**不写** `Classes\.<ext>` 默认值 |
 | `files` | — | ui, mcp | `getSettings` `setSettings` `pickRoots` `removeRoot` `openRoot` + 面板面:`list` `readText` `mkdir` `rename` `move` `copy` `remove` `pickDirectory` `openPath` `showInFolder` + 接管面:`chooserStatus` `answerChooser` `cancelChooser` `armTab` `disarmTab` | `browser_fs_roots` `browser_fs_list` `browser_fs_info` `browser_fs_read` `browser_fs_write` `browser_fs_mkdir` `browser_fs_move` `browser_fs_copy` `browser_fs_delete` `browser_upload` | — | — | — | — | on `tab:navigated`(页面有 file input 才挂接管) `tab:closed`;emit `changed` `open-panel` `chooser-resolved` | `files-settings.json`(工作目录白名单 + 允许永久删除 + 接管文件选择);工具与面板**共用同一套操作层与 guard**;决策层在 `plugins/files/chooser.ts`,CDP 在核心 |
 
 **渲染层侧**(`registry.ts` / 各插件 `ui.ts`)
@@ -567,13 +581,14 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `downloads` | — | `DownloadsButton` | `plugin:downloads:panel`(full,`DownloadsPanel`) | `DownloadsSettings` |
 | `passwords` | — | `PasswordsButton` | `plugin:passwords:panel`(full,`PasswordsPanel`) | `PasswordsSettings` |
 | `pomo` | — | `PomoButton`(显示倒计时) | `plugin:pomo:panel`(below-chrome,`PomoPanel`;锚定在按钮右下方) | `PomoSettings` |
+| `editor` | — | `EditorButton`(用编辑器打开…) | —(编辑器是终端页里的 nvim,本插件没有自己的页面) | `EditorSettings`(命令模板 / 路径写法 / 扩展名白名单 / Windows 注册) |
 | `files` | — | `FilesButton` | `plugin:files:panel`(full,`FilesPanel`) | `FilesSettings`(工作目录白名单 + 允许永久删除) |
 
 ⚠️ 终端插件的 `ui/TerminalView.vue` 与笔记插件的 `ui/JournalView.vue` **不在**注册表里 ——
 它们分别是 `bow://terminal` / `bow://logseq` 页面的主体,由 `renderer/src/<entry>/main.ts` 直接引用。
 插槽/浮层注册表面向的是 chrome 与 overlay 两个宿主。
 
-`SLOT_PLUGIN_ORDER.toolbar = ['bookmarks','downloads','mcp-http','terminal','logseq','passwords','pomo','files']`;
+`SLOT_PLUGIN_ORDER.toolbar = ['bookmarks','downloads','mcp-http','terminal','logseq','editor','passwords','pomo','files']`;
 `addressbar-trailing` 为空(保持注册顺序)。未列出的插件排在已列出者之后。
 
 **笔记插件(`bow://logseq`)的六条不变式**(它是唯一直接读写用户仓库外文件的插件,改它之前请务必看这几条,
@@ -598,6 +613,13 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `tab:activated` `{TabInfo}` | 同上 | (当前无) |
 | `search:performed` `{url,query,title?}` | `ipc.ts` 的 `nav:go` 分支 | history |
 | `mcp-http:ready` | `kernel.notifyMcpHttpReady()` | mcp-http |
+| `terminal:run` `{tabId,file,args,cwd?,name?}` | 编辑器插件(`ctx.events.emit`) | terminal |
+
+⚠️ `terminal:run` 是**插件 → 插件**的契约(`@shared/terminalRun`),与上面那些「核心 → 插件」的事件不同:
+发起方自己先用 `ctx.tabs.openInternal('terminal')` 拿到 tabId,再把这条例行命令发过来;终端插件只**存**待办,
+等终端页 `attach` 时才 spawn(尺寸/回放那条路径只有一条)。**时序不变式**:`openInternal()` 返回 → `emit()` →
+标签页异步加载 → `attach`。payload 是弱类型的,**收方必须自己校验**(`parseTerminalRunRequest`):
+非法值、tabId 已有会话都会被忽略并记日志。
 
 ⚠️ `tab:activated` / `tab:created` 的 payload **可能是内部页面标签**(设置页)。
 插件若要读取 URL 必须自己判断;现有插件只拿 id 做状态清理,所以没受影响。
@@ -1054,7 +1076,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `SMOKE_LD_LIBRARY_PATH` `SMOKE_ELECTRON_ARGS` `SMOKE_SHOT_PATH` `SMOKE_FULL_PAGE_SHOT_PATH` | `mcp-smoke.mjs` | Linux 库路径 / 额外参数 / 截图输出路径 |
 | `BOW_E2E_DIR` | `scripts/e2e-device-inspect.mjs`、`e2e-agent-status.mjs` 与其 fixtures | E2E 的临时目录(默认 `$TMPDIR/bow-e2e`) |
 | `BOW_E2E_BIN` | `scripts/e2e-agent-status.mjs` | 设了就改验**打包版**:指向 `dist/<平台>-unpacked/bow`(不带结尾的 `.` 参数)。用来确认「一键接入」的源码能从 `app.asar` 里读到 |
-| `BOW_TERMINAL` | 终端插件的 `cleanEnv`(写)| `=1`:告诉 pty 里的程序「你在 bow 的终端里」。目前唯一消费方是 pi 桥接扩展(`integrations/pi/bow-agent-state.ts`)—— 别的终端不会收到,所以那套 OSC 不会乱发。**WSL 例外**:`shell` 是 `wsl.exe` 的 profile 由 `withBowTerminalEnv()` 额外把它列进 `WSLENV` —— Windows 侧的环境变量默认**不会**进发行版,不列就是空的(实测三种组合的表在那个函数的注释里) |
+| `BOW_TERMINAL` | 终端插件的 `cleanEnv`(写)| `=1`:告诉 pty 里的程序「你在 bow 的终端里」。目前唯一消费方是 pi 桥接扩展(`packages/pi-bow/extensions/bow-agent-state.ts`)—— 别的终端不会收到,所以那套 OSC 不会乱发。**WSL 例外**:`shell` 是 `wsl.exe` 的 profile 由 `withBowTerminalEnv()` 额外把它列进 `WSLENV` —— Windows 侧的环境变量默认**不会**进发行版,不列就是空的(实测三种组合的表在那个函数的注释里) |
 | `PI_CODING_AGENT_DIR` | `scripts/install-pi-agent-state.mjs` 与终端插件的 `piBridge.ts`(读)| pi 的 agent 目录(默认 `~/.pi/agent`);状态桥装到其 `extensions/` 下。设置页的一键接入与仓库脚本都认它(测试靠它把文件写进临时目录,不碰真实的 `~/.pi`)。**注**:设置页的一键接入用的是 **bow 进程自己的**家目录 —— bow 在 Windows、pi 在 WSL2 时两者不是同一个目录,所以 `piBridgeStatus` 会在 Windows 上额外带一个 `wsl` 字段 (`PiBridgeWslHint`: `from` / `to` / `command`),设置页把它连同命令一起显示成一段「请到 WSL2 里执行」的提醒(命令里的 `/mnt/<盘>/…` 由 `windowsPathToWsl()` 换算,不是盘符路径时就不给) |
 
 ⚠️ 绝不要在 shell 里写 `MCP_HTTP=1 electron .` 这种内联赋值(Windows 不认);
@@ -1098,7 +1120,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `ensure-electron.mjs` | postinstall:确保 electron 二进制就位(走镜像) |
 | `mcp-smoke.mjs` | 真机冒烟(405 行) |
 | `e2e-device-inspect.mjs` + `fixtures/fake-phone-{,adb,device}.mjs` | 设备检查插件的假手机 E2E:`fake-phone-adb.mjs` 仿 adb 输出并在 `forward` 时拉起 `fake-phone-device.mjs`(HTTP `/json` + WS CDP,并把收到的每条命令写进 `cdp-log.jsonl`),驱动脚本用 MCP 客户端跑 11 个 `device_*` 工具,并用 bow 自己的 `--remote-debugging-port` 往手机 DevTools 前端 target 发 `Ctrl+Shift+→` 验分屏 |
-| `install-pi-agent-state.mjs` | 写 pi 的状态桥扩展;源是仓库里的 `integrations/pi/bow-agent-state.ts`(单文件、无运行时依赖,jiti 直接跑)。未安装时的降级:只有「正在执行」角标(靠 pi 内建的 `terminal.showTerminalProgress`)。打包后的应用里**没有这个脚本**:设置页的一键接入走 `src/plugins/terminal/piBridge.ts`(同一套规则,不变式由 `tests/piBridgeExtension.test.ts` 钉住) |
+| `install-pi-agent-state.mjs` | 写 pi 的状态桥扩展;源是 **pi 插件包**里的 `packages/pi-bow/extensions/bow-agent-state.ts`(单文件、无运行时依赖、jiti 直接跑;它必须**自包含** —— 会被单独复制到 `~/.pi/agent/extensions/`,这条不变式由 `tests/piBridgeExtension.test.ts` 钉住)。整包接入走 `pi install ./packages/pi-bow`(`npm run pi:install-plugin`),那样还顺带拿到 MCP 自动注册(`pi.registerMcpServer`,不写 `mcp.json`)与 `/bow` 命令。未安装时的降级:只有「正在执行」角标(靠 pi 内建的 `terminal.showTerminalProgress`)。打包后的应用里**没有这个脚本**:设置页的一键接入走 `src/plugins/terminal/piBridge.ts`(同一套规则,读同一份源) |
 | `e2e-agent-status.mjs` | 代理状态 E2E:不装 MCP、不用真 pi,全程 CDP —— chrome target 开终端页、终端页 `window.__bowTerminal.send` 敲命令、主进程 inspector target 驱动 `__bowNotifyClick` 并读 `BOW_NOTIFY_LOG`、设置页 target 点一键接入的按钮 |
 | `e2e-tab-id-reveal.mjs` | 长按 Shift 的 tabId 徽标 E2E(见上表);几何常量**独立写死**在脚本里(真机断言不该跟 `@shared/tabIdBadge` 共用一份数) |
 | `cors-test-server.mjs` / `cors-probe.html` | CORS 插件的人工验证环境 |
@@ -1220,6 +1242,8 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 **架构层**
 
 1. 插件 `activate` 早于窗口/标签创建 → 需要 TabManager 的能力必须走 `onMcpHttpReady` 或惰性取 `ctx.tabs`/`ctx.pages`。
+   取的具体能力也一样:**插件不能自己建标签**,只能 `ctx.tabs.openInternal(page)`(内部页,且宿主未注入时返回 `null`);
+   想开终端/笔记页给用户看的插件都得走它,别指望 `ctx.tabs.list/getActive` 反过来建东西。
 2. `NetHookHost.install()` / `setupDevTools()` / `setupTabShortcuts()` 都**必须在创建任何窗口/视图之前**调用。
 3. 页面视图永远盖在 chrome 上 → 任何浮在页面上方的 UI 都必须走 OverlayManager,`tabs-changed` 时要 `raise()`。
    **`WebContentsView` 没有点击穿透**(`setIgnoreMouseEvents` 只属于 BaseWindow/BrowserWindow,
@@ -1256,8 +1280,8 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
    附带一条:渲染层 `el.focus()` **不是**真的聚焦 —— 需要键盘焦点时走 `chrome:request-focus-address`(经主进程)。
 10. **小数缩放下的 ±1 px 是正常的**:显示器 125% 时 `getContentSize()` 是 DIP 整数,
    Chromium 把 view 的 DIP 边界舍入到物理像素后,渲染层的 `innerWidth` 可能比 `rect.width` 大/小 1。
-11. **别在块注释里写 `**/` 这类通配符**:`integrations/**/*` 里的 `*/` 会提前终止 `/* … */`,
-    表现是构建/测试报一个莫名其妙的语法错(esbuild 直接 `Unexpected "*"`)。要么写「`integrations` 目录」,
+11. **别在块注释里写 `**/` 这类通配符**:`packages/pi-bow/extensions/**/*` 里的 `*/` 会提前终止 `/* … */`,
+    表现是构建/测试报一个莫名其妙的语法错(esbuild 直接 `Unexpected "*"`)。要么写「`packages/pi-bow` 目录」,
     要么把星号拆开。
    几何正确性的判据应该是 **DIP 层面铺满无缝隙/不重叠**(`dividers` 与 `panes` 互相印证),
    而不是逼页面自己报回完全相同的数字。

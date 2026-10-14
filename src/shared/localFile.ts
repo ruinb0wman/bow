@@ -49,3 +49,17 @@ export function expandHome(input: string, home: string): string {
   if (raw.startsWith('~/')) return home.replace(/\/+$/, '') + raw.slice(1)
   return raw
 }
+
+/**
+ * Windows 路径 → WSL 里的挂载路径:`C:\Users\me\a.txt` → `/mnt/c/Users/me/a.txt`。
+ * 按默认的 automount root(`/mnt`)换算;不是盘符路径(UNC `\\wsl$\…`、POSIX 路径)时返回 null ——
+ * 那种情况给不出一条可靠路径,宁可让调用方报错,也不猜。
+ *
+ * 两个调用方:终端插件的 pi 桥接提示(`plugins/terminal/piBridge.ts`,已知的唯一真相源),
+ * 以及编辑器插件的 `pathStyle: 'wsl'`。
+ */
+export function windowsPathToWsl(path: string): string | null {
+  const m = /^([A-Za-z]):[\\/](.+)$/.exec(path)
+  if (!m) return null
+  return `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}`
+}

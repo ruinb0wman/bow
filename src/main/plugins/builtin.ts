@@ -13,6 +13,7 @@ import downloads from '@plugins/downloads/main'
 import passwords from '@plugins/passwords/main'
 import pomo from '@plugins/pomo/main'
 import files from '@plugins/files/main'
+import editor from '@plugins/editor/main'
 
 export const BUILTIN_PLUGINS: PluginMain[] = [
   history,
@@ -33,5 +34,8 @@ export const BUILTIN_PLUGINS: PluginMain[] = [
   // 同上(只贡献 UI / MCP 工具:受白名单约束的本地文件操作面,不参与网络钩子与建议源顺序)
   pomo,
   // 同上(只贡献 UI 与 MCP 工具:本地文件操作 + 白名单策略,同样不参与网络钩子与建议源顺序)
-  files
+  files,
+  // 同上(只贡献 UI + 一个「认领本地文件」的注册:它把启动参数里的 file:// 目标换成终端里的 nvim,
+  // 不参与网络钩子与建议源顺序;需要终端插件在场才能真的跑起来)
+  editor
 ]

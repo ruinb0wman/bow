@@ -17,31 +17,32 @@
  */
 
 import { win32 } from 'node:path'
+import { DEFAULT_VALUE } from '../../main/plugins/registryOps'
+import type { RegOp } from '../../main/plugins/registryOps'
+
+/**
+ * 通用原语(`reg.exe` 参数 / 解析 / Assoc 探测 / exeStem / formatRegCommand)全部在
+ * `main/plugins/registryOps.ts` —— 编辑器插件要用同一份。这里 re-export,调用方(`registration.ts`
+ * 的 `win.regAddArgs` 与测试的 `win.RegOp`)不用改。
+ */
+export {
+  DEFAULT_VALUE,
+  buildAssocProbeScript,
+  exeStem,
+  formatRegCommand,
+  parseAssocProbeOutput,
+  parseRegQueryFirstValue,
+  parseRegQueryValue,
+  regAddArgs,
+  regDeleteKeyArgs,
+  regDeleteValueArgs,
+  regQueryArgs,
+  userChoiceQueryArgs
+} from '../../main/plugins/registryOps'
+export type { AssocProbeTarget, RegOp, RegResult, RunReg } from '../../main/plugins/registryOps'
 
 export const DEFAULT_FILE_TYPES = ['.html', '.htm', '.xhtml']
 export const DEFAULT_URL_SCHEMES = ['http', 'https']
-
-/** `(默认)` 值用 name = null 表示 */
-const DEFAULT_VALUE = null
-
-/** 注册表操作:一条写入 / 一个待删除的值 / 一个待删除的键 */
-export interface RegOp {
-  key: string
-  /** null = `(默认)` 值;有名字则写具名值 */
-  name?: string | null
-  type?: string
-  data?: string
-}
-
-export interface UserChoiceTarget {
-  id: string
-  label: string
-  kind: 'file' | 'protocol'
-  /** UserChoice 注册表键 */
-  key: string
-  /** 属于我们时应当等于的 ProgID */
-  expect: string
-}
 
 export interface WindowsRegistrationPlan {
   exe: string
@@ -90,10 +91,8 @@ export interface UserChoiceTarget {
  * 所以任何一项落在别人手里,都可能与系统设置页显示的「默认浏览器: bow」不一致。
  */
 export function userChoiceTargets({ appName = 'bow' } = {}): UserChoiceTarget[] {
-  const explorer = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer'
   const shellAssoc = 'HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations'
-  const classesUser = 'HKCU\\Software\\Classes'
-  const classesMachine = 'HKLM\\Software\\Classes'
+  const explorer = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer'
   return [
     {
       id: 'http',
@@ -111,31 +110,27 @@ export function userChoiceTargets({ appName = 'bow' } = {}): UserChoiceTarget[] 
       alternateKeys: [`${explorer}\\UrlAssociations\\https\\UserChoice`],
       expect: `${appName}URL`
     },
-    {
-      id: '.html',
-      label: '.html 文件',
-      kind: 'file',
-      key: `${explorer}\\FileExts\\.html\\UserChoice`,
-      legacyKeys: [`${classesUser}\\.html`, `${classesMachine}\\.html`],
-      expect: `${appName}HTML`
-    },
-    {
-      id: '.htm',
-      label: '.htm 文件',
-      kind: 'file',
-      key: `${explorer}\\FileExts\\.htm\\UserChoice`,
-      legacyKeys: [`${classesUser}\\.htm`, `${classesMachine}\\.htm`],
-      expect: `${appName}HTML`
-    },
-    {
-      id: '.xhtml',
-      label: '.xhtml 文件',
-      kind: 'file',
-      key: `${explorer}\\FileExts\\.xhtml\\UserChoice`,
-      legacyKeys: [`${classesUser}\\.xhtml`, `${classesMachine}\\.xhtml`],
-      expect: `${appName}HTML`
-    }
+    ...fileUserChoiceTargets(DEFAULT_FILE_TYPES, `${appName}HTML`)
   ]
+}
+
+/**
+ * 文件类型的 UserChoice 目标(逐扩展名)。抽出来是为了让编辑器插件复用同一套**键路径规则**:
+ * 它注册的是 .txt/.md/… 而不是 HTML,但「Windows 这一类交给谁」的判定方式完全一样 ——
+ * 而且协议与文件类型的 UserChoice **不在同一个位置**(见 UserChoiceTarget.key 的注解)。
+ */
+export function fileUserChoiceTargets(exts: readonly string[], progId: string): UserChoiceTarget[] {
+  const explorer = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer'
+  const classesUser = 'HKCU\\Software\\Classes'
+  const classesMachine = 'HKLM\\Software\\Classes'
+  return exts.map((ext) => ({
+    id: ext,
+    label: `${ext} 文件`,
+    kind: 'file' as const,
+    key: `${explorer}\\FileExts\\${ext}\\UserChoice`,
+    legacyKeys: [`${classesUser}\\${ext}`, `${classesMachine}\\${ext}`],
+    expect: progId
+  }))
 }
 
 export function buildWindowsRegistration({
@@ -245,71 +240,6 @@ export function buildWindowsRegistration({
   return { exe, exeName, appName, progIdHtml, progIdUrl, openCommand, clientKey, capsKey, applicationKey, adds, deletes }
 }
 
-/** 一条写入 → `reg.exe` 参数 */
-export function regAddArgs(op: RegOp): string[] {
-  return ['ADD', op.key, '/t', op.type ?? 'REG_SZ', ...(op.name ? ['/v', op.name] : ['/ve']), '/d', op.data ?? '', '/f']
-}
-
-/** 删一个值 → `reg.exe` 参数(name = null 表示 `(默认)` 值) */
-export function regDeleteValueArgs({ key, name }: { key: string; name: string | null }): string[] {
-  return ['DELETE', key, ...(name ? ['/v', name] : ['/ve']), '/f']
-}
-
-/** 删整键(含子键) → `reg.exe` 参数 */
-export function regDeleteKeyArgs(key: string): string[] {
-  return ['DELETE', key, '/f']
-}
-
-/** 校验一条写入是否落地 → `reg.exe` 参数 */
-export function regQueryArgs(op: RegOp): string[] {
-  return ['QUERY', op.key, ...(op.name ? ['/v', op.name] : ['/ve'])]
-}
-
-/** 查「当前默认交给谁」→ `reg.exe` 参数 */
-export function userChoiceQueryArgs(target: UserChoiceTarget): string[] {
-  return ['QUERY', target.key, '/v', 'ProgId']
-}
-
-/**
- * 解析 `reg query` 的输出,取某个值的数据:
- * ```
- * HKEY_CURRENT_USER\...\UserChoice
- *     ProgId    REG_SZ    ChromeHTML
- * ```
- * 找不到返回 null(键不存在 / 值不存在 / 输出格式异常都算)。
- * 注:中文 Windows 的 `reg query` 会输出「(默认)」而不是 `(Default)`,所以匹配的是类型列而不是值名。
- */
-export function parseRegQueryValue(output: string, valueName: string): string | null {
-  if (typeof output !== 'string') return null
-  for (const rawLine of output.split(/\r?\n/)) {
-    const line = rawLine.trim()
-    if (!line || line.startsWith('HKEY')) continue
-    // 值名与类型之间是空白,类型与数据之间也是;数据本身可能含空格 → 只切前两段
-    const m = /^(\S+)\s+(REG_[A-Z_]+)\s*(.*)$/.exec(line)
-    if (!m) continue
-    if (m[1] !== valueName) continue
-    return m[3].trim()
-  }
-  return null
-}
-
-/**
- * 解析 `reg query` 输出里**第一条值**的数据。
- * 用于 `(默认)` 值 —— 中文 Windows 打印「(默认)」、英文打印「(Default)」,
- * 所以这里不按值名匹配,直接取第一行值。
- */
-export function parseRegQueryFirstValue(output: string): string | null {
-  if (typeof output !== 'string') return null
-  for (const rawLine of output.split(/\r?\n/)) {
-    const line = rawLine.trim()
-    if (!line || line.startsWith('HKEY')) continue
-    const m = /^(\S+)\s+(REG_[A-Z_]+)\s*(.*)$/.exec(line)
-    if (!m) continue
-    return m[3].trim()
-  }
-  return null
-}
-
 /**
  * 常见浏览器的 ProgID 特征 → 便于阅读的名字(**只为显示**;认不出就原样展示 ProgID,
  * 绝不按“像不像”猜)。实机反馈里 http/.htm 归 Firefox 时注册表写的是
@@ -338,75 +268,6 @@ const KNOWN_PROGIDS: Array<[RegExp, string]> = [
 export function friendlyProgId(progId: string): string | undefined {
   for (const [re, name] of KNOWN_PROGIDS) if (re.test(progId)) return name
   return undefined
-}
-
-/**
- * 「系统**实际**会用哪个程序打开这类东西」的探测(比 UserChoice 记录更权威)。
- *
- * 为什么需要它:UserChoice 带 Hash 保护,当 Hash 与内容不匹配时(陈旧记录、被别的安装器改写、
- * 系统升级等)Windows **会忽略这条记录**,按 HKCR 合并顺序回落到 HKCU/HKLM `Software\Classes`。
- * 实测场景:`.html` 的 UserChoice 写着 Firefox,但双击却用 bow 打开 —— 因为回落到我们注册里写的
- * `HKCU\Software\Classes\.html = bowHTML`。只看记录的检测会把这种情况误报成「非默认」。
- *
- * `AssocQueryString` 是 shell 自己用的那个 API,它返回的就是真实会执行的命令。
- * 通过 PowerShell 的 `Add-Type` 调一次(不需管理员,不改任何东西);拿不到就退化为只依据记录。
- */
-export interface AssocProbeTarget {
-  /** 目标 id(与 `userChoiceTargets` 一致)兼探测参数:`.html` / `http` 等 */
-  id: string
-}
-
-/** 生成一段 PowerShell 脚本:逐个目标调 `AssocQueryString`,输出 `<id>|<exe 路径>` 行 */
-export function buildAssocProbeScript(targets: AssocProbeTarget[]): string {
-  const list = targets.map((t) => `  @('${t.id}', '${t.id}')`).join(',\r\n')
-  return [
-    '$ErrorActionPreference = "Stop"',
-    '$src = @"',
-    'using System.Text;',
-    'using System.Runtime.InteropServices;',
-    'public static class BowAssoc {',
-    '  [DllImport("Shlwapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]',
-    '  public static extern uint AssocQueryString(int flags, int str, string pszAssoc, string pszExtra, StringBuilder pszOut, ref uint pcchOut);',
-    '}',
-    '"@',
-    'Add-Type -TypeDefinition $src',
-    `foreach ($t in @(\r\n${list}\r\n)) {`,
-    '  $sb = New-Object System.Text.StringBuilder 4096',
-    '  $n = [uint32]4096',
-    '  try {',
-    '    [void][BowAssoc]::AssocQueryString(0, 2, $t[1], "open", $sb, [ref]$n)',
-    '    Write-Output ($t[0] + "|" + $sb.ToString())',
-    '  } catch {',
-    '    Write-Output ($t[0] + "|")',
-    '  }',
-    '}'
-  ].join('\r\n')
-}
-
-/** 解析探测输出(`<id>|<exe>`);忽略 PowerShell 的杂音行,拿不到 exe 的行忽略 */
-export function parseAssocProbeOutput(output: string): Record<string, string> {
-  const out: Record<string, string> = {}
-  if (typeof output !== 'string') return out
-  for (const rawLine of output.split(/\r?\n/)) {
-    const line = rawLine.trim()
-    const i = line.indexOf('|')
-    if (i <= 0) continue
-    const id = line.slice(0, i).trim()
-    const exe = line.slice(i + 1).trim()
-    if (id && exe) out[id] = exe
-  }
-  return out
-}
-
-/** 从可执行文件路径取出便于对比 / 展示的程序名(`D:\x\bow.exe` → `bow`) */
-export function exeStem(exePath: string): string {
-  const base = win32.basename(exePath.trim().replace(/^"|"$/g, ''))
-  return base.replace(/\.exe$/i, '').toLowerCase()
-}
-
-/** 打印给人看的 `reg.exe` 命令行(设置页回显用,不执行) */
-export function formatRegCommand(args: string[]): string {
-  return 'reg ' + args.map((a) => (a === '' || /[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a)).join(' ')
 }
 
 /** Windows 上必须由用户点一次的部分(系统不给程序改默认关联的权限) */
