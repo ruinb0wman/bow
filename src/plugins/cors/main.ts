@@ -5,18 +5,27 @@
  * cors.json(JsonStore 以文件内容覆盖默认值,故迁移天然幂等)。
  */
 
-import { isPreflightRequest, shouldBypassCors } from '@shared/cors'
+import { buildCorsResponseHeaders, isPreflightRequest, shouldBypassCors } from '@shared/cors'
 import type { NetHookContext } from '@shared/plugins'
 import { getSettingsStore } from '../../main/stores'
 import type { PluginContext, PluginMain } from '../../main/plugins/types'
 
-const ACAO = 'Access-Control-Allow-Origin'
-const ACAM = 'Access-Control-Allow-Methods'
-const ACAH = 'Access-Control-Allow-Headers'
-
 interface CorsSettings {
   enabled: boolean
   whitelist: string[]
+}
+
+/** 大小写不敏感地读请求头:Electron 对头名大小写的保留不稳定 */
+function readRequestHeader(
+  headers: Record<string, string> | undefined,
+  name: string
+): string | undefined {
+  if (!headers) return undefined
+  const lower = name.toLowerCase()
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === lower) return value
+  }
+  return undefined
 }
 
 const plugin: PluginMain = {
@@ -38,31 +47,39 @@ const plugin: PluginMain = {
       }
     })
 
-    /** 预检请求 id 记录:onHeadersReceived 阶段读不到请求头,只能靠 onBeforeSendHeaders 识别 */
-    const preflightIds = new Set<number>()
+    /**
+     * 预检请求记录:onHeadersReceived 阶段读不到请求头,只能靠 onBeforeSendHeaders 识别。
+     * 记下请求声明的 method / headers,响应阶段原样回显 —— 带凭据时通配符不生效。
+     */
+    const preflights = new Map<number, { method?: string; headers?: string }>()
 
     ctx.net.onBeforeSendHeaders((c: NetHookContext) => {
-      if (isPreflightRequest(c.method, c.requestHeaders)) {
-        preflightIds.add(c.requestId)
-        if (preflightIds.size > 5000) preflightIds.clear()
-      }
+      if (!isPreflightRequest(c.method, c.requestHeaders)) return
+      preflights.set(c.requestId, {
+        method: readRequestHeader(c.requestHeaders, 'access-control-request-method'),
+        headers: readRequestHeader(c.requestHeaders, 'access-control-request-headers')
+      })
+      // 有界内存:异常请求(如 id 不复用)会让 Map 无上限增长
+      if (preflights.size > 5000) preflights.clear()
     })
 
     ctx.net.onHeadersReceived((c: NetHookContext) => {
       const { enabled, whitelist } = store.get()
+      // 取出即删:无论是否注入都不留悬挂条目
+      const preflight = preflights.get(c.requestId)
+      if (preflight) preflights.delete(c.requestId)
       if (!enabled) return
-      if (!shouldBypassCors(c.url, c.pageUrl, whitelist)) {
-        preflightIds.delete(c.requestId)
-        return
-      }
-      const isPreflight = preflightIds.delete(c.requestId)
-      const headers = c.responseHeaders ?? {}
-      headers[ACAO] = ['*']
-      headers[ACAM] = ['GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS']
-      headers[ACAH] = ['*']
-      c.responseHeaders = headers
-      // CORS 规范要求预检响应必须 2xx;部分服务器对 OPTIONS 返回 404/405,需覆盖为 200
-      if (isPreflight) c.statusLine = 'HTTP/1.1 200 OK'
+      // 名单外主机零干扰
+      if (!shouldBypassCors(c.url, c.pageUrl, whitelist)) return
+      Object.assign(
+        (c.responseHeaders ??= {}),
+        buildCorsResponseHeaders({
+          requestedMethod: preflight?.method,
+          requestedHeaders: preflight?.headers
+        })
+      )
+      // CORS 规范要求预检响应必须 2xx;部分服务器(尤其 WebDAV)对 OPTIONS 返回 404/405
+      if (preflight) c.statusLine = 'HTTP/1.1 200 OK'
     })
 
     ctx.ipc.handle('getSettings', (): CorsSettings => store.get())

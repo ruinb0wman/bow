@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildCorsResponseHeaders,
   CORS_DEFAULT_LIST,
+  CORS_DEFAULT_METHODS,
   isCorsWhitelisted,
   isPreflightRequest,
   normalizeCorsEntry,
@@ -124,6 +126,57 @@ describe('shouldBypassCors 注入判定(目标侧 + 来源侧)', () => {
     expect(shouldBypassCors('https://example.com/x', '', ['example.com'])).toBe(true)
     expect(shouldBypassCors('https://example.com/x', 'not a url', ['example.com'])).toBe(true)
     expect(shouldBypassCors('https://other.com/x', undefined, ['example.com'])).toBe(false)
+  })
+})
+
+describe('buildCorsResponseHeaders 注入头生成', () => {
+  it('预检声明了 method 时回显该方法(含 WebDAV 的 PROPFIND)', () => {
+    const h = buildCorsResponseHeaders({ requestedMethod: 'PROPFIND' })
+    expect(h['Access-Control-Allow-Methods']).toEqual(['PROPFIND'])
+  })
+
+  it('预检声明了 headers 时回显该请求头(带凭据时通配符不生效)', () => {
+    const h = buildCorsResponseHeaders({
+      requestedMethod: 'PROPFIND',
+      requestedHeaders: 'Depth, Authorization, Content-Type'
+    })
+    expect(h['Access-Control-Allow-Headers']).toEqual(['Depth, Authorization, Content-Type'])
+  })
+
+  it('无预检信息时回退集仍包含 PROPFIND / MKCOL 等非标准方法', () => {
+    const h = buildCorsResponseHeaders({})
+    const methods = h['Access-Control-Allow-Methods'][0]
+    expect(methods).toBe(CORS_DEFAULT_METHODS)
+    for (const m of ['PROPFIND', 'PROPPATCH', 'MKCOL', 'COPY', 'MOVE', 'LOCK', 'REPORT']) {
+      expect(methods).toContain(m)
+    }
+    expect(h['Access-Control-Allow-Headers']).toEqual(['*'])
+  })
+
+  it('始终暴露 ETag 等非安全列表响应头,并带预检缓存', () => {
+    const h = buildCorsResponseHeaders({ requestedMethod: 'HEAD' })
+    expect(h['Access-Control-Expose-Headers']).toEqual(['*'])
+    expect(h['Access-Control-Max-Age']).toEqual(['600'])
+  })
+
+  it('Allow-Origin 保持通配符,不回显 Origin', () => {
+    const h = buildCorsResponseHeaders({ requestedMethod: 'GET', origin: 'http://localhost:3000' })
+    expect(h['Access-Control-Allow-Origin']).toEqual(['*'])
+  })
+
+  it('空白/空的请求方法按无信息处理,回退到默认集', () => {
+    const h = buildCorsResponseHeaders({ requestedMethod: '   ', requestedHeaders: '' })
+    expect(h['Access-Control-Allow-Methods'][0]).toBe(CORS_DEFAULT_METHODS)
+    expect(h['Access-Control-Allow-Headers']).toEqual(['*'])
+  })
+})
+
+describe('注入决策的边界(白名单外零干扰)', () => {
+  it('白名单外目标不满足注入条件(不应调用 buildCorsResponseHeaders)', () => {
+    expect(shouldBypassCors('https://www.google.com/', 'https://www.google.com/', CORS_DEFAULT_LIST)).toBe(
+      false
+    )
+    expect(shouldBypassCors('https://www.google.com/', undefined, CORS_DEFAULT_LIST)).toBe(false)
   })
 })
 

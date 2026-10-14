@@ -153,6 +153,43 @@ export function shouldBypassCors(
   return isCorsWhitelisted(targetUrl, list) || isCorsWhitelistedPage(pageUrl, list)
 }
 
+/**
+ * 无预检信息时的回退方法集:必须够宽。WebDAV 走 PROPFIND/MKCOL 等非标准方法,
+ * 通用客户端还会用 PROPPATCH / COPY / MOVE / LOCK / UNLOCK / REPORT / SEARCH,
+ * 漏一个都会让 Chromium 在预检阶段直接拒绝。
+ */
+export const CORS_DEFAULT_METHODS =
+  'GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS, PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK, REPORT, SEARCH'
+
+/** 预检缓存秒数:减少 WebDAV 高频请求的重复预检往返 */
+const CORS_MAX_AGE = '600'
+
+/**
+ * 生成要注入的完整 CORS 放行响应头(纯函数,便于单测;不 import electron)。
+ *
+ * - Allow-Methods / Allow-Headers 回显预检请求声明的值:带凭据(credentials include)
+ *   时通配符不生效,必须按实际值回显,否则 Chromium 会拒绝该请求。
+ * - 无预检信息(非预检请求,或预检头没记录到)时回退到宽松默认集,至少含 WebDAV 方法。
+ * - Allow-Origin 保持 `*`,不回显 Origin:bow 面向非 include 请求,回显不改变能力。
+ * - Expose-Headers 让 GetResponseHeader 能读到 ETag / Last-Modified 这类非安全列表头
+ *   (WebDAV 增量同步靠 ETag 判断远端是否已有文件)。
+ */
+export function buildCorsResponseHeaders(input: {
+  requestedMethod?: string
+  requestedHeaders?: string
+  origin?: string
+}): Record<string, string[]> {
+  const method = input.requestedMethod?.trim()
+  const requested = input.requestedHeaders?.trim()
+  return {
+    'Access-Control-Allow-Origin': ['*'],
+    'Access-Control-Allow-Methods': [method || CORS_DEFAULT_METHODS],
+    'Access-Control-Allow-Headers': [requested || '*'],
+    'Access-Control-Expose-Headers': ['*'],
+    'Access-Control-Max-Age': [CORS_MAX_AGE]
+  }
+}
+
 /** 预检请求判定:OPTIONS + Access-Control-Request-Method 请求头 */
 export function isPreflightRequest(
   method: string | undefined,
