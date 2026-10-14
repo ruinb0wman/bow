@@ -6,3 +6,6 @@ dist/
 
 # pi 项目级 MCP 配置(含机器绝对路径,不入库)
 .pi/mcp.json
+
+# CodeGraph 本地索引(每台机器各不相同)
+.codegraph/
