@@ -34,7 +34,10 @@ const CORE_TOOLS = ['browser_navigate', 'browser_snapshot', 'browser_read', 'bro
 const SERVER_DESCRIPTION = '本地 bow 浏览器(Electron 多标签)的 MCP 服务器;操作对用户实时可见'
 /** 能力索引 skill:codemode 曝光下工具 schema 不常驻上下文,靠它把「能做什么 / 怎么做」放进上下文 */
 const SKILL_NAME = 'bow-browser'
-const SKILL_REL = join('.pi', 'skills', SKILL_NAME, 'SKILL.md')
+/** skill 的**唯一副本**在 pi 插件包里(见 `packages/pi-bow/`),这里只负责把它装到用的人那边 */
+const SKILL_SOURCE_REL = join('packages', 'pi-bow', 'skills', SKILL_NAME, 'SKILL.md')
+/** 装到哪儿:`--project` 装进当前项目,否则装进 pi 的全局 skills 目录 */
+const SKILL_TARGET_REL = join('.pi', 'skills', SKILL_NAME, 'SKILL.md')
 
 const argv = process.argv.slice(2)
 const has = (flag) => argv.includes(flag)
@@ -76,9 +79,9 @@ const target = project
   ? join(process.cwd(), '.pi', 'mcp.json')
   : join(homedir(), '.pi', 'agent', 'mcp.json')
 
-const skillSource = join(PROJECT, SKILL_REL)
+const skillSource = join(PROJECT, SKILL_SOURCE_REL)
 const skillTarget = project
-  ? join(process.cwd(), SKILL_REL)
+  ? join(process.cwd(), SKILL_TARGET_REL)
   : join(homedir(), '.pi', 'agent', 'skills', SKILL_NAME, 'SKILL.md')
 
 if (useHttp && !Number.isInteger(port)) {

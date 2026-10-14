@@ -145,7 +145,7 @@ describe('cleanEnv', () => {
       PATH: '/usr/bin',
       TERM: 'xterm-256color',
       COLORTERM: 'truecolor',
-      // pi 桥接扩展的门禁(见 integrations/pi/bow-agent-state.ts)
+      // pi 桥接扩展的门禁(见 packages/pi-bow/extensions/bow-agent-state.ts)
       BOW_TERMINAL: '1'
     })
   })

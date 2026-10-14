@@ -39,9 +39,9 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'bow-pi-bridge-'))
   appPath = join(root, 'app')
   home = join(root, 'home')
-  mkdirSync(join(appPath, 'integrations', 'pi'), { recursive: true })
+  mkdirSync(join(appPath, 'packages', 'pi-bow', 'extensions'), { recursive: true })
   mkdirSync(home, { recursive: true })
-  writeFileSync(join(appPath, 'integrations', 'pi', 'bow-agent-state.ts'), SOURCE, 'utf-8')
+  writeFileSync(join(appPath, 'packages', 'pi-bow', 'extensions', 'bow-agent-state.ts'), SOURCE, 'utf-8')
 })
 
 afterEach(() => {
@@ -54,7 +54,7 @@ describe('bridgePaths', () => {
   it('默认落 ~/.pi/agent/extensions;PI_CODING_AGENT_DIR 优先', () => {
     const a = bridgePaths(env())
     expect(a.target).toBe(join(home, '.pi', 'agent', 'extensions', 'bow-agent-state.ts'))
-    expect(a.source).toBe(join(appPath, 'integrations', 'pi', 'bow-agent-state.ts'))
+    expect(a.source).toBe(join(appPath, 'packages', 'pi-bow', 'extensions', 'bow-agent-state.ts'))
     const b = bridgePaths({ ...env(), env: { PI_CODING_AGENT_DIR: join(root, 'custom') } })
     expect(b.target).toBe(join(root, 'custom', 'extensions', 'bow-agent-state.ts'))
   })
@@ -72,7 +72,7 @@ describe('piBridgeStatus', () => {
   })
 
   it('打包漏配 build.files 时 sourceAvailable=false 且给出原因(不静默)', () => {
-    rmSync(join(appPath, 'integrations'), { recursive: true, force: true })
+    rmSync(join(appPath, 'packages'), { recursive: true, force: true })
     const s = piBridgeStatus(io, env())
     expect(s.sourceAvailable).toBe(false)
     expect(s.error).toContain('读不到 bow 自带的扩展源码')
@@ -103,7 +103,7 @@ describe('installPiBridge', () => {
   it('源变了 → action=updated(内容被覆盖)', () => {
     installPiBridge(io, env())
     const next = `${SOURCE}// v2\n`
-    writeFileSync(join(appPath, 'integrations', 'pi', 'bow-agent-state.ts'), next, 'utf-8')
+    writeFileSync(join(appPath, 'packages', 'pi-bow', 'extensions', 'bow-agent-state.ts'), next, 'utf-8')
     const again = installPiBridge(io, env())
     expect(again.action).toBe('updated')
     expect(readFileSync(join(home, '.pi', 'agent', 'extensions', 'bow-agent-state.ts'), 'utf-8')).toBe(next)
@@ -126,7 +126,7 @@ describe('installPiBridge', () => {
   })
 
   it('读不到源时失败且不建任何目录', () => {
-    rmSync(join(appPath, 'integrations'), { recursive: true, force: true })
+    rmSync(join(appPath, 'packages'), { recursive: true, force: true })
     const res = installPiBridge(io, env())
     expect(res.ok).toBe(false)
     expect(res.action).toBe('failed')

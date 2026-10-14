@@ -3,7 +3,7 @@
  * 把 bow 的 pi 状态桥扩展装进 pi 的扩展目录(默认 `~/.pi/agent/extensions/bow-agent-state.ts`)。
  *
  * 为什么需要它:bow 靠 pi 写的 OSC 控制序列来显示「终端标签正在执行 / 等待确认 / 已完成」,
- * 而这条序列只能由 pi 进程里的扩展发出(见 `integrations/pi/bow-agent-state.ts` 顶部注释)。
+ * 而这条序列只能由 pi 进程里的扩展发出(见 `packages/pi-bow/extensions/bow-agent-state.ts` 顶部注释)。
  * 装上它只是让效果完整;**不装也能跑** —— 靠 pi 内建的 `terminal.showTerminalProgress` 至少
  * 有「正在执行」角标(那一档要用户在 pi 设置里打开)。
  *
@@ -24,7 +24,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
-const source = join(root, 'integrations', 'pi', 'bow-agent-state.ts')
+const source = join(root, 'packages', 'pi-bow', 'extensions', 'bow-agent-state.ts')
 
 /** 只认 pi 的 agent 目录约定:环境变量优先,否则 ~/.pi/agent(见 pi docs/configuration.md) */
 const defaultDir = join(process.env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), '.pi', 'agent'), 'extensions')

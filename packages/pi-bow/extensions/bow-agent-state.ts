@@ -18,9 +18,14 @@
  * 为什么用 `agent_settled` 而不是 `agent_end`:`agent_end` 之后 pi 可能还会重试、压缩或续跑排队的消息,
  * 只有 `agent_settled` 表示「这一轮彻底结束了」。
  *
- * 装法:在 bow 仓库里跑 `node scripts/install-pi-agent-state.mjs`(幂等,可 --uninstall)。
+ * 装法(三种,选一个):
+ *   ① 整包:`pi install <bow 仓库>/packages/pi-bow`(推荐,同一个包里还有 MCP 自动注册与 `/bow` 命令);
+ *   ② 单文件:bow 设置页 → 终端 → 「Pi 状态联动」的安装按钮(离线可用);
+ *   ③ 命令行:`node scripts/install-pi-agent-state.mjs`(幂等,可 --uninstall)。
  * 手动试用:`pi --extension <此文件的绝对路径>`。
  *
+ * ⚠️ **本文件必须自包含**:它会被单独复制到 `~/.pi/agent/extensions/`,所以只能 import
+ *    `node:` 内建与 pi 的类型(`import type`),不能 import 包内其它文件 —— 复制过去之后相对路径会找不到。
  * ⚠️ 本文件由 bow 安装脚本管理:重装会覆盖它,请把自定义改动放到别的文件里。
  * ⚠️ 需要 pi ≥ 0.84.4(`ui_prompt_start` / `ui_prompt_end` 引入的版本);更老的 pi 上只是少了
  *    「需要确认」那一档,不会报错(未知事件名的注册永远不触发)。
@@ -29,7 +34,7 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { basename } from 'node:path'
 
-/** 必须与 bow 侧 `BOW_OSC_PREFIX` 逐字一致 */
+/** 必须与 bow 侧 `BOW_OSC_PREFIX`(`src/shared/agentState.ts`)逐字一致;字面量而不是 import,见上面的「自包含」 */
 const OSC_PREFIX = '\x1b]1337;bow;'
 const BEL = '\x07'
 const SIGNAL_VERSION = 1

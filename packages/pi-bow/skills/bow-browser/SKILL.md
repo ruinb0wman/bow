@@ -3,6 +3,9 @@ name: bow-browser
 description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器能做的事:需要登录态/Cookie 的页面、SPA 或 JS 渲染的内容、真实点击与输入、视觉确认、读取页面 DOM。适用于抓取 fetch_content 拿不到的页面、验证前端交互、填表提交、截图核对。不适用于静态文档或公开 API —— 那些用 fetch_content 或 curl 更快更省。
 ---
 
+> **唯一副本**:本文件是 pi 插件包 `packages/pi-bow` 的一部分。bow 的工具面(插件启停、新增/改名工具)变化时改**这里**,
+> 不要再在 bow 仓库别处建副本;分发给别人走 `pi install <bow 仓库>/packages/pi-bow`。
+
 # bow 浏览器(MCP 服务器 `browser`)
 
 本地 Electron 多标签浏览器,50 个工具(20 核心 + 30 插件,随插件启停浮动);**你的每次操作用户都实时可见**,所以破坏性操作前先说明意图。

@@ -52,7 +52,7 @@ const electron = createRequire(import.meta.url)('electron')
 /**
  * 默认用仓库里的 electron 跑 `out/`(开发产物)。设 `BOW_E2E_BIN` 指向打包后的可执行文件时,
  * 同一个脚本就能验**打包版** —— 唯一区别是 `app.getAppPath()` 变成 asar,而「一键接入」的源
- * 必须仍能从 asar 里读到(`package.json` 的 `build.files` 里那个 `integrations` 就是为它加的)。
+ * 必须仍能从 asar 里读到(`package.json` 的 `build.files` 里那个 packages/pi-bow/extensions 就是为它加的)。
  */
 const packagedBin = process.env.BOW_E2E_BIN?.trim() || null
 
@@ -395,7 +395,7 @@ async function main() {
   check(/未接入/.test(String(before)), '初始状态是「未接入」', before)
 
   const installedFile = join(piAgentDir, 'extensions', 'bow-agent-state.ts')
-  // 打包版专用判据:源必须能**从 asar 里**读到(也就是 build.files 里那个 integrations 真的生效了)
+  // 打包版专用判据:源必须能**从 asar 里**读到(也就是 build.files 里那个 packages/pi-bow/extensions 真的生效了)
   const sourceReadable = await settingsEval(
     "window.browserAPI.plugins.invoke('terminal','piBridgeStatus').then((s) => s.sourceAvailable && s.source)"
   )

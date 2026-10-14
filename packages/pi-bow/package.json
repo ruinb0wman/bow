@@ -1,0 +1,15 @@
+{
+  "name": "pi-bow",
+  "version": "0.1.0",
+  "private": true,
+  "description": "在 pi 里接入 bow 浏览器:终端状态联动(标签角标 + 系统通知)、bow MCP 服务器自动注册、/bow 命令",
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "pi": {
+    "extensions": ["./extensions/*.ts"],
+    "skills": ["./skills"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
