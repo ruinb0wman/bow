@@ -130,7 +130,8 @@ onBeforeUnmount(() => {
     <div class="ds-hint">
       关掉询问后,下载直接保存到上面的目录;同名文件会自动加 <code>(1)</code>,不会覆盖已有文件。
       另外 <code>browser_download</code>(AI 发起的下载)一律不弹对话框,只落到这里或它指定的目录;
-      它指定的 <code>saveDir</code> 必须在<b>「文件管理」的工作目录</b>里(下载目录总在里面,不用额外配)。
+      它指定的 <code>saveDir</code> 必须在<b>白名单工作目录</b>里 —— 也就是 bow 的下载目录或
+      <code>&lt;userData&gt;/files-settings.json</code> 的 <code>roots</code>(下载目录总在里面,不用额外配)。
     </div>
 
     <div class="section-title">记录</div>

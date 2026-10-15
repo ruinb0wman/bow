@@ -126,34 +126,11 @@ export const MCP_INSTRUCTIONS = `这是一个真实的多标签浏览器窗口(�
 
 下载(browser_download / browser_list_downloads)
 - browser_download 不需要页面上的点击,也**不弹保存对话框**:默认落到 bow 的下载目录并自动重名(同名加 (1))。
-- saveDir / filename 只在用户明确要求时才传(它们决定文件写到哪里);**saveDir 必须落在 browser_fs_roots 列出的工作目录里**
-  (下载目录总在里面),越界会被拒;wait: true 会等到下载结束或超时 ——
+- saveDir / filename 只在用户明确要求时才传(它们决定文件写到哪里);**saveDir 必须落在 bow 的下载目录
+  或用户数据目录下 files-settings.json 的 roots 里配的工作目录内**(两者之外一律被拒);wait: true 会等到下载结束或超时 ——
   超时不代表失败(下载仍在继续),用 browser_list_downloads 看后续进度即可。
 - 恢复下载的行为由服务器决定(支不支持 Range);万一浏览器丢弃了已收字节(记录里 restarted 为 true),
   说明这次是从头下的 —— 不要自己去推。
-
-上传本地文件到网页(browser_upload)
-- 往网页的 <input type=file> 里塞本地文件(CDP 直接设置),**不弹任何文件对话框**,也不需要用户手势。
-- **推荐流程:先 browser_upload 设好文件,再用 browser_click 点提交按钮。**
-- selector 省略时,只有页面上**恰好一个**文件输入框才生效;有多个会返回 candidates 候选清单 ——
-  那时用 browser_snapshot 拿到目标框的选择器再传 selector。输入框在 iframe 里时找不到(按主文档查询)。
-- 文件必须落在 browser_fs_roots 列出的工作目录里(越界会在碰页面之前被拒);
-  单选(没有 multiple)的文件框只能传一个;返回体里的 input.files 是**页面侧真实看到**的文件
-  (填上了但页面在 change 里清空的话会明确报失败)。
-- 传完之后的提交由网页自己决定:多数站点靠 change 事件(浏览器会自动触发,你不用管)。
-- 如果用户(或你)**刚点过网页的上传按钮**、而 bow 的「接管文件选择」开着,那一次点击会被 bow 拦下来:
-  这时调 browser_upload 会**应答那次请求**(返回里 via: "chooser"),而不是另外去找输入框 —— 这是正常行为。
-
-本地文件(browser_fs_*)
-- 这组工具操作的是**真实磁盘**,与网页无关。**第一步先调 browser_fs_roots** 看允许的工作目录(你配的 ∪ bow 的下载目录)——
-  目录之外的路径一律被拒(包括符号链接指向外面的情况),不要凭猜测拼绝对路径。
-- browser_fs_list 省略 path = 第一个工作目录;glob 里 * 不跨段、** 跨段;只有 recursive: true 才递归(最多 8 层)。
-- browser_fs_read 只读文本(默认最多 64 KiB,超长截断并标记 truncated);含 NUL 字节的二进制文件会被拒。
-- browser_fs_write 原子写,**目标已存在时必须显式 overwrite: true**,否则直接拒 —— 不要为了绕过它去先删再写。
-- browser_fs_delete **默认把文件移进系统回收站(可恢复)**;传 permanent: true 才真删,而它需要用户在设置里开启。
-  删目录必须 recursive: true。工作目录本身不能被删/被移走。
-- browser_fs_move / browser_fs_copy 的 to 指向**已存在的目录**时,东西会被放进去(与 mv 一致),
-  以返回体里的 path 为准;目标已存在同样必须 overwrite: true。
 
 读取页面正文(browser_read)
 - 只读内容、不操作页面时用它:**自动定位正文容器**、剔掉导航/侧栏/广告/评论/脚本,输出 markdown。
@@ -210,7 +187,7 @@ export function buildBrowserServer(deps: MCPDeps): McpServer {
   //
   // 软隔离:显式传 tabId 时允许任何窗口(包括用户的),所以「帮我看看这个页面」这类请求仍然可行。
   //
-  // 实现已抽到 `tabTarget.ts` —— 插件的 `pages.uploadFiles` 要用**同一套**语义,两处各写一份必漂移。
+  // 实现已抽到 `tabTarget.ts` —— 将来给插件开页面类能力时也要用**同一套**语义,两处各写一份必漂移。
   const { agentCtx, target, wcOf } = createTabTargets(() => windows)
 
   /**

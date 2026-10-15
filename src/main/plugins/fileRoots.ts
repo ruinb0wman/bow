@@ -1,14 +1,13 @@
 /**
  * 本地文件访问策略(核心层,**唯一来源**)。
  *
- * 为什么不是插件私有:这套策略要同时挡住两条路 ——
- * 1. 「文件管理」插件(`src/plugins/files/`)的全部 fs 操作;
- * 2. 「下载」插件 `browser_download` 的 `saveDir`(`downloads/main.ts` 只校验了 `isAbsolute`,
- *    不接这里的话白名单就是装饰)。
+ * 唯一使用者:「下载」插件的 `browser_download` 的 `saveDir`(`downloads/main.ts` 只校验了 `isAbsolute`,
+ * 不接这里的话白名单就是装饰)。历史上它同时挡住「文件管理」插件的全部 fs 操作 ——
+ * 那个插件已于 2026-10-15 删除,**它的设置形状(类型 + 归一化)因此搬进了本文件**。
  *
- * 插件之间不能互相调 IPC,而**已经确立的跨插件共用方式**正是本目录的 `exportFile.ts`:
- * 核心读插件自己的设置文件,**每次现读、不缓存、不写**。内核那句「插件间共享 storage 文件名是错误用法」
- * 针对的是「两个 JsonStore 各持一份内存快照」——这里每次现读,不存在那个问题。
+ * ⚠️ 插件删除后全仓库**已无任何写入方**:`<userData>/files-settings.json` 现在是只读配置,
+ * 想加工作目录只能手改它的 `roots` 数组(**生效白名单 = `roots` ∪ bow 的下载目录**)——
+ * 没有设置页入口,别再去找 UI。
  *
  * 三条硬规则(都有回归用例,别随手放宽):
  * 1. **包含判定不能用 `startsWith`** —— `/a/bc` 会被 `/a/b` 误判成在内(用 `path.relative`);
@@ -20,7 +19,6 @@
 import { app } from 'electron'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { DEFAULT_FILES_SETTINGS, normalizeFilesSettings, type FilesSettings } from '@plugins/files/shared'
 import { resolveDownloadsDir } from './exportFile'
 
 /** 文件系统依赖(注入以便单测):只用到这两件事 */
@@ -122,9 +120,47 @@ export function checkPath(
 
   const hit = roots.some((root) => isInside(realpathDeepest(resolve(root), io), target))
   if (!hit) {
-    return { ok: false, error: `路径不在允许的工作目录内:${abs}(可在 bow://settings 的「文件管理」里添加)` }
+    return {
+      ok: false,
+      error: `路径不在允许的工作目录内:${abs}(白名单见 <userData>/files-settings.json 的 roots)`
+    }
   }
   return { ok: true, abs: target }
+}
+
+// ---------- 设置形状(原先在 plugins/files/shared.ts;插件删除后搬进核心) ----------
+
+/** 工作目录数量上限(不让设置文件无限膨胀) */
+export const MAX_ROOTS = 32
+
+export interface FilesSettings {
+  version: number
+  /** 允许读写的工作目录(**绝对**路径);生效白名单 = 这里配的 ∪ 下载目录,见 `resolveFileRoots()` */
+  roots: string[]
+}
+
+export const DEFAULT_FILES_SETTINGS: FilesSettings = { version: 1, roots: [] }
+
+/**
+ * 归一设置:只做**形状**清洗 —— 去空、去首尾空格、去重、丢掉非字符串、截断上限。
+ * 路径合法性(绝对路径 / deny 名单)由 `sanitizeRoots()` 管。
+ *
+ * 历史上这个文件还有 `allowPermanentDelete` / `listLimit` / `interceptFileChooser` 三个键,
+ * 它们只服务于已删除的文件管理插件 —— 从此**只读不认**(老 json 里留着无害,不会被写回)。
+ */
+export function normalizeFilesSettings(input: unknown): FilesSettings {
+  const raw = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>
+  const roots: string[] = []
+  if (Array.isArray(raw.roots)) {
+    for (const item of raw.roots) {
+      if (typeof item !== 'string') continue
+      const value = item.trim()
+      if (!value || roots.includes(value)) continue
+      roots.push(value)
+      if (roots.length >= MAX_ROOTS) break
+    }
+  }
+  return { version: DEFAULT_FILES_SETTINGS.version, roots }
 }
 
 /** 读一次 `files-settings.json`;坏 JSON / 文件不存在 / 读不到 → 默认设置 */

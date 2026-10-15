@@ -14,7 +14,6 @@ import type { AgentSignal } from '@shared/agentState'
 import type { HotkeySpec } from '@shared/shortcuts'
 import type { McpHttpStatus } from './mcpHttpHost'
 import type { McpActivitySnapshot } from '../mcpActivity'
-import type { ArmResult, FileChooserOpenedInfo, PageUploadResult } from '../pageUpload'
 
 /**
  * 插件建标签的**唯一**入口:只允许内部页(`bow://settings|terminal|logseq`)。
@@ -64,36 +63,6 @@ export interface PluginPageApi {
   activeTabId(): number | null
   focus(tabId: number): void
   execute(tabId: number, code: string, opts?: { timeoutMs?: number }): Promise<unknown>
-  /**
-   * 把一个或多个本地文件塞进目标标签页的 `<input type=file>`(CDP `DOM.setFileInputFiles`)。
-   *
-   * 为什么需要核心出这条能力:插件拿不到 `webContents`(ARCHITECTURE §13-36),而这条命令只能经
-   * `wc.debugger` 发出去。核心只做「塞文件」这一件事 —— 挑哪个文件、过不过白名单、往哪个标签页塞,
-   * 全由插件决定(与 `service.agent.report` 同构:资源在核心,插件只做决策)。
-   *
-   * `tabId` 省略时按**与核心页面类工具完全相同的规则**解析(MCP 专属窗口的活动标签,**绝不动用户的窗口**),
-   * 见 `main/tabTarget.ts`。不弹对话框、不需要用户手势;调试器被 DevTools 占着时明确失败(`debuggerBusy`)。
-   */
-  uploadFiles(opts: { tabId?: number; files: string[]; selector?: string }): Promise<PageUploadResult>
-  /**
-   * 接管标签页的**原生文件选择框**:点击网页的上传按钮时不再弹系统对话框,而是把控制权交给插件
-   * (事件经 `arm` 的 `onOpened` 回调送回来,插件再决定弹自己的面板还是直接塞文件)。
-   *
-   * 代价与事实(都是 `electron.d.ts` 里写明的):
-   * - 需要**一直**挂着该标签的调试器 → 该标签**开着 DevTools 会终止接管**(`onLost` 回调,reason 里给原因);
-   * - `onLost` 之后不要自动重挂(会和 DevTools 打架),等下一次页面加载或用户手动再挂。
-   * `disarm` 只在「本会话是我们挂的」时才真的 detach,别人挂着的会话不动。
-   */
-  fileChooser: {
-    arm(
-      tabId: number,
-      hooks: { onOpened(info: FileChooserOpenedInfo): void; onLost(reason: string): void }
-    ): Promise<ArmResult>
-    disarm(tabId: number): void
-    armed(tabId: number): boolean
-    /** 应答一次 `onOpened`(用回调给的 `backendNodeId`) */
-    answer(tabId: number, opts: { backendNodeId: number; files: string[] }): Promise<PageUploadResult>
-  }
   /**
    * 打开一个「远程调试」标签页:把 CDP 目标(`ws://host:port/devtools/page/<id>`)接进 DevTools 前端。
    *

@@ -5,7 +5,7 @@
  * 前缀陷阱(`/a/bc` vs `/a/b`)、`..` 穿越、符号链接逃逸、bow 自己的数据目录、`\\?\` 前缀。
  *
  * 单测用**注入的假 IO**(`exists` / `realpath` 查表),不碰真磁盘 —— 这样才能构造出
- * 「工作目录里有个指向 /etc 的符号链接」这种场景。真读真写那一半在 `tests/filesPlugin.test.ts`。
+ * 「工作目录里有个指向 /etc 的符号链接」这种场景。设置文件的归一化与真读真写也在这里。
  */
 
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
@@ -20,11 +20,13 @@ vi.mock('electron', () => ({
 }))
 
 const {
+  MAX_ROOTS,
   checkPath,
   checkFilePath,
   fileRootsDenyList,
   isInside,
   isSamePath,
+  normalizeFilesSettings,
   readFilesSettingsRaw,
   realpathDeepest,
   resolveFileRoots,
@@ -163,6 +165,25 @@ describe('sanitizeRoots', () => {
   })
 })
 
+describe('normalizeFilesSettings(设置文件的形状清洗)', () => {
+  it('坏输入(undefined / 数组 / 字符串 / roots 不是数组)退化为默认设置', () => {
+    expect(normalizeFilesSettings(undefined)).toEqual({ version: 1, roots: [] })
+    expect(normalizeFilesSettings([])).toEqual({ version: 1, roots: [] })
+    expect(normalizeFilesSettings('nope')).toEqual({ version: 1, roots: [] })
+    expect(normalizeFilesSettings({ roots: 'nope' })).toEqual({ version: 1, roots: [] })
+  })
+
+  it('roots:去空、去首尾空格、去重、丢掉非字符串', () => {
+    const out = normalizeFilesSettings({ roots: ['/a', ' /a ', '', '   ', 42, null, '/b', '/a'] })
+    expect(out.roots).toEqual(['/a', '/b'])
+  })
+
+  it('roots:超过上限就截断(不让设置文件无限膨胀)', () => {
+    const many = Array.from({ length: MAX_ROOTS + 10 }, (_, i) => `/d${i}`)
+    expect(normalizeFilesSettings({ roots: many }).roots).toHaveLength(MAX_ROOTS)
+  })
+})
+
 describe('设置文件(真磁盘)', () => {
   let base = ''
   beforeEach(() => {
@@ -207,7 +228,6 @@ describe('设置文件(真磁盘)', () => {
     writeSettings('{ not json')
     const raw = readFilesSettingsRaw()
     expect(raw.roots).toEqual([])
-    expect(raw.allowPermanentDelete).toBe(false)
     expect(resolveFileRoots()).toEqual([env.downloads])
   })
 

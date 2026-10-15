@@ -20,8 +20,8 @@ import { basename, isAbsolute, join } from 'node:path'
 import { z } from 'zod'
 import type { PluginContext, PluginMain, PluginStorage } from '../../main/plugins/types'
 import { errorContent, textContent } from '../../main/plugins/mcpResult'
-// 落盘位置必须过「文件管理」插件那份白名单(与 browser_fs_* 同一套策略):
-// 核心的 fileRoots 是白名单的唯一来源,每次现读 files-settings.json。
+// 落盘位置必须过核心的路径白名单(`main/plugins/fileRoots.ts`)—— 它也是白名单的唯一来源,
+// 每次现读 `<userData>/files-settings.json`,不缓存。
 import { checkFilePath } from '../../main/plugins/fileRoots'
 import {
   DEFAULT_DOWNLOAD_SETTINGS,

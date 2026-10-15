@@ -70,12 +70,10 @@ src/
       mcpHttpHost.ts             McpHttpHost:HTTP 服务的 owner/幂等/串行化
       mcpResult.ts               textContent / errorContent / imageContent(统一 isError 判定)
       exportFile.ts              导出到 bow 下载目录(目录解析与下载插件同源;书签 / 密码共用)
-      fileRoots.ts               本地文件访问策略(白名单 + realpath + deny 名单);文件管理插件的**每个**入参路径
-                                  与下载插件的 saveDir 都过它(白名单的唯一来源:每次现读 files-settings.json,不缓存不写)
+      fileRoots.ts               本地文件访问策略(白名单 + realpath + deny 名单);下载插件的 saveDir 过它
+                                  (白名单的唯一来源:每次现读 files-settings.json,不缓存不写;写入方已随文件管理插件删除,现只读)
       tabTarget.ts               「tabId 指哪个标签 / 哪个窗口」的唯一实现(MCP 专属窗口 / 拒内部页 / 没标签就建 about:blank);
-                                  核心 MCP 工具与插件 pages.uploadFiles 共用 —— 两处各写一份必漂移
-      pageUpload.ts              「把本地文件塞进网页 <input type=file>」的 CDP 实现(DOM.setFileInputFiles);
-                                  核心出窄能力,文件管理插件只做决策(插件拿不到 webContents,见 §13 第 36 条)
+                                  核心 MCP 工具在用,将来给插件开页面类能力也必须复用这里 —— 两处各写一份必漂移
       pickJsonFile.ts            弹系统文件选择框并读回 UTF-8 文本(书签 / 密码的导入共用)
       fileOpeners.ts             FileOpenerHost:本地文件认领注册表(启动参数里的 file:// 目标先问一圈插件,
                                   认领了就不开浏览器标签)。纯逻辑;编辑器插件是唯一使用者
@@ -404,8 +402,6 @@ interface PluginUiContribution {
 | `content.inject` | `(spec) => void` | 移除规则并 `removeInsertedCSS` 所有已注入 key |
 | `content.refresh` | `(tabId?) => void` | 只重跑 CSS(不重跑 JS),用于规则变更后的即时反馈 |
 | `pages.activeTabId/focus/execute` | `execute(tabId, code, {timeoutMs=10000})` | 不回收(内核持有) |
-| `pages.fileChooser` | `arm(tabId, {onOpened, onLost}) => Promise<ArmResult>` / `disarm(tabId)` / `armed(tabId)` / `answer(tabId, {backendNodeId, files})` | 不回收(内核持有)。**接管网站的原生文件选择框**:`Page.setInterceptFileChooserDialog {enabled,cancel}` 抑制系统对话框,`Page.fileChooserOpened` 经 `onOpened` 送回插件(插件再决定弹自己的面板还是直接塞文件)。⚠️ 需要**一直**挂着该标签的调试器 ⇒ 该标签**开 DevTools 会终止接管**(`onLost`,不自动重挂);`disarm` 只在「本会话是我们挂的」时 detach。唯一调用方是文件管理插件 |
-| `pages.uploadFiles` | `({tabId?, files, selector?}) => Promise<PageUploadResult>` | 不回收(内核持有)。把本地文件塞进页面里的 `<input type=file>`(CDP `DOM.setFileInputFiles`);**插件拿不到 `webContents`**,所以这条只能由核心出能力。`tabId` 与核心页面类工具**同一套解析规则**(`tabTarget.ts`,所以省略时绝不动用户窗口);不弹对话框、不需要用户手势;调试器被 DevTools 占着时明确失败(`debuggerBusy: true`)。无 `selector` 时**只有页面上恰好一个** file input 才生效,多个会返回 `candidates` 让调用方自己挑 —— 唯一调用方是文件管理插件的 `browser_upload` |
 | `pages.openDevToolsTab` | `(frontendUrl, title?, activate?, windowId?) => number` | 不回收(内核持有)。把 CDP 前端接进标签页(设备检查插件用);`windowId` 缺省=聚焦窗口。参数是**已拼好的前端地址**:可能是 `@shared/devtools` 拼的 bow 自带那份,也可能是设备指定的 `https://…`(见 `device-inspect/shared.effectiveStrategy`);标签只允许 `devtools://` 或与入口同源的导航 |
 | `tabs.list/getActive` | `() => TabInfo[] / TabInfo \| null` | 只读;`list` 数据源是 `WindowManager.allTabs()`(**跨窗口**,每条带 `windowId`),`getActive` 是**聚焦窗口**的 `TabManager` |
 | `tabs.openInternal` | `(page: InternalPageId, { windowId? }) => number \| null` | 不回收(内核持有)。**插件唯一的建标签入口**,且只允许内部页(settings/terminal/logseq)—— 插件仍不能导航用户的浏览标签、不能开任意 URL。宿主未注入(窗口还没建好)或宿主抛错时**返回 null 而不是抛**。与 `pages.openDevToolsTab` 同一条分工:核心建资源,插件只做决策。唯一调用方是编辑器插件 |
@@ -564,7 +560,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `passwords` | — | ui, shortcut | `status` `setup` `unlock` `lock` `list` `getEntry` `save` `remove` `copy` `readPageFields` `fillEntry` `beginFill` `changeMaster` `getSettings` `setSettings` `wipe` `exportBackup` `importBackup` | —(刻意不贡献 MCP 工具:与 AI 隔离) | — | —(按需 `pages.execute` 注入探测 / 下拉 / 填入脚本,不注入常驻脚本) | — | `Ctrl/Cmd+Shift+P` | emit `state-changed` `settings-changed` `open-panel` | `passwords.json`(AES-256-GCM 密文)+ `passwords-settings.json`(自动锁定 / 剪贴板 / 子域匹配);`exportBackup` 只写**密文副本**到 bow 下载目录;`importBackup` 校验形状后**整库替换**(已初始化时先把当前库导出一份再覆盖,导入后强制锁定) |
 | `pomo` | — | ui, mcp, shortcut | `getState` `getSettings` `setSettings` `start` `pause` `skip` `reset` `toggle` | `browser_pomo_status` `browser_pomo_start` `browser_pomo_pause` `browser_pomo_skip` | — | — | — | `Ctrl/Cmd+Shift+O` | emit `state` `phase-end` | `pomo.json`(设置 + 运行状态:阶段 / `endsAt` / 本轮计数 / 今日完成数;**只在状态转换时写盘**) |
 | `editor` | — | ui | `getSettings` `setSettings` `status` `register` `unregister` `openSystemSettings` `test` `pickFile` | — | — | — | — | — | 认领本地文件(`ctx.fileOpeners`);emit `terminal:run`(让终端插件在指定标签里跑 `wsl.exe -e nvim <file>`) | `editor.json`(命令模板 / 路径写法 / 扩展名白名单 + `lastRegistered`)。Windows 注册:ProgID `bowEditor`(open/edit 都指向 `--edit "%1"`)、`OpenWithProgids`、`SystemFileAssociations\.<ext>\shell\bow-edit`、`Capabilities\FileAssociations`(与 `default-browser` 共用,值名不重叠);**不写** `Classes\.<ext>` 默认值 |
-| `files` | — | ui, mcp | `getSettings` `setSettings` `pickRoots` `removeRoot` `openRoot` + 面板面:`list` `readText` `mkdir` `rename` `move` `copy` `remove` `pickDirectory` `openPath` `showInFolder` + 接管面:`chooserStatus` `answerChooser` `cancelChooser` `armTab` `disarmTab` | `browser_fs_roots` `browser_fs_list` `browser_fs_info` `browser_fs_read` `browser_fs_write` `browser_fs_mkdir` `browser_fs_move` `browser_fs_copy` `browser_fs_delete` `browser_upload` | — | — | — | — | on `tab:navigated`(页面有 file input 才挂接管) `tab:closed`;emit `changed` `open-panel` `chooser-resolved` | `files-settings.json`(工作目录白名单 + 允许永久删除 + 接管文件选择);工具与面板**共用同一套操作层与 guard**;决策层在 `plugins/files/chooser.ts`,CDP 在核心 |
+
 
 **渲染层侧**(`registry.ts` / 各插件 `ui.ts`)
 
@@ -582,7 +578,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `passwords` | — | `PasswordsButton` | `plugin:passwords:panel`(full,`PasswordsPanel`) | `PasswordsSettings` |
 | `pomo` | — | `PomoButton`(显示倒计时) | `plugin:pomo:panel`(below-chrome,`PomoPanel`;锚定在按钮右下方) | `PomoSettings` |
 | `editor` | — | `EditorButton`(用编辑器打开…) | —(编辑器是终端页里的 nvim,本插件没有自己的页面) | `EditorSettings`(命令模板 / 路径写法 / 扩展名白名单 / Windows 注册) |
-| `files` | — | `FilesButton` | `plugin:files:panel`(full,`FilesPanel`) | `FilesSettings`(工作目录白名单 + 允许永久删除) |
+
 
 ⚠️ 终端插件的 `ui/TerminalView.vue` 与笔记插件的 `ui/JournalView.vue` **不在**注册表里 ——
 它们分别是 `bow://terminal` / `bow://logseq` 页面的主体,由 `renderer/src/<entry>/main.ts` 直接引用。
@@ -674,18 +670,15 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 `device_scroll` `device_console` `device_eval` `device_screenshot` `device_connect`(设备检查)、
 `browser_list_downloads` `browser_download`(下载)、
 `browser_pomo_status` `browser_pomo_start` `browser_pomo_pause` `browser_pomo_skip`(番茄钟)、
-`browser_logseq_graph`(笔记的关系图谱,只读)、
-`browser_fs_roots` `browser_fs_list` `browser_fs_info` `browser_fs_read` `browser_fs_write` `browser_fs_mkdir`
-`browser_fs_move` `browser_fs_copy` `browser_fs_delete` `browser_upload`(文件管理:白名单内的本地文件操作 + 上传到网页)
-—— 共 30 个,合计 **50** 个工具。
+`browser_logseq_graph`(笔记的关系图谱,只读)
+—— 共 20 个,合计 **40** 个工具。
 
 静态计数来源:`CORE_MCP_TOOL_NAMES`(20)+ `ctx.mcp.tool(...)` 的调用点
 (`bookmarks/main.ts:137,165`、
 `device-inspect/main.ts:451,493,510,531,554,574,612,642,666,698,731`、
 `downloads/main.ts:500,529`、
 `pomo/main.ts:229,238,249,260`、
-`logseq/main.ts:703`、
-`files/main.ts:687,708,737,751,770,796,813,834,858,902`)。
+`logseq/main.ts:703`)。
 ⚠️ 实际工具面**随插件启停变化**:停用 device-inspect 就少 11 个,停用 downloads 就少 2 个。
 
 ⚠️ 插件工具的 schema **不做 strict 校验**(走 `kernel.mcp` 声明快照),未知参数会被静默丢弃。
@@ -978,7 +971,7 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `logseq.json` | 笔记插件的图目录 + 最近图 | `{version:1, graphPath:'', recentGraphs:[]}` | logseq(图里的笔记内容本身属于用户的 Logseq 图,不在这里) |
 | `downloads.json` | 下载记录(数组整体替换;`DownloadRecord[]`,读盘时过 `sanitizeRecords()` + `reconcileOnStart()`) | `[]` | downloads |
 | `downloads-settings.json` | `{askWhereToSave, downloadDir, maxRecords}` | `{askWhereToSave:true, downloadDir:'', maxRecords:500}`(`downloadDir` 为空 = `app.getPath('downloads')`) | downloads |
-| `files-settings.json` | `{version, roots, allowPermanentDelete, listLimit}` | `{version:1, roots:[], allowPermanentDelete:false, listLimit:200}`;**生效白名单 = `roots` ∪ 下载目录**(下载目录永远在里面,否则添了工作目录后 `browser_download` 指定保存到下载目录反而会被拒);读、写两侧都过 `sanitizeRoots()`:相对路径、非字符串、`userData` 一律丢掉 | files |
+| `files-settings.json` | `{version, roots}`(核心 `fileRoots.ts` 读;老文件里的 `allowPermanentDelete` / `listLimit` / `interceptFileChooser` 只读不认) | `{version:1, roots:[]}`;**生效白名单 = `roots` ∪ 下载目录**(下载目录永远在里面,否则添了工作目录后 `browser_download` 指定保存到下载目录反而会被拒);读盘后都过 `sanitizeRoots()`:相对路径、非字符串、`userData` 一律丢掉。⚠️ 原先的写入方(文件管理插件)已删除 ⇒ **没有设置 UI,加目录只能手改这个文件** | 核心(`fileRoots.ts`) |
 | `passwords.json` | 密码库密文(AES-256-GCM;盐 / KDF 参数 / iv / tag 为明文,**条目明文为零**) | `{version:1, kdf:null, verifier:null, data:null}`;加解密在 `passwords/vault.ts`(只用 node:crypto,`scrypt(N=2^15,r=8,p=1)` + 显式 `maxmem`),条目读出后过 `normalizeEntries()` | passwords |
 | `passwords-settings.json` | `{autoLockMinutes, clipboardClearSeconds, matchSubdomains}` | `{autoLockMinutes:5, clipboardClearSeconds:30, matchSubdomains:true}`;读写都过 `normalizeSettings()`(只接受设置页下拉里的合法值) | passwords |
 | `pomo.json` | `{settings, state}` | `settings` = `{focusMinutes:25, shortBreakMinutes:5, longBreakMinutes:15, roundsBeforeLongBreak:4, autoStartNext:false, notify:true, sound:true}`;`state` = `{phase, running, endsAt, remainingMs, cycleIndex, completedToday, completedDate}`。读写都过 `normalizeSettings()` / `normalizeState()`(夹紧 + 跨天归零 + `running` 无 `endsAt` 退化);**只在状态转换时写盘**,不逐秒写 | pomo |
@@ -1385,10 +1378,11 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 15. 核心工具 strict 校验,插件工具**不** strict —— 写工具时要意识到这个不对称。
 16. 改工具语义必须同步 `MCP_INSTRUCTIONS`(它才是 LLM 的行为契约)。
 17. 延迟回复/竞态问题优先用「观察到本次开始」的判据解决,不要用固定宽限期赌(300ms 曾真机赌输)。
-18. **插件要用 CDP 时,能力由核心出、插件只做决策**(`ctx.pages.uploadFiles` / `ctx.pages.fileChooser`):
+18. **插件要用 CDP 时,能力由核心出、插件只做决策**(历史上唯一的实现是 `ctx.pages.uploadFiles` / `ctx.pages.fileChooser`,
+    已随文件管理插件于 2026-10-15 删除;**思路留着,将来重建时照此**):
     插件拿不到 `webContents`(见第 36 条),而 `DOM.setFileInputFiles` / `Page.setInterceptFileChooserDialog`
     只能经 `wc.debugger` 发。**不要**为此把 wc 或通用 `sendCommand` 暴露给插件 —— 那等于把任意页面控制交出去。
-    两条已实测的事实(2026-10-09 真机验过):
+    两条已实测的事实(2026-10-09 真机验过,**仍然成立**):
     - `DOM.setFileInputFiles` 之后**浏览器自己会触发 `change` 与 `input`**,不要手动补 `dispatchEvent`
       (补了会双触发,站点可能上传两次);
     - `Page.setInterceptFileChooserDialog {enabled:true, cancel:true}` 确实**抑制原生框**并回
@@ -1488,8 +1482,9 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 36. **插件拿不到标签页的 `webContents`**:`tabId` 是 `TabManager` 自己的计数器(`ids.allocTabId()`),
     **不等于** `webContents.id`,而 `PluginContext` 也没有暴露 wc。所以「用某个标签页的页面上下文发起下载/请求」
     这件事只能走 `ctx.pages.execute`(主世界执行 JS),不能自己拿 wc 调 `webContents.downloadURL`。
-    **需要 CDP 的场景由核心出窄能力、插件只做决策**:目前唯一一条是 `ctx.pages.uploadFiles`
-    (`main/pageUpload.ts` —— `DOM.setFileInputFiles` 只能经 `wc.debugger` 发)。不要把 wc 或通用 `sendCommand`
+    **需要 CDP 的场景由核心出窄能力、插件只做决策**:历史上唯一一条是 `ctx.pages.uploadFiles`
+    (`main/pageUpload.ts`,已随文件管理插件于 2026-10-15 删除;将来要重建就照上面第 18 条走)。
+    不要把 wc 或通用 `sendCommand`
     暴露给插件:那等于把「任意页面控制」交给插件层,而这条限制是刻意的。
 37. **测这类功能必须用隔离的 `--user-data-dir`**:只设 `BOW_USER_DATA_DIR` 不会隔离单实例锁
     (见 `src/main/ua.ts` 的 `hasExplicitUserData()` 只用于跳过旧路径钉定)。E2E 脚本都传

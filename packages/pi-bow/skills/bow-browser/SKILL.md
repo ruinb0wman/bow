@@ -8,7 +8,7 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 
 # bow 浏览器(MCP 服务器 `browser`)
 
-本地 Electron 多标签浏览器,50 个工具(20 核心 + 30 插件,随插件启停浮动);**你的每次操作用户都实时可见**,所以破坏性操作前先说明意图。
+本地 Electron 多标签浏览器,40 个工具(20 核心 + 20 插件,随插件启停浮动);**你的每次操作用户都实时可见**,所以破坏性操作前先说明意图。
 默认操作目标是 bow 为你自动创建并复用的 **agent 专属窗口**(标题带「· Agent」),**不会动用户正在浏览的窗口**。
 
 ## 第一步:确认工具怎么调
@@ -36,8 +36,6 @@ pi 内置 MCP 把每个工具注册为 `mcp__<服务器>__<工具>` —— 本�
 | 等异步渲染 | `browser_wait` | 等元素出现,而不是靠猜时长 |
 | 标签管理 | `browser_list_tabs` / `browser_new_tab` / `browser_switch_tab` | |
 | 下载文件 / 看下载进度 | `browser_download` / `browser_list_downloads` | 下载不需要页面上的点击;AI 发起的下载**不弹保存对话框**,直接落到下载目录(可用 `saveDir` 指定),同名文件自动加 `(1)` |
-| 读写**本地磁盘**上的文件(列目录 / 读 / 写 / 移动 / 复制 / 删除) | `browser_fs_roots`(先看白名单!)→ `browser_fs_list` / `browser_fs_read` / `browser_fs_write` / `browser_fs_mkdir` / `browser_fs_move` / `browser_fs_copy` / `browser_fs_delete` | 这组操作的是**真实磁盘**,不是网页。只能动 `browser_fs_roots` 列出的工作目录(越界会被拒,符号链接按真实路径判);删除默认进**系统回收站**,写文件**不会静默覆盖**(要 `overwrite:true`) |
-| 把本地文件**上传到网页**(点上传按钮那类) | `browser_upload {path, selector?}` **然后** `browser_click` 点提交 | 走 CDP 直接设置文件框,不弹文件对话框。推荐先设置再点提交;若上传框点了按钮才出现,先 `browser_click` 再不带 `selector` 调它(此时走 bow 的「接管文件选择」,返回 `via: "chooser"`;需要用户开着这个开关)。输入框在 iframe 里时它找不到 |
 | 番茄钟(专注 / 休息计时) | `browser_pomo_status` / `browser_pomo_start` / `browser_pomo_pause` / `browser_pomo_skip` | 计时在 bow 主进程里跑,与页面无关;阶段结束会弹系统通知、响提示音,并在工具栏按钮上闪烁 |
 | 看笔记的关系图谱 / 某页的邻居 | `browser_logseq_graph` | 只读:节点 = 页面/日志,边 = `[[双链]]`/`#标签`;不给 `node` 是全图统计 + 连接最多的页,给了 `node` 就返回它 1~3 跳邻域(`limit` 默认 30) |
 | 调试**手机**上的 WebView / Chrome | `device_list_targets` → `device_snapshot` → `device_tap` / `device_type` | 这些作用于 adb 连着的真机页面,不是 bow 自己的标签页;用 `targetKey` 寻址 |

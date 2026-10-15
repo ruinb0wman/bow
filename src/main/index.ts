@@ -15,13 +15,6 @@ import { onTabActivated as onFindTabActivated, onTabClosed as onFindTabClosed, o
 import { loadRendererEntry } from './rendererEntry'
 import { startMcpServer, CORE_MCP_TOOL_NAMES } from './mcp'
 import { createTabTargets } from './tabTarget'
-import {
-  answerFileChooser,
-  armFileChooser,
-  disarmFileChooser,
-  isFileChooserArmed,
-  uploadFilesToPage
-} from './pageUpload'
 import { applyBrowserIdentity } from './ua'
 import { acquireSingletonLock } from './singleInstance'
 import { collectOpenTargets, defaultOpenTargetDeps } from './openArgs'
@@ -353,35 +346,6 @@ app.whenReady().then(async () => {
       const ctx = (windowId != null ? windows!.byId(windowId) : null) ?? windows!.focused()
       if (!ctx) throw new Error('没有可用窗口')
       return ctx.tabs.createInspectorTab(url, title, activate ?? true).id
-    },
-    // 上传文件(文件管理插件用):标签解析与核心页面类工具**同一套**(tabTarget.ts),
-    // 所以省略 tabId 时绝不会落到用户正在看的窗口。
-    uploadFiles: async (opts) => {
-      const hit = createTabTargets(() => windows!).target(opts.tabId)
-      if (!hit.view || !hit.ctx) return { ok: false, error: hit.fail ?? '没有可用的标签页' }
-      return uploadFilesToPage(hit.view.view.webContents, { files: opts.files, selector: opts.selector })
-    },
-    // 接管文件选择框(文件管理插件用)。tabId **必填**:接管的状态要按标签页维护,
-    // 而「哪个标签」在插件那边本来就是明确的(它是在 tab:navigated 里决定挂的)。
-    fileChooser: {
-      arm: async (tabId, hooks) => {
-        const hit = createTabTargets(() => windows!).target(tabId)
-        if (!hit.view) return { ok: false, error: hit.fail ?? `标签 ${tabId} 不可用` }
-        return armFileChooser(hit.view.view.webContents, hooks)
-      },
-      disarm: (tabId) => {
-        const wc = createTabTargets(() => windows!).wcOf(tabId)
-        if (wc && !wc.isDestroyed()) disarmFileChooser(wc)
-      },
-      armed: (tabId) => {
-        const wc = createTabTargets(() => windows!).wcOf(tabId)
-        return !!wc && !wc.isDestroyed() && isFileChooserArmed(wc)
-      },
-      answer: async (tabId, opts) => {
-        const hit = createTabTargets(() => windows!).target(tabId)
-        if (!hit.view) return { ok: false, error: hit.fail ?? `标签 ${tabId} 不可用` }
-        return answerFileChooser(hit.view.view.webContents, opts)
-      }
     }
   })
   kernel.setBroadcaster((channel, payload) => windows!.broadcast(channel, payload))

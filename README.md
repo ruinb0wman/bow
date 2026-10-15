@@ -1,6 +1,6 @@
 # MCP Browser — AI 可操纵的简易 Electron 浏览器
 
-多标签页浏览器:地址栏搜索(输历史/书签实时模糊建议)、浏览历史、书签(文件夹分组、可在设置页导入/导出 JSON)、下载管理(工具栏面板:记录 / 暂停恢复 / 重新下载 / 取消)、页内查找(`Ctrl+F`:高亮 + `n/m` 计数 + 上下一个)、设置页(内部标签页 `bow://settings`)、终端(内部标签页 `bow://terminal`,连本机 shell,并会把终端里 pi 的执行 / 等待确认 / 完成状态显示成**标签角标**与**系统通知**)、笔记(内部标签页 `bow://logseq`,直接读写你已有的 Logseq 文件图,含关系图谱)、密码(主密码解锁的本地密码库与登录页填充,可导入/导出加密备份)、番茄钟(工具栏倒计时按钮 + 下拉面板,专注 / 休息计时,阶段结束弹系统通知、响提示音并让按钮闪烁)、文件管理(工具栏「文件」面板:在白名单内浏览 / 重命名 / 移动 / 复制 / 删除,删除默认进系统回收站;同一套能力也给 AI 用);内置 **MCP 服务器(stdio)**,AI 编码工具(pi / Claude Code / Cursor 等)可以实时操纵这个浏览器:导航、搜索、点击、输入、滚动、切换标签、截图、读取页面快照、下载文件。
+多标签页浏览器:地址栏搜索(输历史/书签实时模糊建议)、浏览历史、书签(文件夹分组、可在设置页导入/导出 JSON)、下载管理(工具栏面板:记录 / 暂停恢复 / 重新下载 / 取消)、页内查找(`Ctrl+F`:高亮 + `n/m` 计数 + 上下一个)、设置页(内部标签页 `bow://settings`)、终端(内部标签页 `bow://terminal`,连本机 shell,并会把终端里 pi 的执行 / 等待确认 / 完成状态显示成**标签角标**与**系统通知**)、笔记(内部标签页 `bow://logseq`,直接读写你已有的 Logseq 文件图,含关系图谱)、密码(主密码解锁的本地密码库与登录页填充,可导入/导出加密备份)、番茄钟(工具栏倒计时按钮 + 下拉面板,专注 / 休息计时,阶段结束弹系统通知、响提示音并让按钮闪烁);内置 **MCP 服务器(stdio)**,AI 编码工具(pi / Claude Code / Cursor 等)可以实时操纵这个浏览器:导航、搜索、点击、输入、滚动、切换标签、截图、读取页面快照、下载文件。
 
 ## 技术栈
 
@@ -425,17 +425,7 @@ npm run test:mcp:http
 | `device_screenshot {targetKey?, fullPage?}` | 截取**手机页面**并作为 PNG 返回(由「设备检查」插件提供) |
 | `device_connect {address}` | 连接已开启无线调试的设备(`adb connect <address>`)(由「设备检查」插件提供) |
 | `browser_list_downloads {id?, state?, limit?}` | 下载记录(进行中的在前),含状态、进度百分比、速度、保存路径与文件是否还在磁盘上(由「下载」插件提供) |
-| `browser_download {url, saveDir?, filename?, wait?, timeoutMs?}` | 从 URL 下载文件(不需要页面上的点击,也不弹保存对话框);默认保存到 bow 的下载目录并自动重名,**`saveDir` 必须落在 `browser_fs_roots` 的工作目录里**,`wait: true` 等到下载结束才返回(由「下载」插件提供) |
-| `browser_fs_roots` | 列出 AI 被允许读写的本地工作目录(白名单);**动文件之前先调它** —— 白名单外的路径一律被拒(由「文件管理」插件提供) |
-| `browser_fs_list {path?, glob?, recursive?, limit?, showHidden?}` | 列目录(目录在前);`glob` 里 `*` 不跨段、`**` 跨段;`recursive: true` 才递归(最多 8 层,不跟随符号链接)(由「文件管理」插件提供) |
-| `browser_fs_info {path}` | 路径是否存在 / 类型 / 大小 / 修改时间;路径不存在也算成功(`exists: false`)(由「文件管理」插件提供) |
-| `browser_fs_read {path, maxBytes?}` | 读文本文件(默认最多 64 KiB,超长截断并标 `truncated`);含 NUL 字节的二进制文件会被拒(由「文件管理」插件提供) |
-| `browser_fs_write {path, content, overwrite?, createDirs?}` | 原子写;**目标已存在必须显式 `overwrite: true`**,否则拒绝,不会静默覆盖(由「文件管理」插件提供) |
-| `browser_fs_mkdir {path, recursive?}` | 新建目录(默认递归;已存在不算失败)(由「文件管理」插件提供) |
-| `browser_fs_move {from, to, overwrite?}` | 移动 / 重命名;`to` 是已存在的目录时会被放进去(以返回体的 `path` 为准);工作目录本身不许被移走(由「文件管理」插件提供) |
-| `browser_fs_copy {from, to, overwrite?, recursive?}` | 复制文件或目录(目录必须 `recursive: true`)(由「文件管理」插件提供) |
-| `browser_fs_delete {path, recursive?, permanent?}` | **默认移入系统回收站(可恢复)**;`permanent: true` 需在设置页打开「允许永久删除」;删目录要 `recursive: true`(由「文件管理」插件提供) |
-| `browser_upload {path?, paths?, selector?, tabId?}` | 把一个或多个**本地文件**塞进**网页**的 `<input type=file>`(CDP 直接设置,不弹任何文件对话框)。推荐:先本工具(传 `selector`),再 `browser_click` 点提交;省略 `selector` 时只有页面上恰好一个文件框才生效,多个会返回候选清单(由「文件管理」插件提供) |
+| `browser_download {url, saveDir?, filename?, wait?, timeoutMs?}` | 从 URL 下载文件(不需要页面上的点击,也不弹保存对话框);默认保存到 bow 的下载目录并自动重名,**`saveDir` 必须落在 bow 的下载目录或 `files-settings.json` 里配的白名单工作目录内**,`wait: true` 等到下载结束才返回(由「下载」插件提供) |
 | `browser_pomo_status` | 查看番茄钟状态:当前阶段(专注 / 短休息 / 长休息)、是否在跑、剩余时间、本轮第几个、今日完成数(由「番茄钟」插件提供) |
 | `browser_pomo_start` / `browser_pomo_pause` | 开始 / 继续、暂停番茄钟的当前阶段(由「番茄钟」插件提供) |
 | `browser_pomo_skip` | 跳过当前阶段进入下一阶段(跳过不增加今日完成数)(由「番茄钟」插件提供) |
@@ -754,7 +744,7 @@ npm run test:mcp:http
 - 笔记(「笔记」插件):`<userData>/logseq.json` —— 存**图目录 / 最近图 / 正文字号 / 每个图的收藏**;笔记内容本身就在你的 Logseq 图里,不另存一份
 - 下载(「下载」插件):`<userData>/downloads.json` —— 下载记录(文件名 / 网址 / 保存路径 / 状态 / 进度 / 是否可续传);设置(保存目录 / 是否询问 / 保留条数)在同目录的 `downloads-settings.json`。**删除记录不会删文件**
 - 番茄钟(「番茄钟」插件):`<userData>/pomo.json` —— 设置(各阶段时长 / 长休轮数 / 自动开始 / 通知与提示音)与运行状态(阶段 / `running` / `endsAt` / 本轮计数 / 今日完成数);**只在状态转换时写入,不逐秒写盘**
-- 文件管理(「文件管理」插件):`<userData>/files-settings.json` —— AI 可读写的**工作目录白名单**与「允许永久删除」开关;**生效白名单 = 这里配的 ∪ bow 的下载目录**。它是文件路径策略的**唯一来源**,每次现读不缓存;`browser_fs_*` 与 `browser_download` 的 `saveDir` 都过它
+- 工作目录白名单(核心):`<userData>/files-settings.json` —— 只认 `{version, roots}`;`browser_download` 的 `saveDir` 过它,路径策略在 `main/plugins/fileRoots.ts`(**唯一来源**,每次现读不缓存)。**生效白名单 = `roots` ∪ bow 的下载目录**,而且**已经没有设置 UI 了**(原先的「文件管理」插件已删除):想加目录就手改这个文件的 `roots` 数组
 - 插件导入 / 导出的文件(书签 JSON、密码库加密备份 / 导入前的自动备份):**bow 下载目录**(= 下载插件设置里的保存目录,空则系统下载目录);同名自动加 ` (1)`,**不进下载记录列表**
 - 插件启停状态(内核):`<userData>/plugins.json`
 - 核心设置(默认搜索引擎/主页):`<userData>/settings.json`
@@ -782,7 +772,7 @@ npm run test:mcp:http
 
 ## 插件体系
 
-书签、历史、CORS 放行、MCP HTTP 服务、默认浏览器、设备检查、终端、笔记、下载、密码、番茄钟、文件管理、编辑器都是内置插件。插件是**仓库内编译期模块**(无动态代码执行),
+书签、历史、CORS 放行、MCP HTTP 服务、默认浏览器、设备检查、终端、笔记、下载、密码、番茄钟、编辑器都是内置插件。插件是**仓库内编译期模块**(无动态代码执行),
 可在「设置页 → 插件管理」里运行时启停(无需重启),状态持久化到 `plugins.json`;停用时内核自动回收其 IPC、
 建议源、MCP 工具、网络钩子与已注入 CSS。
 
@@ -814,7 +804,7 @@ MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生
 | 地址栏建议源 | 贡献模糊匹配建议(同 URL 冲突按优先级决胜) | 历史(10)、书签(20) |
 | 网络钩子 | `onBeforeRequest` / `onBeforeSendHeaders` / `onHeadersReceived` 链式拦截与改写 | CORS 放行(暂时无插件使用 `onBeforeRequest`) |
 | 内容注入 | 按 URL 匹配在 `dom-ready` / `did-finish-load` 注入 CSS/JS(仅标签页,CSS 可按页面动态生成与刷新) | 目前无插件使用(钩子保留) |
-| MCP 工具 | 把能力暴露给 AI 工具(随插件启停动态增减) | `browser_add_bookmark`、`device_list_targets`、`browser_fs_*` |
+| MCP 工具 | 把能力暴露给 AI 工具(随插件启停动态增减) | `browser_add_bookmark`、`device_list_targets`、`browser_download` |
 | 快捷键 | 注册主进程全局热键(任意焦点下生效,含页面内) | 密码(`Ctrl+Shift+P`)、番茄钟(`Ctrl+Shift+O`) |
 
 > opencode 的 `x-opencode-session` 会话头由**前端应用自行发送**(OpenCode Go/Zen 的官方要求),
@@ -834,39 +824,6 @@ MCP HTTP 服务插件演示了「后台服务」型插件:插件 activate 发生
   面板也会标注「服务器不支持续传,已从头开始」 —— 这一条不预判,只在真发生时出现;
 - **重启浏览器后,上次没下完的记录会显示「已中断」**,只能「重新下载」(跨会话续传要记录更多握手信息,
   这一版刻意不做);删除记录**不会**删磁盘上的文件。
-
-### 文件管理插件
-
-工具栏的「文件」按钮打开一个面板:在白名单内逐层浏览(roots 下拉 + 面包屑 + 上一级 + 显示隐藏项),
-选中后可以新建目录 / 重命名 / 移动到… / 复制到… / 删除 / 用系统程序打开 / 在文件夹里显示;
-点文本文件名会在右侧预览(只读,最多 64 KiB)。
-
-**接管网站的文件选择框**(默认开,可在「设置 → 文件管理」关掉):网页的上传按钮被点击后**不再弹系统文件框**,
-而是打开这个面板进入「选文件」模式 —— 勾选文件、点「上传选中的」,文件就交给网页了(与原生框的效果一致)。
-代价是需要在**含文件输入框的标签页**上一直挂着调试器,所以那些标签页**开着 DevTools 会让接管失效**
-(以 DevTools 为准,不抢);SPA 那种「点了按钮才创建输入框」的页面探测不到,
-可以在面板右上角手动「接管文件选择」。
-
-给 AI 的工具面里除了 `browser_fs_*` 还有一个 **`browser_upload`**:把白名单内的本地文件塞进**网页**的
-`<input type=file>`(CDP `DOM.setFileInputFiles`),不弹任何文件对话框、也不需要用户手势。推荐流程是
-「先 `browser_upload` 设置文件 → 再 `browser_click` 点提交按钮」;省略 `selector` 时只有在页面恰好一个文件框
-时才生效,多个会返回候选清单让你/它自己挑。⚠️ 已知限制:输入框在 **iframe** 里时 `selector` 找不到它
-(当前按主文档查询)。
-
-同一个插件的 `browser_fs_*` 那 9 个工具给 AI 用**同一套语义与同一条白名单** ——
-面板里点删除与 AI 调 `browser_fs_delete` 走的是同一段代码(主进程里一份操作层,两个入口)。
-两个入口不同的只有一处:面板里删除**多一步点击确认**(AI 那条路刻意没有确认框,因为会把自动化卡住)。
-
-- **白名单** = 你在这里添加的工作目录 **∪ bow 的下载目录**(那一条标着「默认」、不可删)。
-  每个入参路径都会先 `resolve`,再对**最深的已存在祖先**做 `realpath`,然后才判定是否落在白名单内 ——
-  所以目录里一个指向外部的符号链接同样会被拒;bow 自己的数据目录(密码库 / 书签 / 插件设置)**永远不可操作**。
-- **删除**:默认走 `shell.trashItem`(系统回收站,**可恢复**);`permanent:true` 真删需要你在这里打开
-  「允许永久删除」。回收站失败时**不会**降级成永久删,而是把错误原样丢回给 AI。
-  ⚠️ Linux/WSL2 下能不能进回收站取决于**文件所在的挂载点**(`$HOME` 正常;`/tmp` 是 tmpfs,
-  gio 会拒绝,报 `Trashing on system internal mounts is not supported`);Windows 上是回收站。
-- **写文件**:目标已存在且没显式 `overwrite:true` 就直接拒,不会静默覆盖;写盘是原子的(`.tmp` → rename,
-  失败退化为就地写)。面板里不会静默覆盖任何文件(重命名撞名会被拒)。
-- `browser_download` 的 `saveDir` 走**同一条白名单**(不接的话 AI 可以拿它凭空往任意目录写文件)。
 
 ### 密码插件
 
