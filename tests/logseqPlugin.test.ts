@@ -83,7 +83,7 @@ function harness(): Harness {
     },
     net: { onBeforeRequest: () => {}, onBeforeSendHeaders: () => {}, onHeadersReceived: () => {} },
     content: { inject: () => {}, refresh: () => {} },
-    pages: { activeTabId: () => null, focus: () => {}, execute: async () => ({}), openDevToolsTab: () => 0 },
+    pages: { activeTabId: () => null, focus: () => {}, activate: () => false, execute: async () => ({}), openDevToolsTab: () => 0 },
     tabs: { list: () => [], getActive: () => null },
     shortcuts: { register: () => {} }
   }

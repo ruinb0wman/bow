@@ -2,10 +2,12 @@
  * 终端插件纯逻辑(同构:无 electron / DOM / node 依赖,可单测)。
  *
  * 分工:
- * - 本文件:设置模型与规范化、平台预设 shell、spawn 参数与环境、回放缓冲、渲染参数;
+ * - 本文件:设置模型与规范化、平台预设 shell、spawn 参数与环境、回放缓冲、会话台账投影、渲染参数;
  * - `main.ts`:node-pty 会话表 + IPC(唯一 spawn 的地方);
  * - `ui/*.vue`:xterm 与设置页。
  */
+
+import type { AgentState } from '@shared/agentState'
 
 // ---------- 数据模型 ----------
 
@@ -324,6 +326,81 @@ export function replayText(buffer: ReplayBuffer): string {
   return buffer.chunks.join('')
 }
 
+// ---------- 会话台账(对外投影) ----------
+
+/**
+ * 一个会话的对外投影:`listSessions` 的返回值、`sessions-changed` 广播的负载。
+ *
+ * 为什么不让调用方直接看 `Session`:那是主进程内部结构(pty 句柄、解析器、回放缓冲、合批队列),
+ * 而面板 / 远程页 / MCP 工具要的只是「能渲染出来的最小集合」。
+ *
+ * `id` 现在**就是 tabId**(会话与标签 1:1,见 plans/2026-10-16-herder-remote 的 D1);
+ * 将来若要解耦成「服务端持有的会话」,改这一处投影即可,三个调用方都不必动。
+ */
+export interface SessionInfo {
+  id: number
+  /** 标签标题的来源:profileName,或 `terminal:run` 带来的命令名 */
+  title: string
+  profileId: string
+  /** 实际 spawn 的工作目录(`profile.cwd` 为空时是用户主目录) */
+  cwd: string
+  pid: number
+  cols: number
+  rows: number
+  createdAt: number
+  /** 最后一次收到 pty 输出的时刻;null = 还没产出过(刚 spawn 完) */
+  lastOutputAt: number | null
+  /** 代理状态(终端里的 pi 上报,见 @shared/agentState);null = 这个会话没跑代理 */
+  agent: SessionAgentState | null
+}
+
+/** 会话上的代理状态:协议字段 + 收到时刻(面板要展示「多久前」) */
+export interface SessionAgentState {
+  state: AgentState
+  done?: boolean
+  title?: string
+  text?: string
+  at: number
+}
+
+/** 台账变化的合并窗口(ms):输出很密,合并后再广播 */
+export const SESSIONS_THROTTLE_MS = 250
+
+/**
+ * `lastOutputAt` 在指纹里的分桶粒度(ms)。
+ *
+ * 不分桶的话,一个持续输出的会话(装依赖、跑测试)会让每次结算都算「变了」,
+ * 广播就退化成「输出多快就播多快」—— 节流窗口形同虚设。分桶后最坏 5s 一次,
+ * 而面板展示「最后活跃」到 5 秒精度完全够用。
+ */
+export const SESSION_ACTIVITY_BUCKET_MS = 5000
+
+/**
+ * 台账的指纹:只有它变了才值得广播(避免每个输出 chunk 都惊动渲染层)。
+ *
+ * 刻意**不包含** `createdAt`(不变,没有信息量)与精确的 `lastOutputAt`(见分桶说明)。
+ * `\u0001` / `\u0002` 是分隔符:正常标题 / 路径里不会出现,不会把两个不同台账拼成同一个指纹。
+ */
+export function sessionSignature(infos: readonly SessionInfo[]): string {
+  return infos
+    .map((info) =>
+      [
+        info.id,
+        info.title,
+        info.profileId,
+        info.cwd,
+        info.pid,
+        info.cols,
+        info.rows,
+        info.lastOutputAt === null ? '-' : Math.floor(info.lastOutputAt / SESSION_ACTIVITY_BUCKET_MS),
+        info.agent
+          ? [info.agent.state, info.agent.done ? 1 : 0, info.agent.title ?? '', info.agent.text ?? '', info.agent.at].join('~')
+          : '-'
+      ].join('\u0001')
+    )
+    .join('\u0002')
+}
+
 // ---------- 设置页辅助 ----------
 
 /**
@@ -511,7 +588,9 @@ export const TERMINAL_EVENTS = {
   data: 'data',
   exit: 'exit',
   settingsChanged: 'settings-changed',
-  sessionClosed: 'session-closed'
+  sessionClosed: 'session-closed',
+  /** 台账变化(负载 = 完整的 SessionInfo[]);见 SessionInfo 与 sessionSignature */
+  sessionsChanged: 'sessions-changed'
 } as const
 
 export interface TerminalDataMessage {

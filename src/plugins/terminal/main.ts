@@ -30,6 +30,8 @@ import { installPiBridge, piBridgeStatus, uninstallPiBridge } from './piBridge'
 import type { PiBridgeEnv, PiBridgeIo } from './piBridge'
 import {
   MAX_SESSIONS,
+  REPLAY_MAX_CHARS,
+  SESSIONS_THROTTLE_MS,
   TERMINAL_EVENTS,
   buildCommandSpawn,
   buildSpawnSpec,
@@ -42,10 +44,13 @@ import {
   pushReplay,
   renderSettingsOf,
   replayText,
+  sessionSignature,
   withBowTerminalEnv
 } from './shared'
 import type {
   ReplayBuffer,
+  SessionAgentState,
+  SessionInfo,
   TerminalAttachResult,
   TerminalCandidate,
   TerminalProfile,
@@ -54,6 +59,9 @@ import type {
 
 /** 输出合批窗口(ms):太小无意义,太大会让交互式程序显钝 */
 const FLUSH_MS = 8
+
+/** `readTail` 不传 chars 时的默认尾部长度(给 MCP 读日志用,不宜太大) */
+const READ_TAIL_DEFAULT_CHARS = 4000
 
 type PtyModule = typeof import('node-pty')
 
@@ -79,6 +87,13 @@ interface Session {
   agentKey: string | null
   /** 见过桥接信号(`1337;bow`)之后,pi 内建的 `9;4` 降级信号就不再采信 */
   sawBridge: boolean
+  /** 实际 spawn 的工作目录(台账要看;`profile.cwd` 为空时是用户主目录) */
+  cwd: string
+  createdAt: number
+  /** 最后一次收到 pty 输出的时刻;null = 还没产出过 */
+  lastOutputAt: number | null
+  /** 代理状态的结构化副本(台账要看);与 `agentKey` 的区别:后者是发往内核的去重键 */
+  agent: SessionAgentState | null
 }
 
 /**
@@ -143,6 +158,13 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
    * 用掉即删(spawn 失败保留 —— 刷新一下就能重试);标签关闭时一并清。
    */
   const pendingRuns = new Map<number, TerminalRunRequest>()
+  /** 台账的合并定时器;deactivate 时要清掉,否则插件停用后还会往已回收的 ctx 上广播 */
+  let sessionsTimer: NodeJS.Timeout | null = null
+  /** 上一次广播出去的台账指纹;`null` = 还没播过 */
+  //
+  // 用 null 而不是空串作哨兵值:空台账的指纹**就是**空串,拿它作哨兵会把「全部会话都关光了」
+  // 这一次广播吞掉(一个会话都没建过时尤其明显)。
+  let lastSessionsSignature: string | null = null
 
   // ---------- node-pty ----------
 
@@ -193,11 +215,23 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
     const key = [signal.state, signal.done ? 1 : 0, signal.agent ?? '', signal.title ?? '', signal.text ?? ''].join('|')
     if (key === session.agentKey) return
     session.agentKey = key
+    // 台账侧要的是结构化副本 + 收到时刻(面板展示「多久前」),与去重键各存一份
+    session.agent = {
+      state: signal.state,
+      ...(signal.done ? { done: true } : {}),
+      ...(signal.title ? { title: signal.title } : {}),
+      ...(signal.text ? { text: signal.text } : {}),
+      at: Date.now()
+    }
     context?.service.agent.report({ ...signal, tabId: session.tabId })
+    notifySessions()
   }
 
   /** 会话结束 / 标签关闭:清掉角标(`idle` 不带 `done` → 不弹「已完成」通知) */
   function clearAgent(session: Session): void {
+    if (session.agent === null) return
+    session.agent = null
+    notifySessions()
     if (session.agentKey === null) return
     session.agentKey = null
     context?.service.agent.report({ v: BOW_SIGNAL_VERSION, state: 'idle', tabId: session.tabId })
@@ -218,10 +252,101 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
     }
     context?.ipc.emit(TERMINAL_EVENTS.sessionClosed, { tabId, reason })
     context?.log('会话已结束', tabId, reason, session.profileName)
+    notifySessions()
   }
 
   function killAll(reason: string): void {
     for (const tabId of [...sessions.keys()]) killSession(tabId, reason)
+  }
+
+  // ---------- 会话台账(台账 = 三个调用方共用的那一份描述:本地面板 / 远程页 / MCP)----------
+
+  function describeSession(session: Session): SessionInfo {
+    return {
+      id: session.tabId,
+      title: session.profileName,
+      profileId: session.profileId,
+      cwd: session.cwd,
+      pid: session.proc.pid,
+      cols: session.cols,
+      rows: session.rows,
+      createdAt: session.createdAt,
+      lastOutputAt: session.lastOutputAt,
+      agent: session.agent
+    }
+  }
+
+  function listSessions(): SessionInfo[] {
+    // 按 id 排序:Map 的插入顺序会随「关一个再开一个」错位,面板每次刷新都跳来跳去很恼人
+    return [...sessions.values()].map(describeSession).sort((a, b) => a.id - b.id)
+  }
+
+  /** 结算一次:指纹相同就不发(输出密时这是唯一的去重点,见 sessionSignature) */
+  function emitSessions(): void {
+    const infos = listSessions()
+    const signature = sessionSignature(infos)
+    if (signature === lastSessionsSignature) return
+    lastSessionsSignature = signature
+    context?.ipc.emit(TERMINAL_EVENTS.sessionsChanged, infos)
+  }
+
+  /**
+   * 「台账可能变了」:只负责合并 `SESSIONS_THROTTLE_MS`(触发点很多:每个输出 chunk、每次状态上报)。
+   * 真正的去重在看指纹的 `emitSessions` —— 两层都要,缺一个就是要么刷屏要么迟顿。
+   */
+  function notifySessions(): void {
+    if (sessionsTimer) return
+    sessionsTimer = setTimeout(() => {
+      sessionsTimer = null
+      emitSessions()
+    }, SESSIONS_THROTTLE_MS)
+  }
+
+  /**
+   * 读一个会话的尾部输出(已剥 OSC 的纯文本)。给 MCP / 远程只读用 —— 不是终端网格,
+   * 是原始字节流的尾部:在 xterm 里重放能正确重绘,但不带滚动历史(见 `replayText`)。
+   */
+  function readTail(tabId: unknown, chars: unknown): { ok: boolean; text?: string; error?: string } {
+    const session = sessions.get(Number(tabId))
+    if (!session) return { ok: false, error: '会话不存在' }
+    const limit = toPositiveInt(chars, READ_TAIL_DEFAULT_CHARS, 1, REPLAY_MAX_CHARS)
+    const text = replayText(session.replay)
+    return { ok: true, text: text.length > limit ? text.slice(-limit) : text }
+  }
+
+  /**
+   * 「新建会话」= 开一个 `bow://terminal` 标签;带 `command` 时再发 `terminal:run` 让终端页去 spawn 它。
+   *
+   * ⚠️ 返回时 pty **还没** spawn(要等终端页 attach,那时才知道 cols/rows)——所以这里只能给出 tabId。
+   * 「会话真的起来了」的信号是 `sessions-changed` 里出现这个 id(计划里的 pending → created)。
+   *
+   * 不带 `command` 时忽略 `cwd`:v1 不为「默认 shell + 指定目录」扩展 `TerminalRunRequest`,
+   * 免得给另一条通路(编辑器插件)加没人用的字段。
+   */
+  function createSession(input: unknown): { ok: boolean; tabId?: number; error?: string } {
+    const raw = (input ?? {}) as { command?: unknown; args?: unknown; cwd?: unknown; name?: unknown }
+    const command = typeof raw.command === 'string' ? raw.command.trim() : ''
+    if (raw.args !== undefined && !Array.isArray(raw.args)) return { ok: false, error: 'args 必须是字符串数组' }
+    const args = Array.isArray(raw.args) ? raw.args.filter((a): a is string => typeof a === 'string') : []
+    if (raw.args !== undefined && args.length !== (raw.args as unknown[]).length) {
+      return { ok: false, error: 'args 必须是字符串数组' }
+    }
+    const tabId = context?.tabs.openInternal('terminal')
+    if (tabId == null) return { ok: false, error: '无法新建终端标签(没有可用窗口)' }
+    if (command) {
+      const cwd = typeof raw.cwd === 'string' && raw.cwd.trim() ? raw.cwd.trim() : ''
+      const name = typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : ''
+      // 时序不变式(见 @shared/terminalRun):openInternal → emit → 页面异步加载 → attach,
+      // 所以 emit 一定早于 attach,不需要握手。
+      context?.events.emit(TERMINAL_RUN_EVENT, {
+        tabId,
+        file: command,
+        args,
+        ...(cwd ? { cwd } : {}),
+        ...(name ? { name } : {})
+      } satisfies TerminalRunRequest)
+    }
+    return { ok: true, tabId }
   }
 
   /** 当前默认配置(找不到就退到第一条 —— 设置文件被手改坏也不会崩) */
@@ -248,6 +373,7 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
     const existing = sessions.get(tabId)
     if (existing) {
       // 页面刷新/重建:复用会话,顺手把尺寸对齐回去
+      const changed = existing.cols !== cols || existing.rows !== rows
       existing.cols = cols
       existing.rows = rows
       try {
@@ -255,6 +381,8 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
       } catch (e) {
         context?.log('复用会话时 resize 失败', tabId, String(e))
       }
+      // 分屏/换窗口尺寸后刷新页面:台账里的 cols/rows 要跟着变(指纹会自己去掉无变化的噪声)
+      if (changed) notifySessions()
       return { ...describe(existing), reused: true }
     }
 
@@ -300,10 +428,18 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
         flushTimer: null,
         parser: new OscSignalParser(),
         agentKey: null,
-        sawBridge: false
+        sawBridge: false,
+        cwd: spec.cwd,
+        createdAt: Date.now(),
+        lastOutputAt: null,
+        agent: null
       }
       sessions.set(tabId, session)
+      notifySessions()
       proc.onData((data) => {
+        // "活跃"看的是 pty 有没有产出 —— 带着 OSC 信号的 chunk 也算(代理在跑 = 肯定活跃)
+        session.lastOutputAt = Date.now()
+        notifySessions()
         // 剥掉代理写的控制序列:文本走原路(回放 + 合批下发),信号只用来算状态
         const parsed = session.parser.feed(data)
         if (parsed.text) {
@@ -326,6 +462,7 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
         clearAgent(session)
         context?.ipc.emit(TERMINAL_EVENTS.exit, { tabId, code: exitCode })
         context?.log('shell 退出', tabId, profileName, 'code=', exitCode)
+        notifySessions()
       })
       context?.log('会话已创建', tabId, profileName, spec.file, spec.args.join(' '), 'cwd=', spec.cwd)
       // 命令已交出去:用掉即删(spawn 失败会走到下面的 catch,pending 留着等下一次 attach 重试)
@@ -360,6 +497,7 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
     session.rows = nextRows
     try {
       session.proc.resize(nextCols, nextRows)
+      notifySessions()
       return true
     } catch (e) {
       context?.log('resize 失败', tabId, String(e))
@@ -443,6 +581,26 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
       ctx.ipc.handle('attach', (input: { tabId?: unknown; cols?: unknown; rows?: unknown }) => attach(input ?? {}))
       ctx.ipc.handle('write', (tabId: unknown, data: unknown) => write(tabId, data))
       ctx.ipc.handle('resize', (tabId: unknown, cols: unknown, rows: unknown) => resize(tabId, cols, rows))
+
+      // ---------- 会话台账面(本地面板 / 远程页 / MCP 工具共用）----------
+      ctx.ipc.handle('listSessions', () => listSessions())
+      ctx.ipc.handle('readTail', (tabId: unknown, chars: unknown) => readTail(tabId, chars))
+      ctx.ipc.handle('sendText', (tabId: unknown, data: unknown) => write(tabId, data))
+      ctx.ipc.handle('createSession', (input: unknown) => createSession(input))
+      // 「跳过去」用内核的 activate,而不是只为终端保留的 focus:后台标签 / 别的分屏窗格 /
+      // 最小化的窗口都要一并处理。它与点系统通知是同一条实现(`main/agentActivate.ts`),
+      // 所以行为一致 —— 再写一份焦点逻辑必然漂移。
+      ctx.ipc.handle('focusSession', (tabId: unknown) => {
+        const id = Number(tabId)
+        if (!sessions.has(id)) return false
+        return ctx.pages.activate(id)
+      })
+      ctx.ipc.handle('closeSession', (tabId: unknown) => {
+        const id = Number(tabId)
+        if (!sessions.has(id)) return false
+        killSession(id, 'closed-by-request')
+        return true
+      })
       // detach 只表示「页面走了」:会话与回放缓冲都留着,刷新回来还能接上
       ctx.ipc.handle('detach', (tabId: unknown) => {
         const session = sessions.get(Number(tabId))
@@ -480,6 +638,12 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
 
     deactivate(): void {
       pendingRuns.clear()
+      // 合并定时器必须清:否则插件停用后它还会拿着已回收的 ctx 广播一次台账
+      if (sessionsTimer) {
+        clearTimeout(sessionsTimer)
+        sessionsTimer = null
+      }
+      lastSessionsSignature = null
       if (onBeforeQuit) {
         app.removeListener('before-quit', onBeforeQuit)
         onBeforeQuit = null

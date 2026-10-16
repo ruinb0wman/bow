@@ -2,6 +2,31 @@
 
 日期:2026-10-16 · 状态:**已批准**(四项决策已与用户确认,见 §6;代码尚未动)
 v1 范围 = P0 + P1 + P2 + P3;P4(会话与标签解耦)**不在 v1**,待单独立项。
+
+## 进度
+
+- [x] **S1 会话台账**(2026-10-16):`SessionInfo` / `SessionAgentState` / `sessionSignature`(5s 分桶)在 `terminal/shared.ts`;`Session` 加 `cwd/createdAt/lastOutputAt/agent`;`notifySessions()` 250ms 合并 + 指纹去重;`sessionsChanged` 事件
+- [x] **S2 会话 IPC 面**(2026-10-16):`listSessions` / `readTail` / `sendText` / `createSession` / `focusSession` / `closeSession`;新增核心能力 `ctx.pages.activate`
+- [ ] S3 本地面板 · [ ] S4 MCP 工具 ×5 · [ ] S5–S8 远程服务 · [ ] S9–S11 隧道 · [ ] S12 手机 UX
+
+### S1+S2 落地时的四处偏离(都是有意为之)
+
+1. **多了一个核心能力 `ctx.pages.activate(tabId)`**(§10 里曾写「kernel/types 不动」)。原因:面板的
+   「点一项跳过去」必须复用 `main/agentActivate.ts` —— 后台标签、别的分屏窗格、最小化的窗口这三种情况
+   `ctx.pages.focus()` 都不生效(它只把键盘焦点交给 webContents,不会把标签显示出来)。增量:types 里
+   一个方法 + kernel 的 EMPTY 实现 + index 里一行转发,共 15 行。
+2. **没做 `toSessionInfo` 纯函数**:在主进程里直接映射(`describeSession`)。它只是一次字段搬运,
+   多一层函数只增加跨文件跳转;投影形状由 `SessionInfo` 类型看住,行为由假 pty 用例看住。
+3. **测试文件叫 `tests/terminalSessions.test.ts`**(计划里写的 `terminal-sessions.test.ts`):跟仓库现有
+   约定(camelCase)一致。另加 `tests/pluginPageActivate.test.ts` 看住第 1 条那条新能力。
+4. **`readTail` 默认 4000 字符、硬上限 `REPLAY_MAX_CHARS`**;`createSession` 不带 `command` 时**忽略
+   `cwd`**(v1 不为「默认 shell + 指定目录」扩展 `TerminalRunRequest`)。
+
+### 自己引入又修掉的一个 bug(值得记住)
+
+`lastSessionsSignature` 起初用空串作「还没播过」的哨兵 —— 而**空台账的指纹就是空串**,于是「一个会话
+都没建过就全关光」或「attach 后立即 close」时最后一次广播被吞掉(面板会留着幽灵条目)。
+改用 `null` 作哨兵;`tests/terminalSessions.test.ts` 里专门有一条用例看住它。
 参考物:[herdr.dev](https://herdr.dev/)(server 持有真终端 + 多 client attach + agent 三态汇总 + 通知)
 
 > 一句话结论:**可行,而且 bow 已经做完了最难的那一半**(pty 会话、agent 三态协议、回放缓冲、xterm 前端、

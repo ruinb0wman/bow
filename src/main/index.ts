@@ -315,6 +315,8 @@ app.whenReady().then(async () => {
   // 页面执行 API:主世界执行 JS(元素框选等交互式脚本),带超时保护
   kernel.setPageApi({
     activeTabId: () => windows!.focused()?.tabs.getActiveTabInfo()?.id ?? null,
+    // 「带这个标签到眼前」:与点系统通知走同一条实现(切标签 + 页面视图焦点 + 提窗口到前台)
+    activate: (tabId) => activateAgentTab(windows!, tabId),
     focus: (tabId) => {
       const hit = windows!.byTabId(tabId)
       if (hit && !hit.record.view.webContents.isDestroyed()) hit.record.view.webContents.focus()

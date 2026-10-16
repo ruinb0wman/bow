@@ -75,6 +75,7 @@ function fakeCtx(rec: Recorded): PluginContext {
     pages: {
       activeTabId: () => null,
       focus: noop,
+      activate: () => false,
       execute: async () => ({}),
       openDevToolsTab: () => 0
     },

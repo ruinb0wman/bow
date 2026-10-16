@@ -62,6 +62,17 @@ export type McpToolHandler = (args: Record<string, unknown>) => McpToolResult | 
 export interface PluginPageApi {
   activeTabId(): number | null
   focus(tabId: number): void
+  /**
+   * 把某个标签「带到眼前」:切到它、把键盘焦点给它的页面视图,并把窗口提到前台。
+   *
+   * 与 `focus` 的区别(**别用错**):`focus` 只把键盘焦点交给那个 webContents —— 对
+   * **后台标签**、**别的分屏窗格**里的标签,它不会真的把那个标签显示出来(看得见的是别人)。
+   * 需要「跳过去」时用这个。
+   *
+   * 与点系统通知同一条实现(`main/agentActivate.ts`),所以两处行为一致;再写一份必然漂移。
+   * 返回 false = 这个 tabId 不存在(窗口/标签已关)。
+   */
+  activate(tabId: number): boolean
   execute(tabId: number, code: string, opts?: { timeoutMs?: number }): Promise<unknown>
   /**
    * 打开一个「远程调试」标签页:把 CDP 目标(`ws://host:port/devtools/page/<id>`)接进 DevTools 前端。
