@@ -6,8 +6,7 @@
  * ① 投影内容:一个刚 attach 的会话该有什么(cwd/pid/尺寸/createdAt,`lastOutputAt` 与 `agent` 初始为 null);
  * ② 节流与去重:输出很密时**不能**每个 chunk 都广播 —— 合并窗口 + 指纹分桶两层都要生效;
  * ③ 代理状态:OSC 信号 → 台账里的结构化 `agent` + 报给内核(角标/通知那条路);
- * ④ 五个操作:readTail 截尾、sendText 真写到 pty、createSession 开标签+发 terminal:run、
- *    focusSession 走内核 activate(不是 `focus`)、closeSession 真杀进程。
+ * ⑤ 面板要用的展示函数:注意力排序(等用户的排最前)、「多久前」、路径缩略。
  *
  * 用假时钟(`vi.setSystemTime` 钉死起点)是为了让分桶边界确定 —— 否则「桶内不广播」这条断言会随机翻车。
  */
@@ -20,8 +19,17 @@ vi.mock('electron', async () => ({
 }))
 
 const { createTerminalPlugin } = await import('../src/plugins/terminal/main')
-const { SESSION_ACTIVITY_BUCKET_MS, SESSIONS_THROTTLE_MS, TERMINAL_EVENTS, defaultSettings, sessionSignature } =
-  await import('../src/plugins/terminal/shared')
+const {
+  SESSION_ACTIVITY_BUCKET_MS,
+  SESSIONS_THROTTLE_MS,
+  TERMINAL_EVENTS,
+  attentionRank,
+  defaultSettings,
+  formatAgo,
+  sessionSignature,
+  shortPath,
+  sortSessionsByAttention
+} = await import('../src/plugins/terminal/shared')
 const { TERMINAL_RUN_EVENT } = await import('../src/shared/terminalRun')
 type PluginContext = import('../src/main/plugins/types').PluginContext
 type PluginMain = import('../src/main/plugins/types').PluginMain
@@ -376,5 +384,65 @@ describe('会话操作(本地面板 / 远程 / MCP 共用的那一批)', () => {
     await h.plugin.deactivate?.(h.ctx)
     vi.advanceTimersByTime(SESSION_ACTIVITY_BUCKET_MS * 2)
     expect(h.emitted(TERMINAL_EVENTS.sessionsChanged)).toHaveLength(before)
+  })
+})
+
+// ---------- 面板要用的展示函数 ----------
+
+describe('面板展示(排序 / 时间 / 路径)', () => {
+  const info = (over: Partial<SessionInfo> & { id: number }): SessionInfo => ({
+    title: `t${over.id}`,
+    profileId: 'bash',
+    cwd: '/tmp',
+    pid: 1,
+    cols: 80,
+    rows: 24,
+    createdAt: T0,
+    lastOutputAt: null,
+    agent: null,
+    ...over
+  })
+
+  it('排序:等用户的 → 在跑的 → 刚跑完的 → 空着的 → 没代理的', () => {
+    const blocked = info({ id: 5, agent: { state: 'blocked', at: T0 } })
+    const working = info({ id: 4, agent: { state: 'working', at: T0 } })
+    const done = info({ id: 3, agent: { state: 'idle', done: true, at: T0 } })
+    const idle = info({ id: 2, agent: { state: 'idle', at: T0 } })
+    const plain = info({ id: 1 })
+    expect([plain, idle, done, working, blocked].map(attentionRank)).toEqual([4, 3, 2, 1, 0])
+    expect(sortSessionsByAttention([plain, idle, done, working, blocked]).map((s) => s.id)).toEqual([5, 4, 3, 2, 1])
+  })
+
+  it('同级按「最后活跃」新→旧;完全一样时按 id,保证排序稳定', () => {
+    const older = info({ id: 9, lastOutputAt: T0 })
+    const newer = info({ id: 8, lastOutputAt: T0 + 60_000 })
+    expect(sortSessionsByAttention([older, newer]).map((s) => s.id)).toEqual([8, 9])
+    expect(sortSessionsByAttention([info({ id: 21 }), info({ id: 20 })]).map((s) => s.id)).toEqual([20, 21])
+    // 代理状态的时刻优先于 pty 输出(代理在跑但输出安静时不该假陈旧)
+    const agentOlder = info({ id: 1, lastOutputAt: T0 + 999_999, agent: { state: 'working', at: T0 } })
+    const agentNewer = info({ id: 2, lastOutputAt: T0, agent: { state: 'working', at: T0 + 1000 } })
+    expect(sortSessionsByAttention([agentOlder, agentNewer]).map((s) => s.id)).toEqual([2, 1])
+  })
+
+  it('formatAgo:只到「天」粒度,负值与极短一律「刚刚」', () => {
+    expect(formatAgo(-5000)).toBe('刚刚')
+    expect(formatAgo(0)).toBe('刚刚')
+    expect(formatAgo(4999)).toBe('刚刚')
+    expect(formatAgo(5000)).toBe('5 秒前')
+    expect(formatAgo(59_999)).toBe('59 秒前')
+    expect(formatAgo(60_000)).toBe('1 分钟前')
+    expect(formatAgo(3_599_999)).toBe('59 分钟前')
+    expect(formatAgo(3_600_000)).toBe('1 小时前')
+    expect(formatAgo(86_400_000 * 3 + 5)).toBe('3 天前')
+  })
+
+  it('shortPath:够短就不动,太长只留尾部且至少留一段;反斜杠路径不被改成正斜杠', () => {
+    expect(shortPath('/home/u/p')).toBe('/home/u/p')
+    expect(shortPath('  ')).toBe('')
+    expect(shortPath('/home/u/very/deep/nested/project-abc', 20)).toBe('…/nested/project-abc')
+    // 能装下的层数尽量装:20 字符刚好装下 `very\deep\project`(16),再加一层就超了
+    expect(shortPath('C:\\Users\\ruinb\\very\\deep\\project', 20)).toBe('…\\very\\deep\\project')
+    // 单个目录名就超长时不能缩成「…/」
+    expect(shortPath(`C:\\${'x'.repeat(60)}`, 20)).toBe(`…\\${'x'.repeat(60)}`)
   })
 })

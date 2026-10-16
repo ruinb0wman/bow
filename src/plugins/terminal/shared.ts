@@ -401,6 +401,72 @@ export function sessionSignature(infos: readonly SessionInfo[]): string {
     .join('\u0002')
 }
 
+/**
+ * 面板排序用的「注意力等级」:越小越该被先看到。
+ * 这是 herder 那个东西的全部意义 —— 「一眼看出谁在等我」,而不是按开场顺序排。
+ */
+export function attentionRank(info: SessionInfo): number {
+  switch (info.agent?.state) {
+    case 'blocked':
+      return 0
+    case 'working':
+      return 1
+    case 'idle':
+      return info.agent.done ? 2 : 3
+    default:
+      return 4
+  }
+}
+
+/** 最后活跃时刻(排序与展示共用):代理状态优先,其次 pty 输出,都没有就看创建时间 */
+export function lastActiveAt(info: SessionInfo): number {
+  return info.agent?.at ?? info.lastOutputAt ?? info.createdAt
+}
+
+/** 排序:等用户的 → 在跑的 → 刚跑完的 → 空着的 → 没跑代理的;同级按最后活跃新→旧,再按 id */
+export function sortSessionsByAttention(infos: readonly SessionInfo[]): SessionInfo[] {
+  return [...infos].sort((a, b) => {
+    const rank = attentionRank(a) - attentionRank(b)
+    if (rank !== 0) return rank
+    const byTime = lastActiveAt(b) - lastActiveAt(a)
+    return byTime !== 0 ? byTime : a.id - b.id
+  })
+}
+
+/**
+ * 「多久前」文案。负值(时钟回拨、或信号比本地时钟还新)一律说「刚刚」—— 显示 `-3 秒前` 很傻。
+ * 粒度只到「天」:面板上没有人关心 37 小时还是 38 小时。
+ */
+export function formatAgo(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 5000) return '刚刚'
+  const seconds = Math.floor(ms / 1000)
+  if (seconds < 60) return `${seconds} 秒前`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes} 分钟前`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} 小时前`
+  return `${Math.floor(hours / 24)} 天前`
+}
+
+/**
+ * 路径缩略:只留给尾部足够的信息量(`/home/u/very/long/project` → `…/long/project`)。
+ * 面板上把整条 cwd 铺出来会把其它列挤没 —— 完整路径放 `title`。
+ */
+export function shortPath(path: string, max = 32): string {
+  const trimmed = path.trim()
+  if (!trimmed || trimmed.length <= max) return trimmed
+  const separator = trimmed.includes('/') ? '/' : '\\'
+  const parts = trimmed.split(/[\\/]+/).filter(Boolean)
+  const tail: string[] = []
+  for (let i = parts.length - 1; i >= 0; i--) {
+    // 至少保留最后一段(否则一个超长目录名会被缩成「…/」)
+    const candidate = [parts[i], ...tail].join(separator)
+    if (tail.length > 0 && candidate.length > max) break
+    tail.unshift(parts[i]!)
+  }
+  return `…${separator}${tail.join(separator)}`
+}
+
 // ---------- 设置页辅助 ----------
 
 /**

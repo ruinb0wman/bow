@@ -7,7 +7,15 @@ v1 范围 = P0 + P1 + P2 + P3;P4(会话与标签解耦)**不在 v1**,待单独�
 
 - [x] **S1 会话台账**(2026-10-16):`SessionInfo` / `SessionAgentState` / `sessionSignature`(5s 分桶)在 `terminal/shared.ts`;`Session` 加 `cwd/createdAt/lastOutputAt/agent`;`notifySessions()` 250ms 合并 + 指纹去重;`sessionsChanged` 事件
 - [x] **S2 会话 IPC 面**(2026-10-16):`listSessions` / `readTail` / `sendText` / `createSession` / `focusSession` / `closeSession`;新增核心能力 `ctx.pages.activate`
-- [ ] S3 本地面板 · [ ] S4 MCP 工具 ×5 · [ ] S5–S8 远程服务 · [ ] S9–S11 隧道 · [ ] S12 手机 UX
+- [x] **S3 本地面板**(2026-10-16):工具栏「牧群」按钮(总 / 待办数 + 高亮)+ `full` 浮层面板(注意力排序、点行跳转、行内关闭、新终端);纯展示函数 `attentionRank` / `sortSessionsByAttention` / `formatAgo` / `shortPath` 在 `shared.ts`(P1 的远程页直接复用)
+- [x] **S3 端到端**:`scripts/e2e-herd.mjs`(`npm run test:e2e:herd`,真 Electron + 真 pty + 真台账,15 项全绿)
+- [ ] S4 MCP 工具 ×5 · [ ] S5–S8 远程服务 · [ ] S9–S11 隧道 · [ ] S12 手机 UX
+
+### 待办:文档同步(P0 结束时一起做)
+
+`docs/ARCHITECTURE.md` §1 目录地图与 §5 插件体系要补:终端插件新增的 `ui/HerdButton.vue`、
+`ui/HerdPanel.vue`、`shared.ts` 的台账投影、`ctx.pages.activate`,以及 `scripts/e2e-herd.mjs`;
+README 的功能表(终端那一段)要提「牧群」面板。**先做完 S4 再一次性改**,免得改两轮。
 
 ### S1+S2 落地时的四处偏离(都是有意为之)
 
