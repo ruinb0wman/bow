@@ -8,7 +8,7 @@ description: 用本地 bow 浏览器(MCP 服务器 browser)做只有真浏览器
 
 # bow 浏览器(MCP 服务器 `browser`)
 
-本地 Electron 多标签浏览器,40 个工具(20 核心 + 20 插件,随插件启停浮动);**你的每次操作用户都实时可见**,所以破坏性操作前先说明意图。
+本地 Electron 多标签浏览器,45 个工具(20 核心 + 25 插件,随插件启停浮动);**你的每次操作用户都实时可见**,所以破坏性操作前先说明意图。
 默认操作目标是 bow 为你自动创建并复用的 **agent 专属窗口**(标题带「· Agent」),**不会动用户正在浏览的窗口**。
 
 ## 第一步:确认工具怎么调
@@ -42,6 +42,7 @@ pi 内置 MCP 把每个工具注册为 `mcp__<服务器>__<工具>` —— 本�
 | 看手机页面的控制台 / 未捕获异常 | `device_console` | 只覆盖**调用期间**的日志(默认 800ms);要加载期日志传 `reload: true`(会重载页面) |
 | 在手机页面取值 / 批量读 | `device_eval` | 与 `browser_eval` 同套路,但作用于手机页面(最省 token) |
 | 让**人**看手机页面的真 DevTools | `device_inspect` | 在标签页里开出 DevTools 前端(等同 chrome://inspect 的 inspect) |
+| 看/管本机终端、操纵里头的 agent | `terminal_list_sessions` → `terminal_read` / `terminal_send` / `terminal_run` / `terminal_close` | 会话 id = 那个终端标签;`read` 给它尾部文本(不是终端网格,没有很早的历史),`send` 是无确认的键盘注入(要回车自己带 `\r`),`run` 开新会话跑命令(pty 异步起,稍后再 read),`close` 连进程树一起收 |
 
 ## 标准工作流
 
@@ -83,6 +84,8 @@ pi 内置 MCP 把每个工具注册为 `mcp__<服务器>__<工具>` —— 本�
 - ❌ `navigate` 后立刻 `snapshot` 抓异步页 → ✅ 先 `browser_wait`
 - ❌ 用截图代替取值 → ✅ `browser_eval` 更省、更准
 - ❌ 为了读文章正文现写抽取 JS / 截长图 → ✅ `browser_read`(它返回的 markdown 已经是纯净正文)
+- ❌ 往 `terminal_send` 里塞一整段 shell 脚本 → ✅ 那是**键盘注入**,没有 shell 解析与确认:一次一条、自己带 `\r`,并用 `terminal_read` 看回显
+- ❌ 凭记忆用 `terminal_send` / `terminal_close` 的 id → ✅ 先 `terminal_list_sessions` 对一遍(会话就是标签,用户随时会关掉)
 - ❌ 页面没动就重复同一调用 → ✅ 先 `browser_wait`,或 `browser_get_info` 看 `loading`
 - ❌ 连续多次 `browser_new_tab` → ✅ 复用标签,用 `tabId` 指定目标
 

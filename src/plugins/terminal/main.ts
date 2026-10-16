@@ -21,7 +21,9 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
+import { z } from 'zod'
 import type { PluginContext, PluginMain, PluginStorage } from '../../main/plugins/types'
+import { errorContent, textContent } from '../../main/plugins/mcpResult'
 import { BOW_SIGNAL_VERSION, OscSignalParser } from '@shared/agentState'
 import type { AgentSignal } from '@shared/agentState'
 import { TERMINAL_RUN_EVENT, parseTerminalRunRequest } from '@shared/terminalRun'
@@ -537,7 +539,7 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
       description: '在标签页里开一个连到本机 shell 的终端(xterm + node-pty);shell 与字体可在设置页配置',
       version: '1.0.0'
     },
-    capabilities: ['ui'],
+    capabilities: ['ui', 'mcp'],
 
     activate(ctx: PluginContext): void {
       context = ctx
@@ -601,6 +603,80 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
         killSession(id, 'closed-by-request')
         return true
       })
+
+      // ---------- MCP 工具(herdr 那种 automation 面:一个 pi 能管它的同类)----------
+      //
+      // 与上面的 IPC 面用的是**同一批函数**,所以面板 / 远程页 / AI 看到的是同一份台账 ——
+      // 三个门脸一份事实,不存在「工具说有两个会话、面板说有三个」。
+      //
+      // ⚠️ `terminal_send` 是**无确认的键盘注入**:可以敲开任意会话(包括正在等用户确认的那个),
+      // 所以描述里必须明说。`terminal_close` 在 Windows 上会连进程树一起收掉。
+      ctx.mcp.tool(
+        'terminal_list_sessions',
+        {
+          description:
+            '列出全部终端会话(标签页里的 shell)。给出 id、标题、工作目录、尺寸、最后活跃时间与代理状态(state: working 在跑 / blocked 在等用户 / idle 空闲 —— 终端里的 pi 会上报)。其它 terminal_* 工具都用 id 寻址',
+          inputSchema: {}
+        },
+        () => textContent({ ok: true, sessions: listSessions() })
+      )
+      ctx.mcp.tool(
+        'terminal_read',
+        {
+          description:
+            '读一个终端会话的尾部输出(纯文本,已剥掉 bow/pi 的私有控制序列)。是原始字节流的尾部而不是终端网格:最近的内容一定看得到,但滚不到很早的历史',
+          inputSchema: {
+            id: z.number().int().positive().describe('会话 id(见 terminal_list_sessions)'),
+            chars: z.number().int().positive().optional().describe('最多返回多少字符(默认 4000,上限 200000)')
+          }
+        },
+        (args) => {
+          const result = readTail(args.id, args.chars)
+          return result.ok ? textContent(result) : errorContent(result.error ?? '读不到这个会话')
+        }
+      )
+      ctx.mcp.tool(
+        'terminal_send',
+        {
+          description:
+            '往一个终端会话麦输入,等同人工敲键盘(**无确认,请先确认目标 id**)。文本原样送上去,不自动补回车 —— 要执行命令就自己带上 \\r',
+          inputSchema: {
+            id: z.number().int().positive().describe('会话 id'),
+            text: z.string().describe('要送上去的字符(要回车就带上 \\r,如 "ls\\r")')
+          }
+        },
+        (args) => (write(args.id, args.text) ? textContent({ ok: true }) : errorContent('这个会话不存在或已关闭'))
+      )
+      ctx.mcp.tool(
+        'terminal_run',
+        {
+          description:
+            '开一个新的终端会话并跑一条命令(如 pi / npm test)。pty 是异步起来的:返回的 id 立即有效,但输出要稍后用 terminal_read 才能看到',
+          inputSchema: {
+            command: z.string().describe('可执行文件,如 pi / npm / wsl.exe'),
+            args: z.array(z.string()).optional().describe('参数(逐项传递,不做 shell 拼接)'),
+            cwd: z.string().optional().describe('工作目录;省略为用户主目录'),
+            name: z.string().optional().describe('标签标题(如 "pi");省略则用命令名')
+          }
+        },
+        (args) => {
+          const result = createSession({ command: args.command, args: args.args, cwd: args.cwd, name: args.name })
+          return result.ok ? textContent({ ok: true, id: result.tabId, note: 'pty 异步启动中,稍后 terminal_read' }) : errorContent(result.error ?? '开不了新会话')
+        }
+      )
+      ctx.mcp.tool(
+        'terminal_close',
+        {
+          description: '结束一个终端会话(Windows 上连进程树一起收)。会真杀掉里面跑着的东西,不确定时先用 terminal_list_sessions 核对 id',
+          inputSchema: { id: z.number().int().positive().describe('会话 id') }
+        },
+        (args) => {
+          const id = Number(args.id)
+          if (!sessions.has(id)) return errorContent('这个会话不存在或已关闭')
+          killSession(id, 'closed-by-request')
+          return textContent({ ok: true, id })
+        }
+      )
       // detach 只表示「页面走了」:会话与回放缓冲都留着,刷新回来还能接上
       ctx.ipc.handle('detach', (tabId: unknown) => {
         const session = sessions.get(Number(tabId))

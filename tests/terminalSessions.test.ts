@@ -70,6 +70,9 @@ interface Harness {
   activated: number[]
   runRequests: Array<Record<string, unknown>>
   agentReports: Array<{ tabId: number; state: string }>
+  /** 注册过的 MCP 工具名 → 处理器(直接调,不经 MCP 传输层) */
+  tools: Map<string, (args: Record<string, unknown>) => unknown>
+  toolNames: string[]
   /** 某个 ipc 事件被广播过的全部负载 */
   emitted: (event: string) => unknown[]
   invoke: <T = unknown>(method: string, ...args: unknown[]) => Promise<T>
@@ -85,6 +88,7 @@ async function harness(platform = 'win32'): Promise<Harness> {
   const ipcEmits: Array<{ event: string; payload: unknown }> = []
   const handlers = new Map<string, (...args: never[]) => unknown>()
   const eventSubs = new Map<string, Array<(payload: unknown) => void>>()
+  const tools = new Map<string, (args: Record<string, unknown>) => unknown>()
   const settings = defaultSettings(platform, '/bin/bash')
 
   const ctx = {
@@ -108,6 +112,10 @@ async function harness(platform = 'win32'): Promise<Harness> {
       }
     },
     service: { agent: { report: (r: { tabId: number; state: string }) => agentReports.push(r) } },
+    mcp: {
+      tool: (name: string, _config: unknown, handler: (args: Record<string, unknown>) => unknown) =>
+        tools.set(name, handler)
+    },
     tabs: { openInternal: (page: string) => (opened.push(page), 101) },
     pages: { activate: (tabId: number) => (activated.push(tabId), true) }
   } as unknown as PluginContext
@@ -132,6 +140,8 @@ async function harness(platform = 'win32'): Promise<Harness> {
     activated,
     runRequests,
     agentReports,
+    tools,
+    toolNames: [...tools.keys()],
     emitted: (event) => ipcEmits.filter((e) => e.event === event).map((e) => e.payload),
     invoke: async <T = unknown>(method: string, ...args: unknown[]): Promise<T> => {
       const fn = handlers.get(method) as ((...a: unknown[]) => T) | undefined
@@ -384,6 +394,68 @@ describe('会话操作(本地面板 / 远程 / MCP 共用的那一批)', () => {
     await h.plugin.deactivate?.(h.ctx)
     vi.advanceTimersByTime(SESSION_ACTIVITY_BUCKET_MS * 2)
     expect(h.emitted(TERMINAL_EVENTS.sessionsChanged)).toHaveLength(before)
+  })
+})
+
+// ---------- MCP 工具 ----------
+
+describe('MCP 工具(一个 pi 管它的同类)', () => {
+  /** MCP 返回体:content[0].text 里是 JSON */
+  const payloadOf = (result: unknown) => JSON.parse((result as { content: [{ text: string }] }).content[0].text)
+
+  it('注册了五个工具,名字都带 terminal_ 前缀', async () => {
+    const h = await harness()
+    expect(h.toolNames.sort()).toEqual([
+      'terminal_close',
+      'terminal_list_sessions',
+      'terminal_read',
+      'terminal_run',
+      'terminal_send'
+    ])
+  })
+
+  it('terminal_list_sessions 给的与面板读的是同一份台账', async () => {
+    const h = await harness()
+    await h.attach(7)
+    const body = payloadOf(await h.tools.get('terminal_list_sessions')!({}))
+    expect(body.ok).toBe(true)
+    expect(body.sessions).toHaveLength(1)
+    expect((await h.invoke<SessionInfo[]>('listSessions'))[0]!.id).toBe(body.sessions[0].id)
+  })
+
+  it('terminal_read 读尾部;未知会话给 isError 而不是空文本', async () => {
+    const h = await harness()
+    await h.attach(7)
+    h.ptys[0]!.onDataCb?.('hello world')
+    expect(payloadOf(await h.tools.get('terminal_read')!({ id: 7, chars: 5 })).text).toBe('world')
+    const missing = await h.tools.get('terminal_read')!({ id: 999 })
+    expect((missing as { isError?: boolean }).isError).toBe(true)
+  })
+
+  it('terminal_send 原样写入(不自动补回车),未知会话报错', async () => {
+    const h = await harness()
+    await h.attach(7)
+    h.tools.get('terminal_send')!({ id: 7, text: 'ls' })
+    h.tools.get('terminal_send')!({ id: 7, text: '\r' })
+    expect(h.ptys[0]!.written).toEqual(['ls', '\r'])
+    expect((h.tools.get('terminal_send')!({ id: 999, text: 'x' }) as { isError?: boolean }).isError).toBe(true)
+  })
+
+  it('terminal_run 走 createSession(带 cwd/name 时发 terminal:run)', async () => {
+    const h = await harness()
+    const body = payloadOf(h.tools.get('terminal_run')!({ command: 'pi', args: ['--print'], cwd: '/tmp/p', name: 'pi' }))
+    expect(body).toMatchObject({ ok: true, id: 101 })
+    expect(h.runRequests).toEqual([{ tabId: 101, file: 'pi', args: ['--print'], cwd: '/tmp/p', name: 'pi' }])
+    // pty 是异步起的:工具不能谎报「已经在跑了」
+    expect(String(body.note)).toContain('异步')
+  })
+
+  it('terminal_close 真杀进程;未知会话报错', async () => {
+    const h = await harness()
+    await h.attach(7)
+    expect(payloadOf(h.tools.get('terminal_close')!({ id: 7 }))).toEqual({ ok: true, id: 7 })
+    expect(h.ptys[0]!.killed).toBe(true)
+    expect((h.tools.get('terminal_close')!({ id: 7 }) as { isError?: boolean }).isError).toBe(true)
   })
 })
 

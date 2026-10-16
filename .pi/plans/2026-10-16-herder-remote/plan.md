@@ -9,7 +9,11 @@ v1 范围 = P0 + P1 + P2 + P3;P4(会话与标签解耦)**不在 v1**,待单独�
 - [x] **S2 会话 IPC 面**(2026-10-16):`listSessions` / `readTail` / `sendText` / `createSession` / `focusSession` / `closeSession`;新增核心能力 `ctx.pages.activate`
 - [x] **S3 本地面板**(2026-10-16):工具栏「牧群」按钮(总 / 待办数 + 高亮)+ `full` 浮层面板(注意力排序、点行跳转、行内关闭、新终端);纯展示函数 `attentionRank` / `sortSessionsByAttention` / `formatAgo` / `shortPath` 在 `shared.ts`(P1 的远程页直接复用)
 - [x] **S3 端到端**:`scripts/e2e-herd.mjs`(`npm run test:e2e:herd`,真 Electron + 真 pty + 真台账,15 项全绿)
-- [ ] S4 MCP 工具 ×5 · [ ] S5–S8 远程服务 · [ ] S9–S11 隧道 · [ ] S12 手机 UX
+- [x] **S4 MCP 工具 ×5**(2026-10-16):`terminal_list_sessions` / `terminal_read` / `terminal_send` / `terminal_run` / `terminal_close`;`capabilities` 加 `'mcp'`。实跑 `npm run test:mcp` 工具数 40 → **45**、全部通过
+- [x] **文档同步**(2026-10-16):README(工具一览 5 行 + 终端一节的牧群面板/AI 管终端 + 牧群 E2E 一节)、`docs/ARCHITECTURE.md`(目录地图 / 插件两张表 / `pages.activate` / `plugin:event` / E2E 脚本表)、`packages/pi-bow/skills/bow-browser/SKILL.md`(工具数 45 + 选型行 + 两条反模式)。⚠️ 本机已安装的那份 skill(`~/.pi/agent/skills/bow-browser/SKILL.md`)要跑 `npm run mcp:install` 才会刷新;正在跑的 pi 会话要重连 MCP 才能看到这 5 个新工具
+- [ ] S5–S8 远程服务 · [ ] S9–S11 隧道 · [ ] S12 手机 UX
+
+**P0 完成**(S1–S4 + 文档)。P1 开工前先做一次人工真机确认(计划 §7):开几个终端、跑一个真 pi、看按钮与面板、试试点行跳转与关闭。
 
 ### 待办:文档同步(P0 结束时一起做)
 

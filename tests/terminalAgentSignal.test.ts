@@ -96,7 +96,9 @@ async function harness(): Promise<Harness> {
       },
       emit: () => {}
     },
-    service: { agent: { report: (report: AgentSignal & { tabId: number }) => reports.push(report) } }
+    service: { agent: { report: (report: AgentSignal & { tabId: number }) => reports.push(report) } },
+    // 插件现在也贡献 MCP 工具(S4);这个 harness 只看代理状态信号,给个同位空实现即可
+    mcp: { tool: () => {} }
   } as unknown as PluginContext
 
   const plugin = createTerminalPlugin({

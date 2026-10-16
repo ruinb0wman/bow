@@ -83,7 +83,8 @@ src/
     main.ts                     主进程侧:manifest + capabilities + activate(ctx)
     ui.ts                       渲染层侧:slots / overlays / settingsSections
     ui/*.vue                    该插件的 UI 组件(终端插件的 `ui/TerminalView.vue` 例外:它是 bow://terminal
-                                页面的主体,由 renderer/src/terminal 直接挂载,不经渲染层注册表)
+                                页面的主体,由 renderer/src/terminal 直接挂载,不经渲染层注册表;
+                                终端插件的 `ui/HerdButton.vue`+`HerdPanel.vue` 是常规的工具栏按钮 + full 浮层)
     piBridge.ts                  终端插件的「pi 状态桥一键接入」纯逻辑(注入 fs;设置页的按钮走它,
                                   还负责算「bow 在 Windows、pi 在 WSL2」时那条醒用户的拷贝命令 —— 见 `wslHint`)
                                 与仓库脚本 scripts/install-pi-agent-state.mjs 同规则)
@@ -402,6 +403,7 @@ interface PluginUiContribution {
 | `content.inject` | `(spec) => void` | 移除规则并 `removeInsertedCSS` 所有已注入 key |
 | `content.refresh` | `(tabId?) => void` | 只重跑 CSS(不重跑 JS),用于规则变更后的即时反馈 |
 | `pages.activeTabId/focus/execute` | `execute(tabId, code, {timeoutMs=10000})` | 不回收(内核持有) |
+| `pages.activate` | `(tabId) => boolean` | 不回收(内核持有)。「把某个标签带到眼前」:切标签 + 页面视图焦点 + 窗口提前台,与**点系统通知**同一条实现(`main/agentActivate.ts`)。与 `focus` 的区别是它真会切过去 —— `focus` 只把键盘焦点交给那个 webContents,后台标签 / 别的分屏窗格 / 最小化的窗口都不生效。返回 false = 标签不存在。调用方:终端插件的 `focusSession`(牧群面板的「点一行」) |
 | `pages.openDevToolsTab` | `(frontendUrl, title?, activate?, windowId?) => number` | 不回收(内核持有)。把 CDP 前端接进标签页(设备检查插件用);`windowId` 缺省=聚焦窗口。参数是**已拼好的前端地址**:可能是 `@shared/devtools` 拼的 bow 自带那份,也可能是设备指定的 `https://…`(见 `device-inspect/shared.effectiveStrategy`);标签只允许 `devtools://` 或与入口同源的导航 |
 | `tabs.list/getActive` | `() => TabInfo[] / TabInfo \| null` | 只读;`list` 数据源是 `WindowManager.allTabs()`(**跨窗口**,每条带 `windowId`),`getActive` 是**聚焦窗口**的 `TabManager` |
 | `tabs.openInternal` | `(page: InternalPageId, { windowId? }) => number \| null` | 不回收(内核持有)。**插件唯一的建标签入口**,且只允许内部页(settings/terminal/logseq)—— 插件仍不能导航用户的浏览标签、不能开任意 URL。宿主未注入(窗口还没建好)或宿主抛错时**返回 null 而不是抛**。与 `pages.openDevToolsTab` 同一条分工:核心建资源,插件只做决策。唯一调用方是编辑器插件 |
@@ -554,7 +556,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `mcp-http` | ✓ | ui, service | `getState` `setSettings` `restart` `toggle` | — | — | — | — | — | on `mcp-http:ready`(经 `service.onMcpHttpReady`)+ `mcpActivity.onChange`;emit `changed` | `mcp-http.json` |
 | `default-browser` | — | ui | `status` `register` `unregister` `openSettings` | — | — | — | — | — | — | 无(状态现读系统:Linux 读 `mimeapps.list`;Windows 先按 UserChoice 主键→备用键→`Software\Classes` 默认值读“记录”,再用 PowerShell 调 shell 的 `AssocQueryString` 拿“**实际生效者**”,两者不一致时以实际为准并标注记录已失效) |
 | `device-inspect` | — | ui, mcp | `list` `open` `getSettings` `setSettings` `checkAdb` `connect` `pair` `cleanupForwards` `rawAdb` | `device_list_targets` `device_inspect` `device_snapshot` `device_tap` `device_type` `device_press_key` `device_scroll` `device_console` `device_eval` `device_screenshot` `device_connect` | — | — | — | — | — | `device-inspect.json`(adb 命令 / 前端策略 / 端口转发记录) |
-| `terminal` | — | ui | `getSettings` `setSettings` `listCandidates` `attach` `write` `resize` `detach` | — | — | — | — | — | on `tab:closed`(按 tabId 回收 shell);emit `data` `exit` `settings-changed` `session-closed` | `terminal.json`(字体/字号/滚动缓冲 + shell 配置列表) |
+| `terminal` | — | ui, mcp | `getSettings` `setSettings` `listCandidates` `attach` `write` `resize` `detach` `listSessions` `readTail` `sendText` `createSession` `focusSession` `closeSession` | `terminal_list_sessions` `terminal_read` `terminal_send` `terminal_run` `terminal_close` | — | — | — | — | on `tab:closed`(按 tabId 回收 shell);emit `data` `exit` `settings-changed` `session-closed` `sessions-changed` | `terminal.json`(字体/字号/滚动缓冲 + shell 配置列表) |
 | `logseq` | — | ui, mcp | `getState` `pickGraph` `setGraph` `rebuildIndex` `getSettings` `setSettings` `toggleFavorite` `readJournal` `readPage` `listJournals` `listPages` `backlinks` `graph` `listTemplates` `savePage` `attach` `setView` `openInNewPane` | `browser_logseq_graph` | — | — | — | — | on `tab:closed`(按 tabId 丢视图状态);emit `graph-changed` `settings-changed` `favorites-changed` | `logseq.json`(图目录 + 最近图 + 正文字号 + 每个图的收藏) |
 | `downloads` | — | ui, mcp | `list` `pause` `resume` `cancel` `retry` `remove` `clear` `openFile` `showInFolder` `getSettings` `setSettings` `pickDirectory` `revealDir` | `browser_list_downloads` `browser_download` | — | — | — | — | emit `changed` | `downloads.json`(记录)+ `downloads-settings.json`(目录 / 询问 / 保留条数) |
 | `passwords` | — | ui, shortcut | `status` `setup` `unlock` `lock` `list` `getEntry` `save` `remove` `copy` `readPageFields` `fillEntry` `beginFill` `changeMaster` `getSettings` `setSettings` `wipe` `exportBackup` `importBackup` | —(刻意不贡献 MCP 工具:与 AI 隔离) | — | —(按需 `pages.execute` 注入探测 / 下拉 / 填入脚本,不注入常驻脚本) | — | `Ctrl/Cmd+Shift+P` | emit `state-changed` `settings-changed` `open-panel` | `passwords.json`(AES-256-GCM 密文)+ `passwords-settings.json`(自动锁定 / 剪贴板 / 子域匹配);`exportBackup` 只写**密文副本**到 bow 下载目录;`importBackup` 校验形状后**整库替换**(已初始化时先把当前库导出一份再覆盖,导入后强制锁定) |
@@ -572,7 +574,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `mcp-http` | — | `McpStatusBadge` | — | `McpHttpSettings` |
 | `default-browser` | — | — | — | `DefaultBrowserSettings` |
 | `device-inspect` | — | `DeviceInspectButton` | `plugin:device-inspect:panel`(full,`DeviceInspectPanel`) | —(adb 设置放在面板内的折叠区,不占设置页侧栏) |
-| `terminal` | — | `TerminalButton` | —(终端是**内部页面**不是浮层:`bow://terminal`) | `TerminalSettings` |
+| `terminal` | — | `TerminalButton` `HerdButton` | `plugin:terminal:herd`(牧群面板,`full`) | `TerminalSettings` |
 | `logseq` | — | `LogseqButton` | —(笔记也是**内部页面**:`bow://logseq`) | `LogseqSettings` |
 | `downloads` | — | `DownloadsButton` | `plugin:downloads:panel`(full,`DownloadsPanel`) | `DownloadsSettings` |
 | `passwords` | — | `PasswordsButton` | `plugin:passwords:panel`(full,`PasswordsPanel`) | `PasswordsSettings` |
@@ -1039,7 +1041,7 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `groups:changed` | `TabGroupInfo[]` | `ipc.ts`(订阅 `groups-changed`;只发 chrome,面板数据由 chrome 组装) |
 | `settings:changed` | `Settings` | `ipc.ts` 的 `settings:set` |
 | `plugins:changed` | `PluginInfo[]` | `kernel.setEnabled()` 经 broadcaster |
-| `plugin:event` | `{id, event, args}` | `ctx.ipc.emit()` 经 broadcaster。终端插件的 `data`/`exit`/`settings-changed`/`session-closed` 与笔记插件的 `graph-changed` 走的就是这条(内部页面按 `args.tabId` / `args.paths` 自过滤) |
+| `plugin:event` | `{id, event, args}` | `ctx.ipc.emit()` 经 broadcaster。终端插件的 `data`/`exit`/`settings-changed`/`session-closed`/**`sessions-changed`**(后者的负载是**完整台账**,面板与按钮直接拿去渲染;它靠 `sessionSignature` 按 5s 分桶去重,否则持续输出会把通道打满)与笔记插件的 `graph-changed` 走的就是这条(内部页面按 `args.tabId` / `args.paths` 自过滤) |
 | `overlay:show` | `OverlayShowMessage \| null` | `OverlayManager.send()` |
 | `find:state` | `FindStateMessage` | `main/findBar.ts` 的 `pushState()`(仅查找条订阅;`currentId !== 'find'` 时不推) |
 | `overlay-event` | `OverlayEvent` | `ipc.ts`(suggest 专用转发) |
@@ -1115,6 +1117,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `e2e-device-inspect.mjs` + `fixtures/fake-phone-{,adb,device}.mjs` | 设备检查插件的假手机 E2E:`fake-phone-adb.mjs` 仿 adb 输出并在 `forward` 时拉起 `fake-phone-device.mjs`(HTTP `/json` + WS CDP,并把收到的每条命令写进 `cdp-log.jsonl`),驱动脚本用 MCP 客户端跑 11 个 `device_*` 工具,并用 bow 自己的 `--remote-debugging-port` 往手机 DevTools 前端 target 发 `Ctrl+Shift+→` 验分屏 |
 | `install-pi-agent-state.mjs` | 写 pi 的状态桥扩展;源是 **pi 插件包**里的 `packages/pi-bow/extensions/bow-agent-state.ts`(单文件、无运行时依赖、jiti 直接跑;它必须**自包含** —— 会被单独复制到 `~/.pi/agent/extensions/`,这条不变式由 `tests/piBridgeExtension.test.ts` 钉住)。整包接入走 `pi install ./packages/pi-bow`(`npm run pi:install-plugin`),那样还顺带拿到 MCP 自动注册(`pi.registerMcpServer`,不写 `mcp.json`)与 `/bow` 命令。未安装时的降级:只有「正在执行」角标(靠 pi 内建的 `terminal.showTerminalProgress`)。打包后的应用里**没有这个脚本**:设置页的一键接入走 `src/plugins/terminal/piBridge.ts`(同一套规则,读同一份源) |
 | `e2e-agent-status.mjs` | 代理状态 E2E:不装 MCP、不用真 pi,全程 CDP —— chrome target 开终端页、终端页 `window.__bowTerminal.send` 敲命令、主进程 inspector target 驱动 `__bowNotifyClick` 并读 `BOW_NOTIFY_LOG`、设置页 target 点一键接入的按钮 |
+| `e2e-herd.mjs` | 牧群面板 E2E:真 Electron + 真 pty + 真台账(代理是假的,一条 `printf` 把 OSC 打进 pty)。验 `window.browserAPI.plugins.invoke('terminal', …)` 的六个新方法与面板:按钮计数/高亮 → 浮层里的行与注意力排序 → 点一行走 `pages.activate` 并关面板 → 关会话后列表/计数跟着变。⚠️ 认 chrome target 必须**正面**匹配 `/renderer/index.html`:标签页也是 `type: 'page'`,黑名单式过滤会选中普通网页(那边的 `window.browserAPI` 是 undefined) |
 | `e2e-tab-id-reveal.mjs` | 长按 Shift 的 tabId 徽标 E2E(见上表);几何常量**独立写死**在脚本里(真机断言不该跟 `@shared/tabIdBadge` 共用一份数) |
 | `cors-test-server.mjs` / `cors-probe.html` | CORS 插件的人工验证环境 |
 | `fetch-northbound.mjs` | 外网连通性探测 |

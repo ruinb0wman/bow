@@ -64,7 +64,9 @@ async function harness(platform = 'win32'): Promise<Harness> {
       },
       emit: () => {}
     },
-    service: { agent: { report: () => {} } }
+    service: { agent: { report: () => {} } },
+    // 插件现在也贡献 MCP 工具(S4);这个 harness 只看 terminal:run,给个同位空实现即可
+    mcp: { tool: () => {} }
   } as unknown as PluginContext
 
   const plugin = createTerminalPlugin({

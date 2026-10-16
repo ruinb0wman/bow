@@ -430,6 +430,11 @@ npm run test:mcp:http
 | `browser_pomo_start` / `browser_pomo_pause` | 开始 / 继续、暂停番茄钟的当前阶段(由「番茄钟」插件提供) |
 | `browser_pomo_skip` | 跳过当前阶段进入下一阶段(跳过不增加今日完成数)(由「番茄钟」插件提供) |
 | `browser_logseq_graph {node?, depth?, limit?, includeJournals?}` | 笔记(`bow://logseq` 的 Logseq 文件图)的关系图谱:不给 `node` 返回全图统计 + 连接最多的页面,给了就返回那个页面的 1~3 跳邻域(默认 1 跳)。只读(由「笔记」插件提供) |
+| `terminal_list_sessions` | 列出全部终端会话(标签页里的 shell):id、标题、工作目录、尺寸、最后活跃时间与代理状态(`working` 在跑 / `blocked` 在等用户 / `idle` 空闲 —— 终端里的 pi 会上报)(由「终端」插件提供) |
+| `terminal_read {id, chars?}` | 读某个会话的尾部输出(纯文本,已剥掉 bow/pi 的私有控制序列)。是原始字节流的尾部而非终端网格:最近的内容一定看得到,滚不到很早的历史(由「终端」插件提供) |
+| `terminal_send {id, text}` | 往某个会话麦输入(等同人工敲键盘,**无确认**)。文本原样送上去、**不自动补回车** —— 要执行命令就自己带上 `\r`(由「终端」插件提供) |
+| `terminal_run {command, args?, cwd?, name?}` | 开一个新终端会话并跑一条命令(如 `pi` / `npm test`)。pty 异步启动:返回的 `id` 立即有效,输出要稍后用 `terminal_read` 看(由「终端」插件提供) |
+| `terminal_close {id}` | 结束一个会话(Windows 上连进程树一起收)。会真杀掉里面跑着的东西(由「终端」插件提供) |
 
 > 插件导出的文件落在 bow 下载目录,见「数据存储」一节。
 
@@ -591,6 +596,13 @@ npm run test:mcp:http
   两条已知边界:① AltGr 布局(德语/法语/波兰语…)里 Chromium 会给 `Ctrl+Alt` 组合置上 AltGraph,
   真组合仍分不出来(维持现状);② macOS 的 `Ctrl+Option+字母` 是另一处原因(`evaluateKeyboardEvent`
   在 mac 上就不产出 key),本次未修。
+- 四五个终端开着时,不用逐个标签去翻:**工具栏的「牧群」按钮**一眼看住全部会话 —— 有代理在等用户时按钮变红底并显示**待办数**
+  (否则是暗色的总数,总数始终在 tooltip 里);点开是一张表,**按注意力排序**(等用户的 → 在跑的 → 刚跑完的 → 空着的 → 没跑代理的),
+  每行给出状态点 / 标题 / 代理在问什么 / 工作目录 / 尺寸与 pid / 最后活跃时间;**点一行 = 跳到那个终端并关面板**,
+  行尾的 × 直接结束那个会话,底部「新终端」开一个。这张表与 AI 的 `terminal_*` 工具、以及后续的远程页读的是**同一份**会话台账。
+- **AI 也能管终端**:`terminal_list_sessions` / `terminal_read` / `terminal_send` / `terminal_run` / `terminal_close`
+  由「终端」插件提供(见「MCP 工具一览」)。`terminal_send` 是**无确认的键盘注入**,能敲开任意会话;
+  `terminal_close` 会连进程树一起收 —— 要收回这两项能力就在「插件管理」里停用终端插件(终端页面也一并没了)。
 - **AI 代理状态联动**:终端里的 **pi** 会把「在跑 / 等你确认 / 跑完了」写成一条自定义 OSC
   (`ESC]1337;bow;{…}BEL`),终端插件在 pty 输出里把它剥掉(不会漏进 xterm),于是:
   - **正在执行** → 那个标签亮一个蓝色呼吸点(标签栏一项 = 一个组,分屏时按 blocked > working > done 取优先级);
@@ -1052,6 +1064,17 @@ BOW_E2E_BIN=dist/linux-unpacked/bow npm run test:e2e:agent                      
 > ```
 > 然后用 `LD_LIBRARY_PATH=$HOME/.cache/bow-alsa/usr/lib npm run test:e2e:agent`。
 > `test:mcp` / `test:e2e:device` 同理(那个脚本自己认 `SMOKE_LD_LIBRARY_PATH`)。
+
+## 牧群面板 E2E
+
+```bash
+npm run build && npm run test:e2e:herd
+```
+
+真 Electron + 真终端 + 真会话台账(只有「代理」是假的:一条 `printf` 把 OSC 打进 pty),验证工具栏按钮的计数/高亮、
+浮层里的行与**注意力排序**、「点一行跳到那个标签并关面板」、关会话后列表与计数跟着变。
+这些事单元测试看不到:浮层 id 要在渲染层注册表与内核事件路由两处对齐,「跳过去」走的是
+`ctx.pages.activate`(后台标签 / 别的分屏窗格也能切)而不是 `focus`。
 
 ## 无需显示环境的部分
 
