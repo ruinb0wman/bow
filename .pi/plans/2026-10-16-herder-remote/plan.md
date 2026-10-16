@@ -11,7 +11,9 @@ v1 范围 = P0 + P1 + P2 + P3;P4(会话与标签解耦)**不在 v1**,待单独�
 - [x] **S3 端到端**:`scripts/e2e-herd.mjs`(`npm run test:e2e:herd`,真 Electron + 真 pty + 真台账,15 项全绿)
 - [x] **S4 MCP 工具 ×5**(2026-10-16):`terminal_list_sessions` / `terminal_read` / `terminal_send` / `terminal_run` / `terminal_close`;`capabilities` 加 `'mcp'`。实跑 `npm run test:mcp` 工具数 40 → **45**、全部通过
 - [x] **文档同步**(2026-10-16):README(工具一览 5 行 + 终端一节的牧群面板/AI 管终端 + 牧群 E2E 一节)、`docs/ARCHITECTURE.md`(目录地图 / 插件两张表 / `pages.activate` / `plugin:event` / E2E 脚本表)、`packages/pi-bow/skills/bow-browser/SKILL.md`(工具数 45 + 选型行 + 两条反模式)。⚠️ 本机已安装的那份 skill(`~/.pi/agent/skills/bow-browser/SKILL.md`)要跑 `npm run mcp:install` 才会刷新;正在跑的 pi 会话要重连 MCP 才能看到这 5 个新工具
-- [ ] S5–S8 远程服务 · [ ] S9–S11 隧道 · [ ] S12 手机 UX
+- [ ] S5–S8 远程服务(浏览器客户端,含手机按键条)
+- [ ] S9–S11 隧道(默认档 named tunnel + Cloudflare Access,见 §6.2 D5)
+- [ ] S12 移动端打磨(PWA / 软键盘 / 字号)
 
 **P0 完成**(S1–S4 + 文档)。P1 开工前先做一次人工真机确认(计划 §7):开几个终端、跑一个真 pi、看按钮与面板、试试点行跳转与关闭。
 
@@ -166,7 +168,7 @@ interface SessionInfo {
   用独立 `vite.remote.config.ts` 构建(单入口 + `inlineDynamicImports` → 1 JS + 1 CSS),不经 electron-vite,
   免得 dev server(5173)与隧道冲突(`ELECTRON_RENDERER_URL` 是 localhost,远程浏览器打不开)。
 - 复用 `@plugins/terminal/shared` 的 `TERMINAL_THEME` / 默认字号 / `matchClipboardKey`(纯逻辑,三端可用)。
-- P3 手机 UX:按键条(Ctrl/Alt/Shift/Tab/Esc/方向/Paste)、`visualViewport` 适配软键盘、字号、PWA manifest。
+- P3 移动端打磨:`visualViewport` 适配软键盘、字号、PWA manifest。**(按键条已并入 P1/S8,见 §6.2 D5。)**
 
 ### 2.4 Cloudflare 隧道(P2)
 
@@ -226,7 +228,7 @@ herdr 的信息架构在 bow 里的对应物是「**一个常驻面板**」:工�
 | **P0 台账 + 本地面板 + MCP** | `SessionInfo`、`listSessions/focus/close/sendText/readTail/createSession`、`sessions-changed` 推送(节流)、`HerdPanel.vue`、5 个 MCP 工具 | 改 `terminal/main.ts`、`terminal/shared.ts`、`terminal/ui.ts`、新增 `ui/HerdPanel.vue` + `ui/HerdButton.vue`;`tests/terminal-sessions.test.ts` |
 | **P1 远程服务(仅 LAN)** | `ws` 依赖、`remote/{server,hub,auth}.ts`、`remote/index.html + src/renderer/remote/*`、`vite.remote.config.ts`、设置页「远程」分区 | 新增 6-8 文件;改 `package.json`、`electron.vite.config.ts`(或独立 config)、`plugins/terminal/ui.ts` |
 | **P2 隧道** | `remote/tunnel.ts`、设置页隧道块、URL + 二维码、二进制探测/下载 | 新增 `remote/tunnel.ts` + 设置 UI;无核心改动 |
-| **P3 手机 UX** | 按键条、软键盘适配、PWA、字体/主题 | 只在 `src/renderer/remote/` |
+| **P3 移动端打磨** | 软键盘适配、PWA、字体/主题(按键条已在 S8 交付) | 只在 `src/renderer/remote/` |
 | **P4(不做,移出 v1)** | 会话与标签解耦(sessionId 为一等身份、headless 会话、多 viewer 尺寸策略) | 若将来要做:改 `terminal/main.ts` 的 attach 协议 + `tab:closed` 语义 + 角标归属;单独立项 |
 
 P0+P1 是可独立交付的:先能「本地看见全部 agent」,再能「LAN 内手机接管」,最后才出公网。
@@ -259,6 +261,30 @@ P0+P1 是可独立交付的:先能「本地看见全部 agent」,再能「LAN �
 | D2 | 隧道 + 鉴权 | **两种都做**:quick 先打通 + named tunnel + Cloudflare Access 长期档 | 设置页需要模式选择与两条命令路径;quick 靠自建口令,长期档靠 CF Access |
 | D3 | 本地面板 | **工具栏按钮 + overlay 全窗面板** | 不动内部页体系;`OverlayPlacement: 'full'` 已够用 |
 | D4 | 终端控制类 MCP 工具 | **全做**,含无确认的 `terminal_send` | 描述里必须写明 send 是键盘注入、close 会杀进程树 |
+| D5 | 客户端形态 | **浏览器**(手机为主);做 TUI 客户端(**2026-10-16**) | 见 §6.2 |
+
+### 6.2 D5:为什么是浏览器,以及 TUI 为什么不做(但也不删)
+
+用户侧的实情:**远端只有手机**,而且**不能 SSH 到跑 bow 的机器**。这两条合起来把 TUI 的优势全抽掉了:
+TUI 最便宜的地方正是「安全与身份交给 SSH」,而这条路不通;剩下的只有「手机打不开」这一个缺点。
+所以 P1 的客户端就是 Web。
+
+但协议(§2.2 的 WS 多路复用)**与客户端形态无关** —— 将来想要 TUI 时它就是同一协议上的第二个客户端:
+~200 行、零新依赖(Node 22 自带 WebSocket 客户端),而且「列会话 + 读尾部 + 发命令」现在已经能由任意 MCP
+客户端做到(S4 已交付)。所以不是「不做 TUI」,而是「不把它当第一个客户端」。
+
+两个直接后果(已改进计划):
+
+1. **手机按键条并入 P1 的完成判据**(原 S12)。手机软键盘发不出 `Ctrl+C` / `Tab` / `Esc` / 方向键 ——
+   没有它连中断一个跑飞的命令都做不到,交互式程序(`pi`)基本没法用。「手机上真的能用」才算 P1 完。
+2. **S6 鉴权是承重墙**:不能 SSH 就不能「以后用 SSH 替掉自建口令」。默认档定为 **named tunnel +
+   Cloudflare Access**(CF 门口验身份,应用口令退成第二道 —— 自建的 cookie/退避/封禁代码从此不承担
+   唯一防线);quick tunnel 只当「第一次十分钟打通」。⚠️ named tunnel 需要你在 Cloudflare 上有一个域名,
+   没有就先 quick。
+
+**备注(不做,但记下备选)**:同样因为不能 SSH,**Tailscale** 比 cloudflared 更能省事 —— 身份在设备层,
+S6 那整套口令代码可以直接不写(监听绑到 tailnet 接口即可)。D2 仍按用户选择走 Cloudflare;哪天觉得口令那套
+不值得写,换 Tailscale 是砍掉它的正路(见 §8)。
 
 ## 6.1 原决策点(存档)
 
@@ -283,7 +309,7 @@ P0+P1 是可独立交付的:先能「本地看见全部 agent」,再能「LAN �
 
 | 方案 | 优点 | 代价 / 不合适的原因 |
 | --- | --- | --- |
-| **Tailscale + `tailscale serve`/`funnel`** | 身份在设备层,零口令,最省心的鉴权 | 每台客户端都要装 Tailscale;funnel 仍会暴露到公网 |
+| **Tailscale + `tailscale serve`/`funnel`** | 身份在设备层,零口令,最省心的鉴权;**不能 SSH 到 bow 主机时,它比 cloudflared 更能省事:身份在设备层,S6 那一整套口令代码可以不写**(把监听绑到 tailnet 接口即可,见 §6.2 备注) | 每台客户端都要装 Tailscale;funnel 仍会暴露到公网 |
 | **Cloudflare Workers + Durable Object 中继** | URL 稳定、天生可接 Access、无需本地二进制 | 要写 DO 中继 + bow 主动 dial-out 的长连接(方向反过来),工程量最大;cloudflared 已经为这件事存在 |
 | **ngrok / frp / 自建** | 换供应商 | 同样的口令问题,cloudflared 免费且够用 |
 | **纯 LAN + mTLS** | 不出网,最安全 | 需要在同一网段/自建内网穿透 —— 如果「远程」= 家里局域网,这其实是**最好的**选择,可作为 D2 的第四档 |
@@ -347,7 +373,7 @@ P0+P1 是可独立交付的:先能「本地看见全部 agent」,再能「LAN �
 | S5 | **hub + 服务骨架** | `package.json` 加 `ws`;新 `remote/hub.ts`(纯)+ `remote/server.ts`(`/healthz` + 占位静态);`main.ts` 在 `flush()`/`reportAgent()`/spawn/`killSession()` 四处接 hub;设置增 `remote.{enabled,host,port}` | `curl 127.0.0.1:PORT/healthz` 200;停用后端口关闭;hub 单测:订阅/退订/慢消费者不阻塞生产 |
 | S6 | **鉴权** | 新 `remote/auth.ts`:口令 → HMAC-SHA256 cookie(密钥随机 32B 存 `terminal.json`;`HttpOnly;Secure;SameSite=Strict`;有效期 7d)、constant-time 比较、`Origin.host === Host`(隧道下即 trycloudflare 域)、失败退避表 | 单测:篡改/过期/坏 Origin 全拒;无 cookie 打 `/ws` → 拒;`POST /login` 对口令 → 拿 cookie 后 `/ws` 通 |
 | S7 | **WS 协议** | 新 `remote/protocol.ts`(纯校验)+ server 处理;复用 S2 的会话函数;`attach` 先回 `replayText` | 新 `scripts/e2e-remote.mjs`:假客户端 `list → attach → input → 读回 → resize → 关标签收 closed`;无口令分支必须被拒 |
-| S8 | **远程页** | `vite.remote.config.ts` + `src/renderer/remote/*`;server 静态服务(白名单 MIME、防路径穿越、`index.html` 不缓存);`npm run build:remote` | 浏览器开 `http://127.0.0.1:PORT` → 登录 → 列表 → attach → 能打字;同网段手机同样能开(需 `host=0.0.0.0` 开关) |
+| S8 | **远程页 + 手机按键条** | `vite.remote.config.ts` + `src/renderer/remote/*`(含 **`KeyBar.vue`**:Ctrl/Alt/Shift/Tab/Esc/方向/Paste);server 静态服务(白名单 MIME、防路径穿越、`index.html` 不缓存);`npm run build:remote` | 浏览器开 `http://127.0.0.1:PORT` → 登录 → 列表 → attach → 能打字;**能发 Ctrl+C 中断一个跑飞的命令**;同网段手机能开(需 `host=0.0.0.0` 开关,仅开发期自测用) |
 
 ### P2 隧道(P1 完成后)
 
@@ -357,11 +383,15 @@ P0+P1 是可独立交付的:先能「本地看见全部 agent」,再能「LAN �
 | S10 | **设置页隧道块** | `RemoteSettings.vue` 加块:模式选择、token、二进制路径/下载按钮、URL + 复制、(可选)二维码、日志尾、「立即停止并断开」 | 手机扫/点 URL 能进;点「停止」后公网地址立刻不可达 |
 | S11 | **退出清理** | `deactivate` 与 `before-quit` 先杀 cloudflared;`killTree` 从 `main.ts` 提到共享 helper 复用 | 退出 bow 后 `cloudflared` 进程不存在(Windows 上查任务管理器/`tasklist`) |
 
-### P3 手机 UX(可拆散做)
+### P3 手机 UX(按键条已并入 S8,这里只剩打磨)
 
 | # | 步骤 | 做什么 | 完成判据 |
 | --- | --- | --- | --- |
-| S12 | **移动端可用性** | `KeyBar.vue`(Ctrl/Alt/Shift/Tab/Esc/方向/Paste)、`visualViewport` 适配软键盘、只读模式开关、字号、PWA manifest | 真机:软键盘弹出不遮输入行;能发 Ctrl+C;中文输入能上屏;锁屏回来自动重连 |
+| S12 | **移动端打磨** | `visualViewport` 适配软键盘、字号/主题、只读模式开关、PWA manifest(加到主屏) | 真机:软键盘弹出不遵输入行;中文输入能上屏;锁屏回来自动重连;主屏图标进去就是会话列表 |
 
-**可提前交付的组合**:S1+S2(台账岰 + API,无 UI)、S1–S4(P0 完整=「本地牧群面板+MCP」)、S5–S8(P1 完整=「局域网远程接管」)。
-P2 可以延后而不影响前面任何一步 —— 在那之前用 `ssh -L PORT:127.0.0.1:PORT` 或 LAN 开关也能远程用。
+> 按键条(Ctrl/Alt/Shift/Tab/Esc/方向/Paste)已从 S12 **提到 S8**,与远程页一起交付 ——
+> 手机是唯一客户端,没有它远程页等于半成品(见 §6.2 D5)。
+
+**可提前交付的组合**:S1+S2(台账 + API,无 UI)、S1–S4(P0 完整=「本地牧群面板+MCP」)、S5–S8(P1 完整=「局域网远程接管 + 手机可用」)。
+P2 可以延后而不影响前面任何一步 —— 在那之前用 `ssh -L PORT:127.0.0.1:PORT` 或 LAN 开关也能远程用(注意:
+后者对本用户不适用,见 §6.2 —— 那条只能当开发期自测手段)。
