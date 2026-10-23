@@ -136,8 +136,9 @@ function back(): void {
   active.id = null
 }
 
+/** 新终端:**不传 command** —— 主进程那边就是「开一个默认 shell」,与面板的「新终端」一致 */
 function createSession(): void {
-  socket?.send({ t: 'create', command: 'sh', args: [] })
+  socket?.send({ t: 'create' })
 }
 
 onMounted(() => {
@@ -202,9 +203,13 @@ const needsLogin = computed(() => !authed.value || state.value === 'refused')
         <span class="brand">bow 终端</span>
         <span class="count">{{ sessions.length }} 个会话</span>
         <span class="conn" :class="state">{{ state === 'open' ? '已连接' : state === 'connecting' ? '连接中…' : '已断开' }}</span>
+        <button class="new" title="开一个新终端(默认 shell)" @click="createSession">＋</button>
       </header>
 
-      <p v-if="sessions.length === 0" class="empty">还没有终端会话。在电脑上开一个终端,这里就会出现。</p>
+      <div v-if="sessions.length === 0" class="empty">
+        <p>还没有终端会话。</p>
+        <button class="primary" @click="createSession">开一个新终端</button>
+      </div>
 
       <ul v-else class="rows">
         <li
@@ -321,6 +326,18 @@ form {
   padding: 28px 16px;
   color: var(--muted);
   font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+}
+.empty p {
+  margin: 0;
+}
+.new {
+  min-width: 40px;
+  padding: 0 10px;
+  font-size: 16px;
 }
 .rows {
   list-style: none;

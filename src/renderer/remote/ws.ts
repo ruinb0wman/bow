@@ -42,7 +42,7 @@ export type ClientMessage =
   | { t: 'attach'; id: number; cols: number; rows: number }
   | { t: 'input'; id: number; data: string }
   | { t: 'resize'; id: number; cols: number; rows: number }
-  | { t: 'create'; command: string; args?: string[] }
+  | { t: 'create'; command?: string; args?: string[] }
   | { t: 'close'; id: number }
 
 export type ConnectionState = 'connecting' | 'open' | 'closed' | 'refused'

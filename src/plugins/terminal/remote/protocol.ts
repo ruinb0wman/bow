@@ -96,15 +96,19 @@ export function parseClientMessage(raw: unknown): ParseResult {
     }
 
     case 'create': {
+      // command 可省略:那就是「开一个默认 shell」—— 手机在空列表时也要能自己开一个
       const command = typeof msg.command === 'string' ? msg.command.trim() : ''
-      if (!command) return { ok: false, error: 'create 需要 command' }
+      if (msg.command !== undefined && !command) return { ok: false, error: 'command 不能是空串' }
       const args = Array.isArray(msg.args) ? msg.args.filter((a): a is string => typeof a === 'string') : []
       if (Array.isArray(msg.args) && args.length !== msg.args.length) {
         return { ok: false, error: 'args 必须是字符串数组' }
       }
       const cwd = typeof msg.cwd === 'string' && msg.cwd.trim() ? msg.cwd.trim() : undefined
       const name = typeof msg.name === 'string' && msg.name.trim() ? msg.name.trim() : undefined
-      return { ok: true, message: { t: 'create', command, args, ...(cwd ? { cwd } : {}), ...(name ? { name } : {}) } }
+      return {
+        ok: true,
+        message: { t: 'create', ...(command ? { command } : {}), args, ...(cwd ? { cwd } : {}), ...(name ? { name } : {}) }
+      }
     }
 
     default:
@@ -132,6 +136,7 @@ export interface RemoteSessionApi {
   input(id: number, data: string): boolean
   resize(id: number, cols: number, rows: number): boolean
   readTail(id: number, chars?: number): { ok: boolean; text?: string; error?: string }
+  /** `command` 省略 = 默认 shell profile(与面板的「新终端」一致) */
   create(input: { command?: string; args?: string[]; cwd?: string; name?: string }): {
     ok: boolean
     id?: number

@@ -119,7 +119,9 @@ describe('parseClientMessage', () => {
     expect(parseClientMessage({ t: 'read', id: 1, chars: 'abc' }).ok).toBe(false)
   })
 
-  it('create:command 必填,args 必须是字符串数组,cwd/name 去空', () => {
+  it('create:command 可省(= 默认 shell),args 必须是字符串数组,cwd/name 去空', () => {
+    // 手机在空列表时要能自己开一个默认 shell:不传 command 就是那个意思
+    expect(parseClientMessage({ t: 'create' })).toEqual({ ok: true, message: { t: 'create', args: [] } })
     expect(parseClientMessage({ t: 'create', command: 'pi' })).toEqual({
       ok: true,
       message: { t: 'create', command: 'pi', args: [] }
@@ -128,7 +130,7 @@ describe('parseClientMessage', () => {
       ok: true,
       message: { t: 'create', command: 'pi', args: ['--x'], name: 'n' }
     })
-    expect(parseClientMessage({ t: 'create' }).ok).toBe(false)
+    expect(parseClientMessage({ t: 'create', command: '   ' }).ok).toBe(false) // 空串是错,省略才是默认
     expect(parseClientMessage({ t: 'create', command: 'pi', args: [1] }).ok).toBe(false)
   })
 
