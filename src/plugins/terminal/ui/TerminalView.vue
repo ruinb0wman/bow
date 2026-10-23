@@ -59,6 +59,18 @@ function fail(text: string): void {
   message.value = text
 }
 
+/**
+ * 关掉自己的标签。
+ *
+ * 只有「用户/远程主动关会话」才走这里:标签就是会话,会话没了标签不该留着看一个死屏幕(`分屏窗格里最明显)。
+ * 本窗口最后一个标签的情形由主进程的 `TabManager.close()` 兜底补一个空白页 —— 渲染层的 `listTabs()`
+ * 是**跨窗口**的,在这里判「最后一个」会漏判。
+ */
+function closeSelf(): void {
+  if (tabId == null) return
+  void api.closeTab(tabId)
+}
+
 /** 容器尺寸变化 → 重算 cols/rows → 告诉 shell(分屏切换、窗口缩放都会走到这里) */
 function refit(): void {
   if (!term || !fitAddon || !alive) return
@@ -124,6 +136,12 @@ function subscribe(): void {
       }
       if (payload.event === TERMINAL_EVENTS.sessionClosed) {
         if (args?.tabId !== tabId) return
+        // 「面板 / 远程点的关闭」= 结束会话并**收掉这个终端标签**(用户的心智:一个终端标签就是那个会话)。
+        // 其它原因(shell 自己 exit、插件停用)留着页面把原因显示出来 —— 尤其是 exit,最后几行输出还有用。
+        if (args.reason === 'closed-by-request') {
+          void closeSelf()
+          return
+        }
         fail(args.reason === 'plugin-disabled' ? '终端插件已被停用' : '会话已结束')
         return
       }

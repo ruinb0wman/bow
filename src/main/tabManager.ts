@@ -517,6 +517,11 @@ export class TabManager extends EventEmitter {
     this.emit('tabs-changed')
     this.window.contentView.removeChildView(hit.view)
     hit.view.webContents.close()
+    // 窗口不能一个标签都不剩:关掉最后一个就补一个空白页。
+    // 为什么放在主进程:`listTabs()` 在渲染层是**跨窗口**的,渲染层无法判断「本窗口是不是空了」;
+    // 而窗口销毁不会走 close()(走 webContents 'destroyed' 那条路,见 wireLifecycle),
+    // 所以这里补标签不会在退出时造反。chrome 侧关标签后的兼底(在 App.vue)因此变成无害的空转。
+    if (this.views.size === 0 && !this.window.isDestroyed()) this.ensureActive()
     return { ok: true }
   }
 

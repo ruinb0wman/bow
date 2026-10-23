@@ -402,6 +402,23 @@ export function sessionSignature(infos: readonly SessionInfo[]): string {
 }
 
 /**
+ * Windows 上的可执行名补全:**裸命令名要带 `.exe`**,否则 node-pty 的 spawn 会报 `File not found`。
+ *
+ * 为什么需要它:node-pty 在 Windows 上把名字直接交给 `CreateProcess`,**不会**像 shell 那样补 PATHEXT 扩展名。
+ * 实测(2026-10-16):`terminal_run {command:"node"}` → `File not found`,而同一个 `node` 在那个终端里
+ * 手敲是能跑的(`node.exe` 版本号正常),`{command:"node.exe"}` 也正常 —— 这个不一致会让 AI 难受。
+ *
+ * 带路径或已经带扩展名的一律不动(`wsl.exe` / `C:\\Program Files\\nodejs\\node.exe`)。
+ * 注:`.cmd` / `.bat` 这类 shim 补 `.exe` 没用(CreateProcess 不能直接跑),必须走 `cmd.exe /c`。
+ */
+export function withWindowsExeSuffix(file: string, platform: string = process.platform): string {
+  if (platform !== 'win32') return file
+  const name = file.trim()
+  if (!name || name.includes('\\') || name.includes('/') || /\.[A-Za-z0-9]{1,8}$/.test(name)) return name
+  return `${name}.exe`
+}
+
+/**
  * 面板排序用的「注意力等级」:越小越该被先看到。
  * 这是 herder 那个东西的全部意义 —— 「一眼看出谁在等我」,而不是按开场顺序排。
  */

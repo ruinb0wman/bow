@@ -433,7 +433,7 @@ npm run test:mcp:http
 | `terminal_list_sessions` | 列出全部终端会话(标签页里的 shell):id、标题、工作目录、尺寸、最后活跃时间与代理状态(`working` 在跑 / `blocked` 在等用户 / `idle` 空闲 —— 终端里的 pi 会上报)(由「终端」插件提供) |
 | `terminal_read {id, chars?}` | 读某个会话的尾部输出(纯文本,已剥掉 bow/pi 的私有控制序列)。是原始字节流的尾部而非终端网格:最近的内容一定看得到,滚不到很早的历史(由「终端」插件提供) |
 | `terminal_send {id, text}` | 往某个会话麦输入(等同人工敲键盘,**无确认**)。文本原样送上去、**不自动补回车** —— 要执行命令就自己带上 `\r`(由「终端」插件提供) |
-| `terminal_run {command, args?, cwd?, name?}` | 开一个新终端会话并跑一条命令(如 `pi` / `npm test`)。pty 异步启动:返回的 `id` 立即有效,输出要稍后用 `terminal_read` 看(由「终端」插件提供) |
+| `terminal_run {command, args?, cwd?, name?}` | 开一个新终端会话并跑一条命令(如 `pi` / `npm test`)。**会等一会儿 pty 的启动结论**:`state: running` 才是真的起来了,`failed` 带原因(如命令不存在,协议层同时标 `isError`),`starting` 表示还没结论。⚠️ Windows 上裸命令会自动补 `.exe`;`.cmd` / `.bat` shim(如 npm 装的 `pi.cmd`)要自己包一层 `cmd.exe /c` —— 或直接用 `wsl.exe -e pi`(pi 装在 WSL 里时)(由「终端」插件提供) |
 | `terminal_close {id}` | 结束一个会话(Windows 上连进程树一起收)。会真杀掉里面跑着的东西(由「终端」插件提供) |
 
 > 插件导出的文件落在 bow 下载目录,见「数据存储」一节。
@@ -603,6 +603,9 @@ npm run test:mcp:http
 - **AI 也能管终端**:`terminal_list_sessions` / `terminal_read` / `terminal_send` / `terminal_run` / `terminal_close`
   由「终端」插件提供(见「MCP 工具一览」)。`terminal_send` 是**无确认的键盘注入**,能敲开任意会话;
   `terminal_close` 会连进程树一起收 —— 要收回这两项能力就在「插件管理」里停用终端插件(终端页面也一并没了)。
+  **Windows 上两个已知限制**:① 裸命令名会自动补 `.exe`(node-pty 自己不补,`node` 会报 `File not found`);
+  ② `.cmd` / `.bat` shim 不能直接跑(npm 全局装的 `pi.cmd` 就是这类),要包一层 `cmd.exe /c`,
+  或者直接用 `wsl.exe -e pi`(pi 在 WSL 里时,这才是正路)。
 - **AI 代理状态联动**:终端里的 **pi** 会把「在跑 / 等你确认 / 跑完了」写成一条自定义 OSC
   (`ESC]1337;bow;{…}BEL`),终端插件在 pty 输出里把它剥掉(不会漏进 xterm),于是:
   - **正在执行** → 那个标签亮一个蓝色呼吸点(标签栏一项 = 一个组,分屏时按 blocked > working > done 取优先级);

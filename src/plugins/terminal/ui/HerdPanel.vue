@@ -175,7 +175,7 @@ onBeforeUnmount(() => {
             <span class="herd-cwd">{{ shortPath(info.cwd) }}</span>
             <span class="herd-meta">{{ info.cols }}×{{ info.rows }} · pid {{ info.pid }}</span>
             <span class="herd-ago">{{ ago(info) }}</span>
-            <button class="win-btn herd-kill" title="结束这个终端" @click.stop="kill(info)">
+            <button class="win-btn herd-kill" title="结束会话并关闭终端" @click.stop="kill(info)">
               <X :size="13" />
             </button>
           </li>

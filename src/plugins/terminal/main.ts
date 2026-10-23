@@ -47,7 +47,8 @@ import {
   renderSettingsOf,
   replayText,
   sessionSignature,
-  withBowTerminalEnv
+  withBowTerminalEnv,
+  withWindowsExeSuffix
 } from './shared'
 import type {
   ReplayBuffer,
@@ -70,6 +71,11 @@ type PtyModule = typeof import('node-pty')
 /** 插件依赖注入缝(只有单测用):替换 node-pty 的加载,好让用例能喂假 pty 输出 */
 export interface TerminalPluginDeps {
   loadPty?: () => Promise<PtyModule>
+  /**
+   * `terminal_run` 等 spawn 结论的时长(ms,默认 3000;单测用小值)。
+   * pty 是在终端页 attach 时才 spawn 的,不等一下就只能拿「标签开好了」当成功。
+   */
+  runWaitMs?: number
 }
 
 interface Session {
@@ -160,6 +166,13 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
    * 用掉即删(spawn 失败保留 —— 刷新一下就能重试);标签关闭时一并清。
    */
   const pendingRuns = new Map<number, TerminalRunRequest>()
+  /**
+   * `terminal_run` 的启动失败记录(tabId → 原因)。看到它的工具就能如实报错,
+   * 而不是拿一个「标签开好了」回 `ok:true`。attach 重试成功时清掉。
+   */
+  const runFailures = new Map<number, string>()
+  /** `terminal_run` 最多等多久 spawn 结论(见 TerminalPluginDeps.runWaitMs) */
+  const runWaitMs = deps.runWaitMs ?? 3000
   /** 台账的合并定时器;deactivate 时要清掉,否则插件停用后还会往已回收的 ctx 上广播 */
   let sessionsTimer: NodeJS.Timeout | null = null
   /** 上一次广播出去的台账指纹;`null` = 还没播过 */
@@ -242,6 +255,7 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
   function killSession(tabId: number, reason: string): void {
     const session = sessions.get(tabId)
     pendingRuns.delete(tabId)
+    runFailures.delete(tabId)
     if (!session) return
     sessions.delete(tabId)
     if (session.flushTimer) clearTimeout(session.flushTimer)
@@ -302,6 +316,24 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
       sessionsTimer = null
       emitSessions()
     }, SESSIONS_THROTTLE_MS)
+  }
+
+  /**
+   * 等 `terminal_run` 的 spawn 结论。
+   *
+   * 为什么必须等:pty 是在**终端页 attach 时**才 spawn 的(那时才知道尺寸),所以 `createSession`
+   * 只能先把标签开出来。不等一下的话,「命令不存在 / 权限不对」这类失败会被当成 `ok:true` 回去。
+   * 三种结论:`running`(pty 起来了)/ `failed`(带了原因)/ `starting`(超时还没结论,不慌报)。
+   */
+  async function waitForRun(tabId: number): Promise<{ state: 'running' | 'failed' | 'starting'; error?: string }> {
+    const deadline = Date.now() + runWaitMs
+    for (;;) {
+      const failure = runFailures.get(tabId)
+      if (failure !== undefined) return { state: 'failed', error: failure }
+      if (sessions.has(tabId)) return { state: 'running' }
+      if (Date.now() >= deadline) return { state: 'starting' }
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
   }
 
   /**
@@ -396,7 +428,13 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
     const profile = defaultProfile(settings)
     // 内核事件 `terminal:run` 指定的命令优先(编辑器插件用这条路开 nvim);没有就用默认 shell profile,即今天的行为。
     const run = pendingRuns.get(tabId)
-    const spec = run ? buildCommandSpawn(run, { homedir: homedir() }) : buildSpawnSpec(profile, { homedir: homedir() })
+    const spec = run
+      ? buildCommandSpawn(
+          // Windows 上裸命令要补 `.exe`,否则 node-pty 直接报 File not found(见 withWindowsExeSuffix)
+          { ...run, file: withWindowsExeSuffix(run.file) },
+          { homedir: homedir() }
+        )
+      : buildSpawnSpec(profile, { homedir: homedir() })
     // 标签标题用命令名(`nvim(a.txt)`):终端页拿 `profileName` 当标题,前端不用改一行
     const profileId = run ? 'command' : profile.id
     const profileName = run ? (run.name ?? spec.file) : profile.name
@@ -437,6 +475,7 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
         agent: null
       }
       sessions.set(tabId, session)
+      runFailures.delete(tabId)
       notifySessions()
       proc.onData((data) => {
         // "活跃"看的是 pty 有没有产出 —— 带着 OSC 信号的 chunk 也算(代理在跑 = 肯定活跃)
@@ -473,6 +512,9 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
       context?.logError('启动 shell 失败', profileName, spec.file, message)
+      // 只对 `terminal:run` 记:调用方(编辑器 / terminal_run)可能正等着结论。
+      // pendingRuns 仍然保留 —— 刷新一下页面就能重试。
+      if (run) runFailures.set(tabId, message)
       return { ok: false, error: `启动 ${profileName} 失败:${message}` }
     }
   }
@@ -651,17 +693,27 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
         'terminal_run',
         {
           description:
-            '开一个新的终端会话并跑一条命令(如 pi / npm test)。pty 是异步起来的:返回的 id 立即有效,但输出要稍后用 terminal_read 才能看到',
+            '开一个新的终端会话并跑一条命令(如 pi / npm test)。会等一小会儿 pty 的启动结论:state=running 才是真的跑起来了,failed 会带原因(如命令不存在),starting 表示还没结论(再用 terminal_list_sessions 确认)。⚠️ Windows 上 .cmd/.bat shim 要自己包一层 cmd.exe /c',
           inputSchema: {
-            command: z.string().describe('可执行文件,如 pi / npm / wsl.exe'),
+            command: z.string().describe('可执行文件,如 pi / npm / wsl.exe(Windows 裸名会自动补 .exe)'),
             args: z.array(z.string()).optional().describe('参数(逐项传递,不做 shell 拼接)'),
             cwd: z.string().optional().describe('工作目录;省略为用户主目录'),
             name: z.string().optional().describe('标签标题(如 "pi");省略则用命令名')
           }
         },
-        (args) => {
-          const result = createSession({ command: args.command, args: args.args, cwd: args.cwd, name: args.name })
-          return result.ok ? textContent({ ok: true, id: result.tabId, note: 'pty 异步启动中,稍后 terminal_read' }) : errorContent(result.error ?? '开不了新会话')
+        async (args) => {
+          const created = createSession({ command: args.command, args: args.args, cwd: args.cwd, name: args.name })
+          if (!created.ok || created.tabId == null) return errorContent(created.error ?? '开不了新会话')
+          const settled = await waitForRun(created.tabId)
+          if (settled.state === 'failed') {
+            return errorContent(`命令没起来:${settled.error ?? '未知原因'}(标签 ${created.tabId} 还在,可以重试)`)
+          }
+          return textContent({
+            ok: true,
+            id: created.tabId,
+            state: settled.state,
+            ...(settled.state === 'starting' ? { note: 'pty 仍在启动,稍后用 terminal_list_sessions / terminal_read 确认' } : {})
+          })
         }
       )
       ctx.mcp.tool(

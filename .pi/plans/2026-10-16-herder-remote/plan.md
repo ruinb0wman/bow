@@ -395,3 +395,28 @@ S6 那整套口令代码可以直接不写(监听绑到 tailnet 接口即可)。
 **可提前交付的组合**:S1+S2(台账 + API,无 UI)、S1–S4(P0 完整=「本地牧群面板+MCP」)、S5–S8(P1 完整=「局域网远程接管 + 手机可用」)。
 P2 可以延后而不影响前面任何一步 —— 在那之前用 `ssh -L PORT:127.0.0.1:PORT` 或 LAN 开关也能远程用(注意:
 后者对本用户不适用,见 §6.2 —— 那条只能当开发期自测手段)。
+
+## 12. 人工测试发现的两个缺陷(2026-10-16 已修)
+
+用户在真机按 §7 的清单测试,报了「面板里点 × 后牧群列表去掉了,但分屏窗口还在」。顺着这条
+在 Windows 侧跑了一遍 AI 面,又抓出两个:
+
+1. **`closeSession` 只杀 pty,不关标签**(用户报的)。标签里留着一个「会话已结束」的死页面,
+   在分屏窗格里尤其明显。修法:`session-closed` 带 `reason: 'closed-by-request'` 时**终端页关自己的标签**
+   (用户的心智:一个终端标签就是一个会话;`exit` / 插件停用仍然留着页面显示原因)。
+   顺带发现「关掉最后一个标签会让窗口空掉」—— `TabManager.close()` 现在补一个空白页
+   (渲染层的 `listTabs()` 是**跨窗口**的,在这里判"最后一个"会漏判,所以放在主进程)。
+   `scripts/e2e-herd.mjs` 加了三项断言:被关会话的标签真的没了、窗口里仍有标签。
+2. **Windows 上裸命令必须带 `.exe`**,而 `terminal_run` 会把「标签开好了」当成功。实测:
+   同一个 `node` 在那个终端里手敲是能跑的,但 `{command:"node"}` → `File not found`(node-pty 把名字
+   直接交给 `CreateProcess`,不补 PATHEXT);而且工具仍然回 `ok:true`,AI 完全看不出命令没起来。
+   修法:`withWindowsExeSuffix()`(shared.ts,纯函数,已有单测)+ `terminal_run` 现在**等 spawn 结论**
+   (`waitForRun`,最多 3s):`state: running | failed | starting`,失败带原因并标 `isError`。
+
+顺带核实的环境事实(给以后的 Windows 排错):
+- **`pi` 不在 Windows 的 PATH 上**(它在 WSL 里)→ Windows 上要用 `wsl.exe -e pi`。
+- `.cmd` / `.bat` shim(npm 全局装的那种)**不能**直接 spawn,必须 `cmd.exe /c`;补 `.exe` 也没用。
+- **从 WSL 驱动 Windows 版的 MCP stdio 走不通**:WSL interop 只透传列在 `WSLENV` 里的环境变量
+  (不写 `WSLENV=MCP` 的话 `MCP=stdio` 根本传不过去,应用会按普通模式启动、日志走 stdout 把协议冲坏);
+  就算传过去了,Electron 全量启动时 stdin 也不可用(纯 `ELECTRON_RUN_AS_NODE` 模式可以)。
+  **正确做法**:用 Windows 自己的 node 跑脚本,或走 HTTP MCP(`MCP_HTTP=1 MCP_HTTP_PORT=...`)。

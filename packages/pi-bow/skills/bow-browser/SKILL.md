@@ -42,7 +42,7 @@ pi 内置 MCP 把每个工具注册为 `mcp__<服务器>__<工具>` —— 本�
 | 看手机页面的控制台 / 未捕获异常 | `device_console` | 只覆盖**调用期间**的日志(默认 800ms);要加载期日志传 `reload: true`(会重载页面) |
 | 在手机页面取值 / 批量读 | `device_eval` | 与 `browser_eval` 同套路,但作用于手机页面(最省 token) |
 | 让**人**看手机页面的真 DevTools | `device_inspect` | 在标签页里开出 DevTools 前端(等同 chrome://inspect 的 inspect) |
-| 看/管本机终端、操纵里头的 agent | `terminal_list_sessions` → `terminal_read` / `terminal_send` / `terminal_run` / `terminal_close` | 会话 id = 那个终端标签;`read` 给它尾部文本(不是终端网格,没有很早的历史),`send` 是无确认的键盘注入(要回车自己带 `\r`),`run` 开新会话跑命令(pty 异步起,稍后再 read),`close` 连进程树一起收 |
+| 看/管本机终端、操纵里头的 agent | `terminal_list_sessions` → `terminal_read` / `terminal_send` / `terminal_run` / `terminal_close` | 会话 id = 那个终端标签;`read` 给它尾部文本(不是终端网格,没有很早的历史),`send` 是无确认的键盘注入(要回车自己带 `\r`),`close` 连进程树一起收。`run` **会等一会儿启动结论**:`state: running` 才是真起来了,`failed` 带原因(`isError`),`starting` 表示还没结论。⚠️ Windows 上裸命令自动补 `.exe`;`.cmd`/`.bat` shim 要包 `cmd.exe /c`,或直接用 `wsl.exe -e pi` |
 
 ## 标准工作流
 

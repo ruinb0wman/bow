@@ -236,13 +236,24 @@ try {
   )
   check(overlayClosed === true, '跳转后面板自动关闭')
 
-  // ---------- ⑥ 关掉一个会话,列表跟着少一项 ----------
+  // ---------- ⑥ 关掉一个会话:标签也要真的消失(不只是从列表里少一行) ----------
+  // 这一条是人工测试抓到的回归:早先只杀了 pty,标签里留着一个「会话已结束」的死页面(分屏窗格里最明显)
   await evalOn(ws, `window.browserAPI.plugins.invoke('terminal','closeSession',${ids[1]})`)
   const two = await waitFor(async () => {
     const list = await listSessions(ws)
     return list?.length === 2 ? list : null
   })
   check(two !== null, '关闭会话后台账剩两个', two?.map((s) => s.id))
+  const tabGone = await waitFor(async () => {
+    const tabs = await evalOn(ws, `window.browserAPI.listTabs()`)
+    return tabs?.some((t) => t.id === ids[1]) === false
+  })
+  check(tabGone === true, `被关会话的标签 ${ids[1]} 也关掉了(不留死终端页)`)
+  // 窗口不能因此变空:最后一个标签的情形由 TabManager.close() 兼底补空白页
+  check(
+    (await evalOn(ws, `window.browserAPI.listTabs().then((t) => t.length > 0)`)) === true,
+    '关掉后窗口里仍有标签(不会变成空窗口)'
+  )
   // 按钮上那个数字的含义是:有代理等用户时显示**待办数**(红底,行动导向);否则显示总数(暗色)。
   // 总数在 tooltip 里一直有 —— 所以这里两个都断言,顺便看住这个约定。
   const buttonTitle = () => evalOn(ws, `document.querySelector('.herd-btn')?.getAttribute('title') ?? null`)

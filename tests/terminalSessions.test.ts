@@ -28,7 +28,8 @@ const {
   formatAgo,
   sessionSignature,
   shortPath,
-  sortSessionsByAttention
+  sortSessionsByAttention,
+  withWindowsExeSuffix
 } = await import('../src/plugins/terminal/shared')
 const { TERMINAL_RUN_EVENT } = await import('../src/shared/terminalRun')
 type PluginContext = import('../src/main/plugins/types').PluginContext
@@ -64,6 +65,8 @@ class FakePty {
 
 interface Harness {
   plugin: PluginMain
+  /** 让下一次 spawn 抛错(模拟「命令不存在」:node-pty 抛 File not found) */
+  failNextSpawn: () => void
   ctx: PluginContext
   ptys: FakePty[]
   opened: string[]
@@ -120,10 +123,17 @@ async function harness(platform = 'win32'): Promise<Harness> {
     pages: { activate: (tabId: number) => (activated.push(tabId), true) }
   } as unknown as PluginContext
 
+  let failOnce = false
   const plugin = createTerminalPlugin({
+    // 单测里把等待缩短:默认 3000ms 会让「起不来的命令」那条用例白等
+    runWaitMs: 300,
     loadPty: async () =>
       ({
         spawn: () => {
+          if (failOnce) {
+            failOnce = false
+            throw new Error('File not found: node.exe')
+          }
           const pty = new FakePty()
           ptys.push(pty)
           return pty
@@ -135,6 +145,9 @@ async function harness(platform = 'win32'): Promise<Harness> {
   return {
     plugin,
     ctx,
+    failNextSpawn: () => {
+      failOnce = true
+    },
     ptys,
     opened,
     activated,
@@ -441,21 +454,68 @@ describe('MCP 工具(一个 pi 管它的同类)', () => {
     expect((h.tools.get('terminal_send')!({ id: 999, text: 'x' }) as { isError?: boolean }).isError).toBe(true)
   })
 
-  it('terminal_run 走 createSession(带 cwd/name 时发 terminal:run)', async () => {
+  it('terminal_run 走 createSession(带 cwd/name 时发 terminal:run);没结论时回 starting,不谎报 running', async () => {
+    vi.useRealTimers() // waitForRun 靠 setTimeout 推进,假时钟会把它冻死
     const h = await harness()
-    const body = payloadOf(h.tools.get('terminal_run')!({ command: 'pi', args: ['--print'], cwd: '/tmp/p', name: 'pi' }))
-    expect(body).toMatchObject({ ok: true, id: 101 })
+    const body = payloadOf(
+      await h.tools.get('terminal_run')!({ command: 'pi', args: ['--print'], cwd: '/tmp/p', name: 'pi' })
+    )
+    expect(body).toMatchObject({ ok: true, id: 101, state: 'starting' })
     expect(h.runRequests).toEqual([{ tabId: 101, file: 'pi', args: ['--print'], cwd: '/tmp/p', name: 'pi' }])
-    // pty 是异步起的:工具不能谎报「已经在跑了」
-    expect(String(body.note)).toContain('异步')
+    expect(String(body.note)).toContain('仍在启动')
+  })
+
+  it('terminal_run:pty 真的起来时回 state=running', async () => {
+    vi.useRealTimers() // waitForRun 靠 setTimeout 推进,假时钟会把它冻死
+    const h = await harness()
+    // 工具的等待与 attach 并存:先让它开始等,再触发 attach(真实时序:终端页加载 → attach → spawn)
+    const pending = h.tools.get('terminal_run')!({ command: 'node.exe', name: 'node' })
+    await h.attach(101)
+    expect(payloadOf(await pending)).toMatchObject({ ok: true, id: 101, state: 'running' })
+  })
+
+  it('terminal_run:spawn 失败时如实报 failed(不能拿「标签开好了」当成功)', async () => {
+    vi.useRealTimers() // waitForRun 靠 setTimeout 推进,假时钟会把它冻死
+    const h = await harness()
+    h.failNextSpawn()
+    const pending = h.tools.get('terminal_run')!({ command: 'node.exe', name: 'node' })
+    await h.attach(101)
+    const result = await pending
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(payloadOf(result)).toMatchObject({ ok: false })
+    expect(String(payloadOf(result).error)).toContain('命令没起来')
   })
 
   it('terminal_close 真杀进程;未知会话报错', async () => {
     const h = await harness()
     await h.attach(7)
-    expect(payloadOf(h.tools.get('terminal_close')!({ id: 7 }))).toEqual({ ok: true, id: 7 })
+    expect(payloadOf(await h.tools.get('terminal_close')!({ id: 7 }))).toEqual({ ok: true, id: 7 })
     expect(h.ptys[0]!.killed).toBe(true)
-    expect((h.tools.get('terminal_close')!({ id: 7 }) as { isError?: boolean }).isError).toBe(true)
+    expect(
+      ((await h.tools.get('terminal_close')!({ id: 7 })) as { isError?: boolean }).isError
+    ).toBe(true)
+  })
+})
+
+// ---------- Windows 裸命令补全 ----------
+
+describe('withWindowsExeSuffix', () => {
+  it('Windows:裸名补 .exe,带路径或已带扩展名的一律不动', () => {
+    expect(withWindowsExeSuffix('node', 'win32')).toBe('node.exe')
+    expect(withWindowsExeSuffix('cmd', 'win32')).toBe('cmd.exe')
+    expect(withWindowsExeSuffix('  node  ', 'win32')).toBe('node.exe')
+    expect(withWindowsExeSuffix('node.exe', 'win32')).toBe('node.exe')
+    expect(withWindowsExeSuffix('wsl.exe', 'win32')).toBe('wsl.exe')
+    expect(withWindowsExeSuffix('C:\\Program Files\\nodejs\\node.exe', 'win32')).toBe(
+      'C:\\Program Files\\nodejs\\node.exe'
+    )
+    expect(withWindowsExeSuffix('..\\bin\\pi', 'win32')).toBe('..\\bin\\pi')
+    expect(withWindowsExeSuffix('/usr/bin/node', 'win32')).toBe('/usr/bin/node')
+  })
+
+  it('非 Windows 平台原样返回', () => {
+    expect(withWindowsExeSuffix('node', 'linux')).toBe('node')
+    expect(withWindowsExeSuffix('', 'win32')).toBe('')
   })
 })
 
