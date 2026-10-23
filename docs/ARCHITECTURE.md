@@ -443,7 +443,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 
 | 扩展点 | 宿主文件 | 关键行为 |
 | --- | --- | --- |
-| `ui` | `renderer/src/plugins/registry.ts` + `App.vue` / `OverlayApp.vue` / `SettingsPage.vue` | host 按「已启用插件」过滤后渲染;`collectSlot()` 决定同槽顺序 |
+| `ui` | `renderer/src/plugins/registry.ts` + `App.vue` / `OverlayApp.vue` / `SettingsPage.vue` | host 按「已启用插件」过滤后渲染;`collectSlot()` 决定同槽顺序。`toolbar` 槽的顺序/隐藏还叠加设置里的覆盖(见 §7.3),`addressbar-trailing` 固定 |
 | `suggest` | `main/plugins/kernel.ts` 的 `suggest()` | 各源 provide → `mergeSuggestions` → `buildSuggestRows` |
 | `mcp` | `main/plugins/mcpHost.ts` | 缓冲声明,attach 后补注册;支持热移除 |
 | `net` | `main/plugins/netHooks.ts` | 三阶段链式;**cancel/redirect 短路后续钩子** |
@@ -920,9 +920,16 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 ### 7.3 设置页
 
 - 侧栏模型由 `shared/settingsNav.ts` 的 `buildSettingsNav()` 生成:
-  `[常规, 快捷键, 插件管理]` + 「enabled && hasSections」的插件(保持 `PLUGIN_UI` 顺序)。
+  `[常规, 工具栏, 快捷键, 插件管理]` + 「enabled && hasSections」的插件(保持 `PLUGIN_UI` 顺序)。
 - 分区 id 约定 `plugin:<pluginId>`(`settingsSectionId()`);插件被停用/失去分区时自动回落到「插件管理」。
 - 所有设置**即时保存**,没有保存/取消按钮。
+- **工具栏**分区(`ToolbarSettings.vue`)只调**插件贡献的按钮**:列表 = 当前贡献了 `toolbar` 插槽的插件
+  (停用的也留着,免得恢复启用后位置丢了),↑/↓ 换位、「已隐藏」/「已显示」眼睛图标切换、「恢复默认」清空两项设置。
+  即时 `setSettings`,经 `settings:changed` 广播回 chrome,工具栏立即重排/收起(不用重启)。
+  顺序真源是 `shared/toolbarOrder.ts` 的 `mergeToolbarOrder(saved, SLOT_PLUGIN_ORDER.toolbar, available)`:
+  保存值只记插件 id、可用清单外的 id 一律丢弃(插件下线不留残渣)、新插件永远追加在末尾;
+  `App.vue` 把结果当 `collectSlot()` 的 `preferredOrder`,隐藏项在 `isEnabled` 回调里就被过滤掉。
+  ⚠️ **固定按钮(后退/前进/刷新、地址栏、分屏、设置)不参与排序** —— 地址栏是弹性宽度元素,排它等于重做工具栏布局。
 - **常规**只有搜索引擎与主页(主页留空视为放弃修改)。**分屏宽度预设已取消** —— 分屏改成嵌套树,
   分隔比例由 `Alt+Shift+方向` 现场调,可复用的东西变成「布局」(只存结构)在工具栏分屏面板里保存/套用/删除。
 - **快捷键**分区(`ShortcutsHelp.vue`)是一份**纯分类参考清单**,数据全部来自 `shared/shortcutCatalog.ts`
@@ -960,7 +967,7 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 
 | 文件 | 内容 | 默认值 | 所有者 |
 | --- | --- | --- | --- |
-| `settings.json` | 核心设置 | `{searchEngine:'google', homepage:'https://www.google.com', corsBypassEnabled:true, corsWhitelist:CORS_DEFAULT_LIST}`(历史版本里遗留的 `splitPresets` 键不再读写,原样留在文件里) | `stores.ts` |
+| `settings.json` | 核心设置 | `{searchEngine:'google', homepage:'https://www.google.com', corsBypassEnabled:true, corsWhitelist:CORS_DEFAULT_LIST, toolbarOrder:[], toolbarHidden:[]}`(历史版本里遗留的 `splitPresets` 键不再读写,原样留在文件里;`toolbarOrder`/`toolbarHidden` 是工具栏插件按钮的顺序与隐藏,空 = 用注册表默认顺序) | `stores.ts` |
 | `split-layouts.json` | 保存的分屏布局(数组整体替换;`LayoutPreset[]`,只存结构) | `[]` | `stores.ts`(读写前一律过 `normalizeLayoutPresets()`) |
 | `plugins.json` | 插件启停 | `{version:1, disabled:[]}` | `PluginKernel` |
 | `bookmarks.json` | 书签树 | `[]` | bookmarks |

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * 设置页(浏览器内部标签页 bow://settings):
- * 左侧导航 = 常规 + 快捷键 + 插件管理 + 每个「已启用且贡献了设置分区」的插件一项;
+ * 左侧导航 = 常规 + 工具栏 + 快捷键 + 插件管理 + 每个「已启用且贡献了设置分区」的插件一项;
  * 右侧内容全宽渲染,插件设置内联展示(不再嵌套弹窗),所有设置即时保存。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
@@ -11,6 +11,7 @@ import {
   SETTINGS_GENERAL_ID,
   SETTINGS_PLUGINS_ID,
   SETTINGS_SHORTCUTS_ID,
+  SETTINGS_TOOLBAR_ID,
   buildSettingsNav,
   settingsSectionId
 } from '@shared/settingsNav'
@@ -18,6 +19,7 @@ import { PLUGIN_UI } from '../plugins/registry'
 import GeneralSettings from './GeneralSettings.vue'
 import PluginManager from './PluginManager.vue'
 import ShortcutsHelp from './ShortcutsHelp.vue'
+import ToolbarSettings from './ToolbarSettings.vue'
 
 const api = window.browserAPI
 
@@ -119,6 +121,7 @@ onBeforeUnmount(() => {
       <header class="settings-head">
         <h1 class="settings-title">
           <template v-if="activeId === SETTINGS_GENERAL_ID">常规</template>
+          <template v-else-if="activeId === SETTINGS_TOOLBAR_ID">工具栏</template>
           <template v-else-if="activeId === SETTINGS_SHORTCUTS_ID">快捷键</template>
           <template v-else-if="activeId === SETTINGS_PLUGINS_ID">插件管理</template>
           <template v-else>{{ activePluginName }}</template>
@@ -128,6 +131,7 @@ onBeforeUnmount(() => {
 
       <div class="settings-body">
         <GeneralSettings v-if="activeId === SETTINGS_GENERAL_ID" />
+        <ToolbarSettings v-else-if="activeId === SETTINGS_TOOLBAR_ID" />
         <ShortcutsHelp v-else-if="activeId === SETTINGS_SHORTCUTS_ID" />
         <PluginManager v-else-if="activeId === SETTINGS_PLUGINS_ID" @configure="configurePlugin" />
         <template v-else>

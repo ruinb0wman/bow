@@ -216,6 +216,10 @@ export interface Settings {
   corsBypassEnabled: boolean
   /** CORS 放行白名单:域名 / IP / host:端口 / *.子域,匹配规则见 @shared/cors */
   corsWhitelist: string[]
+  /** 工具栏插件按钮的顺序(插件 id);空 = 用注册表的默认顺序,见 @shared/toolbarOrder */
+  toolbarOrder: string[]
+  /** 工具栏里隐藏的插件按钮(插件 id) */
+  toolbarHidden: string[]
 }
 
 export interface FlatBookmark {

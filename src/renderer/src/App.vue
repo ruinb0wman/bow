@@ -7,6 +7,7 @@ import type {
   SplitPaneInfo,
   TabGroupInfo,
   TabInfo,
+  Settings,
   Suggestion,
   SuggestPayload,
   SuggestRow
@@ -16,6 +17,7 @@ import type { AgentBadge } from '@shared/agentState'
 import type { PluginSlot } from './plugins/types'
 import { SETTINGS_URL } from '@shared/internalPages'
 import { focusRingBars } from '@shared/split'
+import { mergeToolbarOrder } from '@shared/toolbarOrder'
 import { faviconLetter } from './lib/avatar'
 import {
   blurredSession,
@@ -54,8 +56,24 @@ let selectOnFocus = false
 const plugins = ref<PluginInfo[]>([])
 const enabledIds = computed(() => new Set(plugins.value.filter((p) => p.enabled).map((p) => p.id)))
 
+/** 工具栏顺序/隐藏来自设置(设置页改完经 settings-changed 广播回来,无需重启) */
+const toolbarOrder = ref<string[]>([])
+const toolbarHidden = ref<string[]>([])
+/** 当前贡献了 toolbar 按钮的插件 —— 顺序与隐藏的作用域(清单外的 id 一律忽略) */
+const TOOLBAR_PLUGINS = PLUGIN_UI.filter((ui) => (ui.slots?.toolbar?.length ?? 0) > 0).map((ui) => ui.id)
+
+function applySettings(s: Settings): void {
+  toolbarOrder.value = s.toolbarOrder ?? []
+  toolbarHidden.value = s.toolbarHidden ?? []
+}
+
 function slotComponents(slot: PluginSlot): Component[] {
-  return collectSlot(PLUGIN_UI, slot, (id) => enabledIds.value.has(id), SLOT_PLUGIN_ORDER[slot])
+  const hidden = slot === 'toolbar' ? new Set(toolbarHidden.value) : null
+  const preferred =
+    slot === 'toolbar'
+      ? mergeToolbarOrder(toolbarOrder.value, SLOT_PLUGIN_ORDER[slot], TOOLBAR_PLUGINS)
+      : SLOT_PLUGIN_ORDER[slot]
+  return collectSlot(PLUGIN_UI, slot, (id) => enabledIds.value.has(id) && !hidden?.has(id), preferred)
 }
 const addressbarSlots = computed(() => slotComponents('addressbar-trailing'))
 const toolbarSlots = computed(() => slotComponents('toolbar'))
@@ -196,6 +214,8 @@ onMounted(async () => {
   groups.value = await api.getGroups()
   syncAddress()
   plugins.value = await api.plugins.list()
+  // 工具栏顺序/隐藏:拿不到就按注册表默认,不能让工具栏空掉
+  void api.getSettings().then(applySettings, () => {})
 
   unsubs.push(
     api.onTabUpdated((tab) => {
@@ -214,6 +234,7 @@ onMounted(async () => {
     api.plugins.onChanged((list) => {
       plugins.value = list
     }),
+    api.onSettingsChanged(applySettings),
     // 主进程 Ctrl+T 新建标签后要求聚焦地址栏
     api.onFocusAddressRequest(() => {
       focusAddress()

@@ -12,7 +12,9 @@ export const DEFAULT_SETTINGS = {
   searchEngine: 'google' as SearchEngineId,
   homepage: 'https://www.google.com',
   corsBypassEnabled: true,
-  corsWhitelist: CORS_DEFAULT_LIST
+  corsWhitelist: CORS_DEFAULT_LIST,
+  toolbarOrder: [] as string[],
+  toolbarHidden: [] as string[]
 }
 
 /** 完整 scheme:// 前缀 */
