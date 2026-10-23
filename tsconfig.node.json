@@ -26,6 +26,7 @@
     "src/plugins/*/format.ts",
     "src/plugins/*/graph.ts",
     "src/plugins/*/piBridge.ts",
+    "src/plugins/*/remote/*.ts",
     "src/plugins/*/adb.ts",
     "src/plugins/*/targets.ts",
     "src/plugins/*/relay.ts",

@@ -11,9 +11,13 @@ v1 范围 = P0 + P1 + P2 + P3;P4(会话与标签解耦)**不在 v1**,待单独�
 - [x] **S3 端到端**:`scripts/e2e-herd.mjs`(`npm run test:e2e:herd`,真 Electron + 真 pty + 真台账,15 项全绿)
 - [x] **S4 MCP 工具 ×5**(2026-10-16):`terminal_list_sessions` / `terminal_read` / `terminal_send` / `terminal_run` / `terminal_close`;`capabilities` 加 `'mcp'`。实跑 `npm run test:mcp` 工具数 40 → **45**、全部通过
 - [x] **文档同步**(2026-10-16):README(工具一览 5 行 + 终端一节的牧群面板/AI 管终端 + 牧群 E2E 一节)、`docs/ARCHITECTURE.md`(目录地图 / 插件两张表 / `pages.activate` / `plugin:event` / E2E 脚本表)、`packages/pi-bow/skills/bow-browser/SKILL.md`(工具数 45 + 选型行 + 两条反模式)。⚠️ 本机已安装的那份 skill(`~/.pi/agent/skills/bow-browser/SKILL.md`)要跑 `npm run mcp:install` 才会刷新;正在跑的 pi 会话要重连 MCP 才能看到这 5 个新工具
-- [ ] S5–S8 远程服务(浏览器客户端,含手机按键条)
-- [ ] S9–S11 隧道(默认档 named tunnel + Cloudflare Access,见 §6.2 D5)
-- [ ] S12 移动端打磨(PWA / 软键盘 / 字号)
+- [x] **S5 服务骨架**(2026-10-16):`ws@8` 依赖;`remote/hub.ts`(扇出 + 慢消费者断开)、`remote/server.ts`(`/healthz` / 双向绑 / `lanUrls`);设置加 `remote.{enabled,bind,port}`;插件接线(flush/台账/exit/closed → hub;activate/设置变更/停用 → 启停)
+- [ ] S6 鉴权 · [ ] S7 WS 协议 · [ ] S8 远程页+手机按键条
+- [ ] S9–S11 隧道(**暂不做**,见 D6) · [ ] S12 移动端打磨
+
+**D6(2026-10-16 用户拍板)**:没有 Cloudflare 域名 → **先只做局域网**(S5–S8),隧道三步(S9–S11)搁置。
+后果:鉴权(S6)仍然是承重墙(同网段任何设备都能试兑,不是“内网就可信”),只是不需要公网那层的加固;
+`bind: 'lan'`(0.0.0.0)是显式开关,默认回环。
 
 **P0 完成**(S1–S4 + 文档)。P1 开工前先做一次人工真机确认(计划 §7):开几个终端、跑一个真 pi、看按钮与面板、试试点行跳转与关闭。
 
@@ -397,7 +401,6 @@ P2 可以延后而不影响前面任何一步 —— 在那之前用 `ssh -L POR
 后者对本用户不适用,见 §6.2 —— 那条只能当开发期自测手段)。
 
 ## 12. 人工测试发现的两个缺陷(2026-10-16 已修)
-
 用户在真机按 §7 的清单测试,报了「面板里点 × 后牧群列表去掉了,但分屏窗口还在」。顺着这条
 在 Windows 侧跑了一遍 AI 面,又抓出两个:
 
@@ -420,3 +423,26 @@ P2 可以延后而不影响前面任何一步 —— 在那之前用 `ssh -L POR
   (不写 `WSLENV=MCP` 的话 `MCP=stdio` 根本传不过去,应用会按普通模式启动、日志走 stdout 把协议冲坏);
   就算传过去了,Electron 全量启动时 stdin 也不可用(纯 `ELECTRON_RUN_AS_NODE` 模式可以)。
   **正确做法**:用 Windows 自己的 node 跑脚本,或走 HTTP MCP(`MCP_HTTP=1 MCP_HTTP_PORT=...`)。
+
+## 13. S5 落地记录(2026-10-16)
+
+**加了什么**:`ws@8`(唯一新依赖)、`remote/hub.ts`、`remote/server.ts`、`TerminalRemoteSettings`、
+`remote-changed` 事件、`remoteStatus` / `applyRemote` 两个 IPC。
+
+**三个设计决定**:
+
+1. **慢消费者断开,不丢字节**。丢一个 chunk 终端画面就**永久错位**(光标位置/转义序列全乱),
+   而断开后重连时 `attach` 会先发回放,画面能重建 —— 所以「超过 4MB 积压就踢掉」是这里唯一自洽的
+   策略。单测里专门验了「一个字节都没给它,但它被 drop 了」。
+2. **台账复用同一个指纹去重**。`emitSessions()` 里 `ipc.emit` 之后顺手 `hub.publish`,
+   所以远程不会比本地面板多播一次;代理状态也不需要单独的事件类型(它在 `SessionInfo.agent` 里)。
+3. **`/healthz` 不带内容**。S6 之前它没有鉴权,所以只回 `ok/service/bind/sessions 数量`,
+   不回标题、路径、输出。
+
+**测试抓到的一个真缺陷(值得记)**:`applyRemote` 原来没有串行化 —— `setSettings` 触发的
+对齐与随后显式调用的 `applyRemote` 撞在一起,两个 `startRemoteServer` 抢同一个端口,
+报的是**自己上一次刚开的那个** EADDRINUSE。修法:在飞的调用只加「脏」标记、结束后再对一次
+(合并 + 收敛),`terminalSessions.test.ts` 里三条用例看住启停/端口占用/停用释放。
+
+另一个环境坑:本机配了 HTTP 代理,**`fetch` 到一个已关闭的端口会拿到 502 而不是拒绝** ——
+所以「端口真的释放了」这条必须用裸 TCP 连接判,不能用 fetch。

@@ -30,6 +30,9 @@ import { TERMINAL_RUN_EVENT, parseTerminalRunRequest } from '@shared/terminalRun
 import type { TerminalRunRequest } from '@shared/terminalRun'
 import { installPiBridge, piBridgeStatus, uninstallPiBridge } from './piBridge'
 import type { PiBridgeEnv, PiBridgeIo } from './piBridge'
+import { SessionHub } from './remote/hub'
+import { startRemoteServer } from './remote/server'
+import type { RemoteServerHandle } from './remote/server'
 import {
   MAX_SESSIONS,
   REPLAY_MAX_CHARS,
@@ -39,6 +42,7 @@ import {
   buildSpawnSpec,
   cleanEnv,
   defaultSettings,
+  defaultRemoteSettings,
   emptyReplay,
   findInPath,
   normalizeSettings,
@@ -57,6 +61,7 @@ import type {
   TerminalAttachResult,
   TerminalCandidate,
   TerminalProfile,
+  TerminalRemoteStatus,
   TerminalSettings
 } from './shared'
 
@@ -173,6 +178,16 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
   const runFailures = new Map<number, string>()
   /** `terminal_run` 最多等多久 spawn 结论(见 TerminalPluginDeps.runWaitMs) */
   const runWaitMs = deps.runWaitMs ?? 3000
+  /** 远程订阅扇出:pty 输出与台账的第二个出口(第一个是渲染层 IPC) */
+  const hub = new SessionHub()
+  /** 远程服务句柄;null = 没在跑(未启用 / 启动失败 / 已停) */
+  let remote: RemoteServerHandle | null = null
+  /** 最近一次启动失败的原因(设置页要看得见,不能只进日志) */
+  let remoteError: string | null = null
+  /** 正在对齐的 applyRemote;并发调用合并到它(见 applyRemote 的注释) */
+  let remoteApplying: Promise<TerminalRemoteStatus> | null = null
+  /** 对齐期间设置又变了:结束后再对一次 */
+  let remoteDirty = false
   /** 台账的合并定时器;deactivate 时要清掉,否则插件停用后还会往已回收的 ctx 上广播 */
   let sessionsTimer: NodeJS.Timeout | null = null
   /** 上一次广播出去的台账指纹;`null` = 还没播过 */
@@ -212,6 +227,8 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
     const chunk = session.pending.join('')
     session.pending = []
     context?.ipc.emit(TERMINAL_EVENTS.data, { tabId: session.tabId, chunk })
+    // 同一口数据喂给远程订阅者(合批后的,不是每个 chunk 都搬一次)
+    hub.publish({ t: 'data', id: session.tabId, chunk })
   }
 
   function enqueue(session: Session, chunk: string): void {
@@ -267,6 +284,7 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
       context?.log('kill 会话失败', tabId, String(e))
     }
     context?.ipc.emit(TERMINAL_EVENTS.sessionClosed, { tabId, reason })
+    hub.publish({ t: 'closed', id: tabId, reason })
     context?.log('会话已结束', tabId, reason, session.profileName)
     notifySessions()
   }
@@ -304,6 +322,8 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
     if (signature === lastSessionsSignature) return
     lastSessionsSignature = signature
     context?.ipc.emit(TERMINAL_EVENTS.sessionsChanged, infos)
+    // 远程那边要同一份台账。与 IPC 用**同一个指纹去重**,所以远程不会比面板多播
+    hub.publish({ t: 'sessions', sessions: infos })
   }
 
   /**
@@ -386,6 +406,94 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
   /** 当前默认配置(找不到就退到第一条 —— 设置文件被手改坏也不会崩) */
   function defaultProfile(settings: TerminalSettings): TerminalProfile {
     return settings.profiles.find((p) => p.id === settings.defaultProfileId) ?? settings.profiles[0]
+  }
+
+  // ---------- 远程服务(S5:启停 + 状态;鉴权与 WS 协议在 S6/S7)----------
+
+  function remoteStatus(): TerminalRemoteStatus {
+    const want = store?.get().remote ?? defaultRemoteSettings()
+    return {
+      enabled: want.enabled,
+      bind: want.bind,
+      port: remote?.port ?? want.port,
+      running: remote != null,
+      url: remote?.url ?? null,
+      lanUrls: remote?.lanUrls ?? [],
+      error: remoteError
+    }
+  }
+
+  function notifyRemote(): TerminalRemoteStatus {
+    const status = remoteStatus()
+    context?.ipc.emit(TERMINAL_EVENTS.remoteChanged, status)
+    return status
+  }
+
+  async function stopRemote(): Promise<void> {
+    const handle = remote
+    remote = null
+    // 先告诉订阅者（S7 起有真客户端）服务要走，再关监听
+    hub.clear('服务已停止')
+    if (!handle) return
+    try {
+      await handle.close()
+      context?.log('远程服务已停止')
+    } catch (e) {
+      context?.logError('远程服务停止失败', e instanceof Error ? e.message : e)
+    }
+  }
+
+  /**
+   * 按当前设置把服务对齐到“应该的状态”：没开就停，已开且端口/绑定没变就不动，
+   * 变了就重启。幂等：activate、设置变更、重新启用三条路都调它。
+   * 启动失败**不抛**（只落到 `status.error` 与日志）—— 端口被占不该连累插件。
+   */
+  function applyRemote(): Promise<TerminalRemoteStatus> {
+    // 并发必须合并:设置变更与 activate 的对齐可能撞在一起,两个 startRemoteServer 同时跑
+    // 会抢同一个端口(EADDRINUSE 报的是自己刚开的那个)。在飞的调用只加一个「脏」标记,
+    // 结束后再对一次 —— 最终状态一定与设置一致。
+    if (remoteApplying) {
+      remoteDirty = true
+      return remoteApplying
+    }
+    remoteApplying = applyRemoteNow().finally(() => {
+      remoteApplying = null
+      if (remoteDirty) {
+        remoteDirty = false
+        void applyRemote()
+      }
+    })
+    return remoteApplying
+  }
+
+  async function applyRemoteNow(): Promise<TerminalRemoteStatus> {
+    const want = store?.get().remote ?? defaultRemoteSettings()
+    if (!want.enabled) {
+      await stopRemote()
+      return notifyRemote()
+    }
+    if (remote && remote.port === want.port && remote.bind === want.bind) return notifyRemote()
+    await stopRemote()
+    try {
+      remote = await startRemoteServer({
+        port: want.port,
+        bind: want.bind,
+        hub,
+        // 探活里只给会话**数量**：健康检查不需要鉴权（S6 之前尤其不能带内容）
+        sessions: () => listSessions().length
+      })
+      remoteError = null
+      context?.log(
+        '远程服务已启动',
+        remote.url,
+        remote.bind === 'lan' ? `局域网 ${remote.lanUrls.join(' ') || '(未检测到地址)'}` : '仅本机'
+      )
+    } catch (e) {
+      remote = null
+      remoteError = e instanceof Error ? e.message : String(e)
+      context?.logError('远程服务启动失败', remoteError)
+    }
+    return notifyRemote()
   }
 
   function describe(session: Session): TerminalAttachResult {
@@ -502,6 +610,7 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
         if (sessions.get(tabId) === session) sessions.delete(tabId)
         clearAgent(session)
         context?.ipc.emit(TERMINAL_EVENTS.exit, { tabId, code: exitCode })
+        hub.publish({ t: 'exit', id: tabId, code: exitCode })
         context?.log('shell 退出', tabId, profileName, 'code=', exitCode)
         notifySessions()
       })
@@ -601,6 +710,8 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
         const render = renderSettingsOf(next)
         // 已开着的终端页据此即时改字体/字号/scrollback
         ctx.ipc.emit(TERMINAL_EVENTS.settingsChanged, render)
+        // 远程服务的端口/绑定/开关可能变了:异步对齐(启动失败只落到 status.error,不影响设置保存)
+        void applyRemote()
         return next
       })
       ctx.ipc.handle('listCandidates', () => candidates())
@@ -628,6 +739,9 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
 
       // ---------- 会话台账面(本地面板 / 远程页 / MCP 工具共用）----------
       ctx.ipc.handle('listSessions', () => listSessions())
+      // 远程服务:端口/绑定/开关都存在设置里,启停决策也全在插件里
+      ctx.ipc.handle('remoteStatus', () => remoteStatus())
+      ctx.ipc.handle('applyRemote', () => applyRemote())
       ctx.ipc.handle('readTail', (tabId: unknown, chars: unknown) => readTail(tabId, chars))
       ctx.ipc.handle('sendText', (tabId: unknown, data: unknown) => write(tabId, data))
       ctx.ipc.handle('createSession', (input: unknown) => createSession(input))
@@ -759,12 +873,18 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
         ctx.log('待办命令已登记', request.tabId, request.file, request.args.join(' '))
       })
 
-      onBeforeQuit = (): void => killAll('app-quit')
+      onBeforeQuit = (): void => {
+        killAll('app-quit')
+        // 退出前把监听关掉——不关的话下次启动可能撞上端口占用
+        void stopRemote()
+      }
       app.on('before-quit', onBeforeQuit)
       ctx.log('终端已就绪', `平台=${process.platform}`, `默认 shell=${defaultProfile(store.get()).shell}`)
+      // 插件被启用 = 应当运行:按设置把远程服务对齐一次(默认关闭,所以这里通常什么也不做)
+      void applyRemote()
     },
 
-    deactivate(): void {
+    async deactivate(): Promise<void> {
       pendingRuns.clear()
       // 合并定时器必须清:否则插件停用后它还会拿着已回收的 ctx 广播一次台账
       if (sessionsTimer) {
@@ -779,6 +899,10 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
       // 插件被停用:所有会话都要收掉,已开着的终端页会收到 session-closed 并显示提示
       killAll('plugin-disabled')
       sessions.clear()
+      // 监听必须真的关掉:否则插件重新启用时会 EADDRINUSE(报的是自己上次没关的端口)
+      await stopRemote()
+      hub.clear('插件已停用')
+      remoteError = null
       store = null
       defaults = null
       context = null

@@ -92,13 +92,24 @@ async function harness(platform = 'win32'): Promise<Harness> {
   const handlers = new Map<string, (...args: never[]) => unknown>()
   const eventSubs = new Map<string, Array<(payload: unknown) => void>>()
   const tools = new Map<string, (args: Record<string, unknown>) => unknown>()
-  const settings = defaultSettings(platform, '/bin/bash')
+  // 可变:setSettings 会走 setRaw 存盘,而我们后面要读回它(远程服务的启停看的就是这里)
+  let settings = defaultSettings(platform, '/bin/bash')
 
   const ctx = {
     id: 'terminal',
     log: () => {},
     logError: () => {},
-    storage: () => ({ get: () => settings, set: () => settings, setRaw: () => settings }),
+    storage: () => ({
+      get: () => settings,
+      set: (patch: Partial<typeof settings>) => {
+        settings = { ...settings, ...patch }
+        return settings
+      },
+      setRaw: (value: typeof settings) => {
+        settings = value
+        return settings
+      }
+    }),
     ipc: {
       handle: (m: string, fn: (...a: never[]) => unknown) => handlers.set(m, fn),
       emit: (event: string, payload: unknown) => ipcEmits.push({ event, payload })
@@ -516,6 +527,74 @@ describe('withWindowsExeSuffix', () => {
   it('非 Windows 平台原样返回', () => {
     expect(withWindowsExeSuffix('node', 'linux')).toBe('node')
     expect(withWindowsExeSuffix('', 'win32')).toBe('')
+  })
+})
+
+// ---------- 远程服务启停(插件接线)----------
+
+describe('远程服务跟着设置启停', () => {
+  /** 先占一个端口再放掉:拿到一个「现在大概没人用」的号(端口 0 会被设置规范化夹掉) */
+  async function freePort(): Promise<number> {
+    const { createServer } = await import('node:net')
+    const srv = createServer()
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()))
+    const port = (srv.address() as { port: number }).port
+    await new Promise<void>((r) => srv.close(() => r()))
+    return port
+  }
+
+  it('默认不启动;开了能连,/healthz 通;关了端口就释放', async () => {
+    vi.useRealTimers()
+    const h = await harness()
+    expect(await h.invoke<{ running: boolean }>('remoteStatus')).toMatchObject({ running: false })
+
+    const port = await freePort()
+    await h.invoke('setSettings', { remote: { enabled: true, bind: 'loopback', port } })
+    const on = await h.invoke<{ running: boolean; url: string | null; port: number }>('applyRemote')
+    expect(on).toMatchObject({ running: true, port })
+    const health = await fetch(`${on.url}/healthz`)
+    expect(health.status).toBe(200)
+
+    await h.invoke('setSettings', { remote: { enabled: false } })
+    const off = await h.invoke<{ running: boolean; enabled: boolean }>('applyRemote')
+    expect(off).toMatchObject({ running: false, enabled: false })
+    // 端口真的放了:再绑一次不报错
+    const { startRemoteServer } = await import('../src/plugins/terminal/remote/server')
+    const again = await startRemoteServer({ port, bind: 'loopback', hub: undefined as never, listAddresses: () => [] })
+    await again.close()
+  })
+
+  it('端口被占时只落到 status.error,不抛(插件照常工作)', async () => {
+    vi.useRealTimers()
+    const { createServer } = await import('node:net')
+    const blocker = createServer()
+    const port = await new Promise<number>((r) =>
+      blocker.listen(0, '127.0.0.1', () => r((blocker.address() as { port: number }).port))
+    )
+    try {
+      const h = await harness()
+      await h.invoke('setSettings', { remote: { enabled: true, bind: 'loopback', port } })
+      const status = await h.invoke<{ running: boolean; error: string | null }>('applyRemote')
+      expect(status.running).toBe(false)
+      expect(String(status.error)).toContain('EADDRINUSE')
+      // 插件本体不受影响:台账面照旧
+      expect(await h.invoke('listSessions')).toEqual([])
+    } finally {
+      await new Promise<void>((r) => blocker.close(() => r()))
+    }
+  })
+
+  it('停用插件会把监听一起关掉', async () => {
+    vi.useRealTimers()
+    const h = await harness()
+    const port = await freePort()
+    await h.invoke('setSettings', { remote: { enabled: true, bind: 'loopback', port } })
+    expect((await h.invoke<{ running: boolean }>('applyRemote')).running).toBe(true)
+
+    await h.plugin.deactivate?.(h.ctx)
+    const { startRemoteServer } = await import('../src/plugins/terminal/remote/server')
+    const again = await startRemoteServer({ port, bind: 'loopback', hub: undefined as never, listAddresses: () => [] })
+    await again.close()
   })
 })
 

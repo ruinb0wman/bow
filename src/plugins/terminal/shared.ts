@@ -33,6 +33,25 @@ export interface TerminalSettings {
   scrollback: number
   /** 至少一条 */
   profiles: TerminalProfile[]
+  /** 远程控制服务(S5 起;默认关闭、只绑回环) */
+  remote: TerminalRemoteSettings
+}
+
+/**
+ * 远程服务的对外状态(设置页 / `remote-changed` 的负载)。
+ * 只含「怎么连」与「是否在跑」——**绝不含口令或 cookie**。
+ */
+export interface TerminalRemoteStatus {
+  enabled: boolean
+  bind: 'loopback' | 'lan'
+  port: number
+  running: boolean
+  /** 本机访问地址;没在跑时为 null */
+  url: string | null
+  /** 局域网访问地址(仅 lan 模式非空) */
+  lanUrls: string[]
+  /** 最近一次启动失败的原因 */
+  error: string | null
 }
 
 /** 发给终端页的渲染参数(设置页改动后经 `settings-changed` 广播的就是这个形状) */
@@ -40,6 +59,38 @@ export interface TerminalRenderSettings {
   fontFamily: string
   fontSize: number
   scrollback: number
+}
+
+/**
+ * 远程控制服务(局域网)的设置。
+ *
+ * `bind` 默认 `loopback`:局域网模式是**显式开关** —— 绑 0.0.0.0 等于把一台机器的交互式 shell
+ * 摆给同网段所有人试口令(鉴权在 remote/auth.ts,但“默认不开”仍然是第一条防线)。
+ */
+export interface TerminalRemoteSettings {
+  enabled: boolean
+  /** `loopback` = 只本机;`lan` = 监听 0.0.0.0(同网段设备可连) */
+  bind: 'loopback' | 'lan'
+  port: number
+}
+
+export const REMOTE_DEFAULT_PORT = 8770
+/** 低于 1024 需要特权(Windows 上又会被 Hyper-V 保留段抢),不提供 */
+export const REMOTE_PORT_RANGE = { min: 1024, max: 65535 } as const
+
+export function defaultRemoteSettings(): TerminalRemoteSettings {
+  return { enabled: false, bind: 'loopback', port: REMOTE_DEFAULT_PORT }
+}
+
+/** 磁盘上可能没有这个字段(老设置文件),坏值一律回落到 fallback */
+export function normalizeRemote(input: unknown, fallback: TerminalRemoteSettings): TerminalRemoteSettings {
+  const raw = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
+  const bind = raw.bind === 'lan' ? 'lan' : raw.bind === 'loopback' ? 'loopback' : fallback.bind
+  return {
+    enabled: typeof raw.enabled === 'boolean' ? raw.enabled : fallback.enabled,
+    bind,
+    port: clampInt(raw.port, REMOTE_PORT_RANGE.min, REMOTE_PORT_RANGE.max, fallback.port)
+  }
 }
 
 export const SETTINGS_VERSION = 1
@@ -117,7 +168,8 @@ export function defaultSettings(platform: string, loginShell?: string): Terminal
     fontFamily: DEFAULT_FONT_FAMILY,
     fontSize: DEFAULT_FONT_SIZE,
     scrollback: DEFAULT_SCROLLBACK,
-    profiles
+    profiles,
+    remote: defaultRemoteSettings()
   }
 }
 
@@ -182,7 +234,8 @@ export function normalizeSettings(input: unknown, fallback: TerminalSettings): T
     fontFamily: str(raw.fontFamily).trim() || fallback.fontFamily || DEFAULT_FONT_FAMILY,
     fontSize: clampInt(raw.fontSize, FONT_SIZE_RANGE.min, FONT_SIZE_RANGE.max, fallback.fontSize),
     scrollback: clampInt(raw.scrollback, SCROLLBACK_RANGE.min, SCROLLBACK_RANGE.max, fallback.scrollback),
-    profiles
+    profiles,
+    remote: normalizeRemote(raw.remote, fallback.remote)
   }
 }
 
@@ -673,7 +726,9 @@ export const TERMINAL_EVENTS = {
   settingsChanged: 'settings-changed',
   sessionClosed: 'session-closed',
   /** 台账变化(负载 = 完整的 SessionInfo[]);见 SessionInfo 与 sessionSignature */
-  sessionsChanged: 'sessions-changed'
+  sessionsChanged: 'sessions-changed',
+  /** 远程服务的启停/端口/地址变化(负载 = RemoteStatus) */
+  remoteChanged: 'remote-changed'
 } as const
 
 export interface TerminalDataMessage {
