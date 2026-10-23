@@ -13,7 +13,9 @@ import type { HubEvent, HubSink } from '../src/plugins/terminal/remote/hub'
 import { REMOTE_DEFAULT_PORT, defaultRemoteSettings, normalizeRemote } from '../src/plugins/terminal/shared'
 import type { SessionInfo } from '../src/plugins/terminal/shared'
 import { listLanAddresses, startRemoteServer } from '../src/plugins/terminal/remote/server'
+import { LoginThrottle, REMOTE_COOKIE_NAME, RemoteAuth } from '../src/plugins/terminal/remote/auth'
 import { connect } from 'node:net'
+import { localRequest } from './localHttp'
 
 /** 假 sink:记录收到的事件、可模拟积压与抛错 */
 function fakeSink(opts: { buffered?: number; throwOnSend?: boolean } = {}) {
@@ -29,6 +31,11 @@ function fakeSink(opts: { buffered?: number; throwOnSend?: boolean } = {}) {
     drop: (reason) => drops.push(reason)
   }
   return { sink, events, drops, state }
+}
+
+/** 每个用例一份 auth(口令固定,密钥固定,时钟真实) */
+function mkAuth(password = 'test-password-123') {
+  return new RemoteAuth({ password, key: Buffer.alloc(32, 7) })
 }
 
 const session = (id: number): SessionInfo => ({
@@ -125,7 +132,8 @@ describe('normalizeRemote', () => {
     expect(normalizeRemote(undefined, fallback)).toEqual({
       enabled: false,
       bind: 'loopback',
-      port: REMOTE_DEFAULT_PORT
+      port: REMOTE_DEFAULT_PORT,
+      password: ''
     })
     expect(normalizeRemote({}, fallback)).toEqual(fallback)
   })
@@ -137,10 +145,11 @@ describe('normalizeRemote', () => {
   })
 
   it('合法值原样保留', () => {
-    expect(normalizeRemote({ enabled: true, bind: 'lan', port: 9999 }, fallback)).toEqual({
+    expect(normalizeRemote({ enabled: true, bind: 'lan', port: 9999, password: 'abcdefgh' }, fallback)).toEqual({
       enabled: true,
       bind: 'lan',
-      port: 9999
+      port: 9999,
+      password: 'abcdefgh'
     })
   })
 })
@@ -148,16 +157,22 @@ describe('normalizeRemote', () => {
 describe('远程 HTTP 骨架', () => {
   it('回环模式:监听 127.0.0.1,/healthz 可用,不给局域网地址', async () => {
     const hub = new SessionHub()
-    const server = await startRemoteServer({ port: 0, bind: 'loopback', hub, listAddresses: () => ['192.168.1.9'] })
+    const server = await startRemoteServer({
+      port: 0,
+      bind: 'loopback',
+      hub,
+      auth: mkAuth(),
+      listAddresses: () => ['192.168.1.9']
+    })
     try {
       expect(server.port).toBeGreaterThan(0) // 端口 0 → 系统分配
       expect(server.host).toBe('127.0.0.1')
       expect(server.url).toBe(`http://127.0.0.1:${server.port}`)
       expect(server.lanUrls).toEqual([])
 
-      const res = await fetch(`${server.url}/healthz`)
+      const res = await localRequest(`${server.url}/healthz`)
       expect(res.status).toBe(200)
-      const body = (await res.json()) as { ok: boolean; service: string; bind: string }
+      const body = res.json<{ ok: boolean; service: string; bind: string }>()!
       expect(body).toMatchObject({ ok: true, service: 'bow-terminal-remote', bind: 'loopback' })
     } finally {
       await server.close()
@@ -170,6 +185,7 @@ describe('远程 HTTP 骨架', () => {
       port: 0,
       bind: 'lan',
       hub,
+      auth: mkAuth(),
       listAddresses: () => ['192.168.1.9', '10.0.0.3']
     })
     try {
@@ -179,7 +195,7 @@ describe('远程 HTTP 骨架', () => {
         `http://10.0.0.3:${server.port}`
       ])
       // 绑 0.0.0.0 时仍能用回环访问(手机走 lanUrls,本机走 url)
-      expect((await fetch(`${server.url}/healthz`)).status).toBe(200)
+      expect((await localRequest(`${server.url}/healthz`)).status).toBe(200)
     } finally {
       await server.close()
     }
@@ -191,14 +207,18 @@ describe('远程 HTTP 骨架', () => {
       port: 0,
       bind: 'loopback',
       hub,
-      sessions: () => [session(1), session(2)].length,
+      auth: mkAuth(),
+      sessions: () => [session(1), session(2)],
       listAddresses: () => []
     })
     try {
-      const notFound = await fetch(`${server.url}/nope`)
-      expect(notFound.status).toBe(404)
+      // 未鉴权:401(未知路径也不该泄露「存在/不存在」)
+      expect((await localRequest(`${server.url}/nope`)).status).toBe(401)
+      // 带上 Bearer 之后才是 404
+      const authed = { headers: { authorization: 'Bearer test-password-123' } }
+      expect((await localRequest(`${server.url}/nope`, authed)).status).toBe(404)
 
-      const body = (await (await fetch(`${server.url}/healthz`)).json()) as { sessions: number }
+      const body = (await localRequest(`${server.url}/healthz`)).json<{ sessions: number }>()!
       expect(body.sessions).toBe(2)
     } finally {
       await server.close()
@@ -207,12 +227,12 @@ describe('远程 HTTP 骨架', () => {
 
   it('close() 之后端口真的释放(否则插件重新启用会 EADDRINUSE)', async () => {
     const hub = new SessionHub()
-    const first = await startRemoteServer({ port: 0, bind: 'loopback', hub, listAddresses: () => [] })
+    const first = await startRemoteServer({ port: 0, bind: 'loopback', hub, auth: mkAuth(), listAddresses: () => [] })
     const port = first.port
     await first.close()
 
     // 能立刻在同一个端口上重新监听 = 真的释放了
-    const second = await startRemoteServer({ port, bind: 'loopback', hub, listAddresses: () => [] })
+    const second = await startRemoteServer({ port, bind: 'loopback', hub, auth: mkAuth(), listAddresses: () => [] })
     await second.close()
 
     // 关掉之后端口真的没人听:用裸 TCP 判,不用 fetch
@@ -231,13 +251,134 @@ describe('远程 HTTP 骨架', () => {
 
   it('端口被占用时抛错(调用方靠它把原因显示到设置页)', async () => {
     const hub = new SessionHub()
-    const first = await startRemoteServer({ port: 0, bind: 'loopback', hub, listAddresses: () => [] })
+    const first = await startRemoteServer({ port: 0, bind: 'loopback', hub, auth: mkAuth(), listAddresses: () => [] })
     try {
       await expect(
-        startRemoteServer({ port: first.port, bind: 'loopback', hub, listAddresses: () => [] })
+        startRemoteServer({ port: first.port, bind: 'loopback', hub, auth: mkAuth(), listAddresses: () => [] })
       ).rejects.toMatchObject({ code: 'EADDRINUSE' })
     } finally {
       await first.close()
+    }
+  })
+
+  it('未登录访问受保护路径 → 401;登录(口令)→ 204 + cookie → 之后 200', async () => {
+    const hub = new SessionHub()
+    const auth = mkAuth()
+    const server = await startRemoteServer({
+      port: 0,
+      bind: 'loopback',
+      hub,
+      auth,
+      sessions: () => [session(1)],
+      listAddresses: () => []
+    })
+    try {
+      expect((await localRequest(`${server.url}/api/sessions`)).status).toBe(401)
+
+      const login = await localRequest(`${server.url}/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ password: 'wrong-password' })
+      })
+      expect(login.status).toBe(401)
+      expect(login.headers['set-cookie']).toBeUndefined()
+
+      const ok = await localRequest(`${server.url}/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ password: 'test-password-123' })
+      })
+      expect(ok.status).toBe(204)
+      const cookie = String(ok.headers['set-cookie'] ?? '')
+      expect(cookie).toContain(`${REMOTE_COOKIE_NAME}=`)
+      expect(cookie).toContain('HttpOnly')
+      expect(cookie).toContain('SameSite=Strict')
+      // 局域网是 http,不能带 Secure,否则手机浏览器不会存
+      expect(cookie).not.toContain('Secure')
+
+      const sessions = await localRequest(`${server.url}/api/sessions`, { headers: { cookie } })
+      expect(sessions.status).toBe(200)
+      expect(sessions.json()).toMatchObject({ ok: true, sessions: [{ id: 1 }] })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('跨站 Origin 即使带合法 cookie 也 401(CSRF / 跨站 WS 劫持)', async () => {
+    const hub = new SessionHub()
+    const auth = mkAuth()
+    const server = await startRemoteServer({ port: 0, bind: 'loopback', hub, auth, listAddresses: () => [] })
+    try {
+      const cookie = `${REMOTE_COOKIE_NAME}=${auth.issue()}`
+      const res = await localRequest(`${server.url}/api/sessions`, {
+        headers: { cookie, origin: 'http://evil.example' }
+      })
+      expect(res.status).toBe(401)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('连续输错口令后 429(带 Retry-After),对了一次就清零', async () => {
+    const hub = new SessionHub()
+    const auth = mkAuth()
+    // 自己造一个假时钟的 throttle:真实等待 30s 不行,这里只验「服务把 throttle 的结论用对了」
+    let now = 1_700_000_000_000
+    const throttle = new LoginThrottle(() => now)
+    const server = await startRemoteServer({
+      port: 0,
+      bind: 'loopback',
+      hub,
+      auth,
+      throttle,
+      listAddresses: () => []
+    })
+    try {
+      const attempt = (password: string) =>
+        localRequest(`${server.url}/login`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ password })
+        })
+
+      // 前 5 次只记账不封(输错很正常);第 6 次开始记封禁,下一次请求才 429
+      for (let i = 0; i < 6; i++) expect((await attempt('nope')).status).toBe(401)
+      const blocked = await attempt('nope')
+      expect(blocked.status).toBe(429)
+      expect(blocked.headers['retry-after']).toBe('30')
+
+      // 就算口令对了,也得等窗口过去
+      expect((await attempt('test-password-123')).status).toBe(429)
+
+      now += 30_000
+      expect((await attempt('test-password-123')).status).toBe(204)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('坏请求体:400 / 413,不抛也不留连接', async () => {
+    const hub = new SessionHub()
+    const server = await startRemoteServer({
+      port: 0,
+      bind: 'loopback',
+      hub,
+      auth: mkAuth(),
+      listAddresses: () => []
+    })
+    try {
+      const bad = await localRequest(`${server.url}/login`, { method: 'POST', body: 'not json' })
+      expect(bad.status).toBe(400)
+      const huge = await localRequest(`${server.url}/login`, {
+        method: 'POST',
+        body: 'x'.repeat(8 * 1024)
+      }).catch(() => null)
+      // 超限会被掐掉:可能是 413,也可能连接直接断(请求被 destroy)—— 都不重要,
+      // 重要的是服务自己没被打挂,后续请求照常
+      if (huge) expect([413, 400]).toContain(huge.status)
+      expect((await localRequest(`${server.url}/healthz`)).status).toBe(200)
+    } finally {
+      await server.close()
     }
   })
 

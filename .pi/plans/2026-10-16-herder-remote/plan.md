@@ -446,3 +446,26 @@ P2 可以延后而不影响前面任何一步 —— 在那之前用 `ssh -L POR
 
 另一个环境坑:本机配了 HTTP 代理,**`fetch` 到一个已关闭的端口会拿到 502 而不是拒绝** ——
 所以「端口真的释放了」这条必须用裸 TCP 连接判,不能用 fetch。
+
+## 14. S6 落地记录(2026-10-16)
+
+**加了什么**:`remote/auth.ts`(`RemoteAuth` + `LoginThrottle`)、`POST /login`、鉴权守卫、
+`GET /api/sessions`、口令字段(设置里,明文,空/太短拒绝启动)。
+
+三个决定:
+1. **浏览器走 HttpOnly cookie,脚本走 Bearer**。浏览器没法给 WS 设自定义头,所以握手只能靠 cookie;
+   命令行/将来 TUI 用 `Authorization: Bearer <口令>`。**口令绝不进 query**(会进日志与浏览器历史)。
+2. **cookie 里装 `<过期>.<口令指纹>` 再签名**,不是口令本身 —— 换口令时旧 cookie 自动失效,不用轮换密钥;
+   密钥单独存 `terminal-remote.json`,不混进用户会手改的 `terminal.json`。
+3. **前 5 次失败只记账,第 6 次起翻倍退避(30s → 封顶 5min)**;成功一次清零。
+
+⚠️ 局域网是 **http**:口令在链路上是明文(同 WiFi 的人抓到就能用)。所以「局域网模式」只适合自己家/可信网络;
+公共 WiFi 要么走 Tailscale,要么等隧道(https)。这条要写进 README。
+
+**踩到的两个环境/测试坑(都记在这里免得重犯)**:
+- **本机 `HTTP_PROXY` 会被 Node 应用到 loopback**:`fetch` 与 `http.request` 都可能被转给代理,
+  表现是「连已关闭的端口拿到 502」而不是拒绝。修法有两层:`vitest.config.ts` 里清空代理变量(测试一律直连),
+  以及测试内用 `tests/localHttp.ts`(直接 `node:http`)而不是 `fetch`。
+- **测试替身把两个存储返回成了同一个对象**:插件写 `terminal-remote.json` 的签名密钥时把
+  `terminal.json` 的设置冲掉了,表现是「远程服务启动后又被自己关掉」。真 `JsonStore` 是按 filename
+  隔离的 —— 替身现在也按 filename 隔离,并在注释里写明为什么。

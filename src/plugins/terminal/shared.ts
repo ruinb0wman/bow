@@ -72,14 +72,23 @@ export interface TerminalRemoteSettings {
   /** `loopback` = 只本机;`lan` = 监听 0.0.0.0(同网段设备可连) */
   bind: 'loopback' | 'lan'
   port: number
+  /**
+   * 访问口令(明文存在 `terminal.json`)。
+   * 为什么不明文:① 你需要把它拄到手机上,设置页得能显示它;② 能读这个文件的人已经能读你的
+   * 整个用户目录(也就拿到了这台机器的 shell),存哈希并不提高安全边界——与 `mcp-http` 的
+   * `token` 同姿态。空串 = 不允许启动(**不允许无口令开远程**)。
+   */
+  password: string
 }
 
 export const REMOTE_DEFAULT_PORT = 8770
 /** 低于 1024 需要特权(Windows 上又会被 Hyper-V 保留段抢),不提供 */
 export const REMOTE_PORT_RANGE = { min: 1024, max: 65535 } as const
+/** 口令最短长度:这是打到局域网的唯一口子,太短等于没设 */
+export const REMOTE_MIN_PASSWORD = 8
 
 export function defaultRemoteSettings(): TerminalRemoteSettings {
-  return { enabled: false, bind: 'loopback', port: REMOTE_DEFAULT_PORT }
+  return { enabled: false, bind: 'loopback', port: REMOTE_DEFAULT_PORT, password: '' }
 }
 
 /** 磁盘上可能没有这个字段(老设置文件),坏值一律回落到 fallback */
@@ -89,7 +98,9 @@ export function normalizeRemote(input: unknown, fallback: TerminalRemoteSettings
   return {
     enabled: typeof raw.enabled === 'boolean' ? raw.enabled : fallback.enabled,
     bind,
-    port: clampInt(raw.port, REMOTE_PORT_RANGE.min, REMOTE_PORT_RANGE.max, fallback.port)
+    port: clampInt(raw.port, REMOTE_PORT_RANGE.min, REMOTE_PORT_RANGE.max, fallback.port),
+    // 不做长度夹取:太短的口令应该被**拒绝启用**而不是静默改掉(用户得知道自己设了什么)
+    password: typeof raw.password === 'string' ? raw.password.slice(0, 200) : fallback.password
   }
 }
 

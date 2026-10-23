@@ -12,6 +12,7 @@
  */
 
 import { homedir } from 'node:os'
+import { localRequest } from './localHttp'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('electron', async () => ({
@@ -92,24 +93,33 @@ async function harness(platform = 'win32'): Promise<Harness> {
   const handlers = new Map<string, (...args: never[]) => unknown>()
   const eventSubs = new Map<string, Array<(payload: unknown) => void>>()
   const tools = new Map<string, (args: Record<string, unknown>) => unknown>()
-  // 可变:setSettings 会走 setRaw 存盘,而我们后面要读回它(远程服务的启停看的就是这里)
-  let settings = defaultSettings(platform, '/bin/bash')
+  // 存储按 **文件名** 隔离:真实 JsonStore 就是这么做的(同 filename 复用实例、不同 filename 互不影响)。
+  // 早先这里所有文件名共用一个对象,结果插件写 `terminal-remote.json` 的签名密钥时把设置冲掉了 ——
+  // 表现是「远程服务启动后又被自己关掉」,查了很久。
+  const files = new Map<string, unknown>()
+  const storage = (opts: { file: string; defaults: unknown }) => {
+    if (!files.has(opts.file)) files.set(opts.file, opts.defaults)
+    return {
+      get: () => files.get(opts.file),
+      set: (patch: Record<string, unknown>) => {
+        const next = { ...(files.get(opts.file) as Record<string, unknown>), ...patch }
+        files.set(opts.file, next)
+        return next
+      },
+      setRaw: (value: unknown) => {
+        files.set(opts.file, value)
+        return value
+      }
+    }
+  }
+  // 设置默认值(harness 里唯一需要初始化的文件)
+  files.set('terminal.json', defaultSettings(platform, '/bin/bash'))
 
   const ctx = {
     id: 'terminal',
     log: () => {},
     logError: () => {},
-    storage: () => ({
-      get: () => settings,
-      set: (patch: Partial<typeof settings>) => {
-        settings = { ...settings, ...patch }
-        return settings
-      },
-      setRaw: (value: typeof settings) => {
-        settings = value
-        return settings
-      }
-    }),
+    storage,
     ipc: {
       handle: (m: string, fn: (...a: never[]) => unknown) => handlers.set(m, fn),
       emit: (event: string, payload: unknown) => ipcEmits.push({ event, payload })
@@ -549,10 +559,12 @@ describe('远程服务跟着设置启停', () => {
     expect(await h.invoke<{ running: boolean }>('remoteStatus')).toMatchObject({ running: false })
 
     const port = await freePort()
-    await h.invoke('setSettings', { remote: { enabled: true, bind: 'loopback', port } })
+    await h.invoke('setSettings', {
+      remote: { enabled: true, bind: 'loopback', port, password: 'test-password-123' }
+    })
     const on = await h.invoke<{ running: boolean; url: string | null; port: number }>('applyRemote')
     expect(on).toMatchObject({ running: true, port })
-    const health = await fetch(`${on.url}/healthz`)
+    const health = await localRequest(`${on.url}/healthz`)
     expect(health.status).toBe(200)
 
     await h.invoke('setSettings', { remote: { enabled: false } })
@@ -573,7 +585,9 @@ describe('远程服务跟着设置启停', () => {
     )
     try {
       const h = await harness()
-      await h.invoke('setSettings', { remote: { enabled: true, bind: 'loopback', port } })
+      await h.invoke('setSettings', {
+        remote: { enabled: true, bind: 'loopback', port, password: 'test-password-123' }
+      })
       const status = await h.invoke<{ running: boolean; error: string | null }>('applyRemote')
       expect(status.running).toBe(false)
       expect(String(status.error)).toContain('EADDRINUSE')
@@ -584,11 +598,22 @@ describe('远程服务跟着设置启停', () => {
     }
   })
 
+  it('没设口令(或太短)时拒绝启动,并把原因说出来', async () => {
+    vi.useRealTimers()
+    const h = await harness()
+    await h.invoke('setSettings', { remote: { enabled: true, bind: 'loopback', port: 8799, password: '123' } })
+    const status = await h.invoke<{ running: boolean; error: string | null }>('applyRemote')
+    expect(status.running).toBe(false)
+    expect(String(status.error)).toContain('口令至少')
+  })
+
   it('停用插件会把监听一起关掉', async () => {
     vi.useRealTimers()
     const h = await harness()
     const port = await freePort()
-    await h.invoke('setSettings', { remote: { enabled: true, bind: 'loopback', port } })
+    await h.invoke('setSettings', {
+      remote: { enabled: true, bind: 'loopback', port, password: 'test-password-123' }
+    })
     expect((await h.invoke<{ running: boolean }>('applyRemote')).running).toBe(true)
 
     await h.plugin.deactivate?.(h.ctx)

@@ -31,10 +31,13 @@ import type { TerminalRunRequest } from '@shared/terminalRun'
 import { installPiBridge, piBridgeStatus, uninstallPiBridge } from './piBridge'
 import type { PiBridgeEnv, PiBridgeIo } from './piBridge'
 import { SessionHub } from './remote/hub'
+import { RemoteAuth, createAuthKey } from './remote/auth'
 import { startRemoteServer } from './remote/server'
 import type { RemoteServerHandle } from './remote/server'
 import {
   MAX_SESSIONS,
+  REMOTE_DEFAULT_PORT,
+  REMOTE_MIN_PASSWORD,
   REPLAY_MAX_CHARS,
   SESSIONS_THROTTLE_MS,
   TERMINAL_EVENTS,
@@ -188,6 +191,10 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
   let remoteApplying: Promise<TerminalRemoteStatus> | null = null
   /** 对齐期间设置又变了:结束后再对一次 */
   let remoteDirty = false
+  /** 当前跑着的服务对应的口令(口令变了必须重建 auth,否则旧口令还能登录) */
+  let remotePassword: string | null = null
+  /** 签名密钥的存放(插件自己的文件,不进用户可编辑的设置) */
+  let remoteKeyStore: PluginStorage<{ key: string }> | null = null
   /** 台账的合并定时器;deactivate 时要清掉,否则插件停用后还会往已回收的 ctx 上广播 */
   let sessionsTimer: NodeJS.Timeout | null = null
   /** 上一次广播出去的台账指纹;`null` = 还没播过 */
@@ -429,9 +436,22 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
     return status
   }
 
+  /**
+   * cookie 签名密钥:首次使用生成 32 字节并落盘。
+   * 单独一个文件而不是塞进 `terminal.json` —— 设置文件是用户会手改/导出的,密钥不该跟着跑。
+   */
+  function remoteKey(): Buffer {
+    const existing = remoteKeyStore?.get().key ?? ''
+    if (existing) return Buffer.from(existing, 'hex')
+    const key = createAuthKey()
+    remoteKeyStore?.setRaw({ key })
+    return Buffer.from(key, 'hex')
+  }
+
   async function stopRemote(): Promise<void> {
     const handle = remote
     remote = null
+    remotePassword = null
     // 先告诉订阅者（S7 起有真客户端）服务要走，再关监听
     hub.clear('服务已停止')
     if (!handle) return
@@ -472,16 +492,25 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
       await stopRemote()
       return notifyRemote()
     }
-    if (remote && remote.port === want.port && remote.bind === want.bind) return notifyRemote()
+    if (remote && remote.port === want.port && remote.bind === want.bind && remotePassword === want.password) {
+      return notifyRemote()
+    }
     await stopRemote()
+    // 无口令 / 口令太短一律不启动 —— 不允许把一个 shell 挂在局域网上等别人试
+    if (!RemoteAuth.isUsablePassword(want.password, REMOTE_MIN_PASSWORD)) {
+      remoteError = `口令至少 ${REMOTE_MIN_PASSWORD} 位(现在${want.password ? '太短' : '是空的'})`
+      return notifyRemote()
+    }
     try {
       remote = await startRemoteServer({
         port: want.port,
         bind: want.bind,
         hub,
-        // 探活里只给会话**数量**：健康检查不需要鉴权（S6 之前尤其不能带内容）
-        sessions: () => listSessions().length
+        auth: new RemoteAuth({ password: want.password, key: remoteKey() }),
+        // 探活/登录后首屏用的台账(SessionInfo 不含任何环境信息以外的敏感内容)
+        sessions: () => listSessions()
       })
+      remotePassword = want.password
       remoteError = null
       context?.log(
         '远程服务已启动',
@@ -490,6 +519,7 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
       )
     } catch (e) {
       remote = null
+      remotePassword = null
       remoteError = e instanceof Error ? e.message : String(e)
       context?.logError('远程服务启动失败', remoteError)
     }
@@ -715,6 +745,8 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
         return next
       })
       ctx.ipc.handle('listCandidates', () => candidates())
+      // 远程登录 cookie 的签名密钥(首次生成)
+      remoteKeyStore = ctx.storage<{ key: string }>({ file: 'terminal-remote.json', defaults: { key: '' } })
 
       // ---------- pi 状态桥的一键接入(设置页 → 终端)----------
       // 源取自应用根目录下的 `packages/pi-bow/extensions/bow-agent-state.ts`(必须进 build.files,
@@ -903,6 +935,7 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
       await stopRemote()
       hub.clear('插件已停用')
       remoteError = null
+      remoteKeyStore = null
       store = null
       defaults = null
       context = null
