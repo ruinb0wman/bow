@@ -2,6 +2,7 @@ import TerminalButton from './ui/TerminalButton.vue'
 import HerdButton from './ui/HerdButton.vue'
 import HerdPanel from './ui/HerdPanel.vue'
 import TerminalSettings from './ui/TerminalSettings.vue'
+import RemoteSettings from './ui/RemoteSettings.vue'
 
 /**
  * 终端插件的渲染层贡献。
@@ -19,5 +20,6 @@ export default {
     // 浮层 id 必须满足 `plugin:<pluginId>:<panelId>`(内核按这个正则把事件路由回插件)
     { id: 'plugin:terminal:herd', component: HerdPanel, placement: 'full' as const }
   ],
-  settingsSections: [TerminalSettings]
+  // 两个分区:外观/shell 配置 + 远程控制(顺序就是设置页里的显示顺序)
+  settingsSections: [TerminalSettings, RemoteSettings]
 }

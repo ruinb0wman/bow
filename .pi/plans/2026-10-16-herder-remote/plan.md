@@ -490,3 +490,26 @@ P2 可以延后而不影响前面任何一步 —— 在那之前用 `ssh -L POR
 口令 204 + cookie(且不带 Secure)→ 带 cookie 读台账 → 无 cookie 握手被拒 → 跨站 Origin 握手被拒 →
 hello 带服务名与台账 → create → 台账推送 → attach 拿回放/尺寸 → input 经真 pty 回显 →
 read 尾部 → resize 落到台账 → close 事件 → 标签一起关掉 → 会话清零 → 关开关停服 → 端口放开。
+
+## 16. S8 落地记录(2026-10-16)—— 局域网这条路通了
+
+**加了什么**:`vite.remote.config.ts`(独立构建 → `out/remote/`,单 chunk,无 hash)、
+`src/renderer/remote/`(登录 → 会话列表 → 终端 + 手机按键条)、`remote/static.ts`(静态文件白名单)、
+`ui/RemoteSettings.vue`(设置页「远程控制」分区)。
+
+四个决定:
+1. **远程页完全不用 preload**,也不进 electron-vite 的 renderer 入口 —— 它跑在**普通浏览器**里。
+   产物是相对路径 + 固定文件名(`app.js` / `app.css`),静态服务按白名单给文件,不需要 manifest。
+2. **静态页公开、API/WS 要鉴权**:页面本身就是登录页,里面没有秘密;这样手机第一次打开时
+   不需要先带 cookie。
+3. **按键条用「粘滞修饰键 + 快捷序列」**:软键盘发不出 `Ctrl+C`,所以既能一键发 `C-c`/`Esc`/方向,
+   也能点亮 Ctrl 后敲任意字母(`applyModifiers` 把 `c` 变成 `\x03`)。多字符(粘贴)不被改写。
+4. **断线重连 + 重新 attach**:手机锁屏/切后台回来,WS 退避重连,成功后重新 attach,
+   靠服务端回放重建画面(客户端不缓存字节)。
+
+**e2e(`scripts/e2e-remote.mjs`,29 项全绿)** 新增的最后一段是「手机上真的能用」的证据:
+在 **bow 自己的普通标签页**里打开 `http://127.0.0.1:port/`(无 preload 的浏览器上下文)→
+登录表单渲染 → 页面里真提交口令 → 连上 WS(显示「已连接」)→ 电脑端新建终端 → 手机页列表出现该行 →
+点进去 xterm 与按键条都渲染出来。
+
+顺手修掉的:设置页的两个分区(`TerminalSettings` + `RemoteSettings`)在 `ui.ts` 里按顺序注册。

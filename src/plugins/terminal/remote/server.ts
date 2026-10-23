@@ -12,12 +12,14 @@
  */
 
 import { createServer } from 'node:http'
+import { readFile as readFileAsync } from 'node:fs/promises'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import { networkInterfaces } from 'node:os'
 import { WebSocketServer } from 'ws'
 import type { WebSocket } from 'ws'
 import { LoginThrottle, REMOTE_COOKIE_NAME, REMOTE_COOKIE_TTL_MS, RemoteAuth } from './auth'
 import { parseClientMessage } from './protocol'
+import { readStaticFile } from './static'
 import type { RemoteSessionApi, ServerMessage } from './protocol'
 import type { HubEvent, SessionHub, HubSink } from './hub'
 
@@ -41,6 +43,13 @@ export interface RemoteServerOptions {
   throttle?: LoginThrottle
   /** 会话操作(由插件实现);也是 `/healthz` 与 `/api/sessions` 的数据源 */
   sessions: RemoteSessionApi
+  /**
+   * 远程页的构建产物目录(`out/remote`)。省略 = 不提供静态页(单测/纯 API 场景)。
+   * 页面本身**不鉴权**:它是登录页 —— 里面没有任何秘密,而 API 与 WS 全要鉴权。
+   */
+  staticDir?: string
+  /** 注入用:读静态文件(单测给假函数) */
+  readFile?: (path: string) => Promise<Buffer>
   /** 注入用:列出本机非回环 IPv4 地址(单测不碰真实网卡) */
   listAddresses?: () => string[]
 }
@@ -295,6 +304,18 @@ async function route(options: RemoteServerOptions, req: IncomingMessage, res: Se
   // 登录:唯一不要求先有 cookie 的写接口
   if (req.method === 'POST' && path === '/login') {
     await handleLogin(options, req, res, clientKey)
+    return
+  }
+
+  // 静态页(登录页 + 资源)是公开的:里面没有任何秘密;API 与 WS 全要鉴权
+  if ((req.method === 'GET' || req.method === 'HEAD') && options.staticDir && path !== '/api/sessions') {
+    const file = await readStaticFile(
+      options.staticDir,
+      path === '/' || path === '' ? '/index.html' : path,
+      options.readFile ?? readFileAsync
+    )
+    res.writeHead(file.status, { ...file.headers, 'content-length': file.body.length })
+    res.end(req.method === 'HEAD' ? undefined : file.body)
     return
   }
 

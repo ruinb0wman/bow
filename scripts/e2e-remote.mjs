@@ -334,6 +334,60 @@ try {
 
   client.close()
 
+  // ---------- ⑤ 远程页本身(真浏览器上下文,无 preload) ----------
+  // 这一段才是「手机上真的能用」的证据:bundle 在普通页面里跑得起来、登录表单能提交、
+  // WS 连上、会话行点进去 xterm 能渲染、按键条在。
+  const pageUrl = `${base}/`
+  const pageTab = await evalOn(chromeWs, `window.browserAPI.createTab(${JSON.stringify(pageUrl)}, true)`)
+  const pageWs = await waitFor(async () => {
+    const t = (await targets()).find((t) => (t.url ?? '').startsWith(pageUrl))
+    return t?.webSocketDebuggerUrl ?? null
+  }, 15000)
+  check(pageWs !== null, '远程页能在普通浏览器上下文里加载(无 preload)')
+
+  const hasLogin = await waitFor(
+    async () => (await evalOn(pageWs, `!!document.querySelector('input[type=password]')`)) === true,
+    15000
+  )
+  check(hasLogin === true, '远程页显示登录表单')
+
+  // 在页面里真登录:Vue 的 v-model 要 native setter + input 事件才会更新
+  await evalOn(
+    pageWs,
+    `(() => {
+       const el = document.querySelector('input[type=password]')
+       const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+       setValue.call(el, ${JSON.stringify(PASSWORD)})
+       el.dispatchEvent(new Event('input', { bubbles: true }))
+       document.querySelector('form').requestSubmit()
+       return true
+     })()`
+  )
+  const loggedIn = await waitFor(
+    async () => (await evalOn(pageWs, `document.body.innerText.includes('已连接')`)) === true,
+    20000
+  )
+  check(loggedIn === true, '页面登录成功并连上 WS')
+
+  // 电脑上开一个终端 → 页面列表该出现一行
+  await evalOn(chromeWs, `window.browserAPI.plugins.invoke('terminal','createSession',{})`)
+  const rowShown = await waitFor(
+    async () => (await evalOn(pageWs, `document.querySelectorAll('.row').length`)) === 1,
+    20000
+  )
+  check(rowShown === true, '应用里新建的终端出现在手机页列表里')
+
+  // 点进去:xterm 在普通浏览器里渲染出来,按键条也在
+  await evalOn(pageWs, `document.querySelector('.row').click()`)
+  const termReady = await waitFor(
+    async () => (await evalOn(pageWs, `!!document.querySelector('.xterm-screen') && !!document.querySelector('.keybar')`)) === true,
+    15000
+  )
+  check(termReady === true, '点会话进入终端视图(xterm + 按键条渲染在普通浏览器里)')
+
+  // 收尾:关掉这个页标签
+  await evalOn(chromeWs, `window.browserAPI.closeTab(${JSON.stringify(pageTab?.id ?? 0)})`).catch(() => {})
+
   // ---------- ⑤ 关掉远程服务后端口真的放开 ----------
   const off = await evalOn(
     chromeWs,

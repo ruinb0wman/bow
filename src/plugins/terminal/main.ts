@@ -546,7 +546,10 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
         hub,
         auth: new RemoteAuth({ password: want.password, key: remoteKey() }),
         // 探活/登录后首屏/WS 上行全部走这一份会话操作
-        sessions: remoteSessionApi()
+        sessions: remoteSessionApi(),
+        // 远程页的构建产物(`npm run build:remote` → out/remote)。
+        // 打包后同样在 app 根目录下(build.files 已含 out/**)。目录不存在时 / 会给 503 + 提示。
+        staticDir: join(app.getAppPath(), 'out', 'remote')
       })
       remotePassword = want.password
       remoteError = null

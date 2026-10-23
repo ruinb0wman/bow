@@ -16,7 +16,14 @@ import { localRequest } from './localHttp'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('electron', async () => ({
-  app: { on: () => {}, removeListener: () => {}, getPath: () => '/tmp', getVersion: () => '0.0.0' }
+  app: {
+    on: () => {},
+    removeListener: () => {},
+    getPath: () => '/tmp',
+    // 远程服务会拿它拼静态页目录(out/remote);这个 harness 不验静态页,给个临时路径即可
+    getAppPath: () => '/tmp/bow-harness-app',
+    getVersion: () => '0.0.0'
+  }
 }))
 
 const { createTerminalPlugin } = await import('../src/plugins/terminal/main')

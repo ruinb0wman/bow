@@ -1,0 +1,65 @@
+/**
+ * 远程页的样式(独立于 bow 的 chrome 样式:这里跑在**普通浏览器**里,拿不到那些 CSS 变量)。
+ * 手机优先:最小可点 40px、等宽字体、避免 iOS 输入框聚焦时自动放大(font-size ≥16px)。
+ */
+
+:root {
+  --bg: #1e1f24;
+  --panel: #26272e;
+  --fg: #e8e8ee;
+  --muted: #9aa0ad;
+  --accent: #4a8ef7;
+  --danger: #e5534b;
+  --ok: #7ec96a;
+  --mono: Consolas, 'Cascadia Mono', 'Menlo', 'DejaVu Sans Mono', monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+  /* 手机上滑到底不该带着页面一起动 */
+  overscroll-behavior: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: var(--panel);
+  border: 1px solid #383a44;
+  border-radius: 8px;
+  padding: 8px 12px;
+  min-height: 40px;
+  cursor: pointer;
+}
+
+button:active {
+  background: #32343d;
+}
+
+input {
+  font: inherit;
+  /* ≥16px:否则 iOS 聚焦时会放大整个页面 */
+  font-size: 16px;
+  color: inherit;
+  background: #16171b;
+  border: 1px solid #383a44;
+  border-radius: 8px;
+  padding: 10px 12px;
+  width: 100%;
+}
+
+code {
+  font-family: var(--mono);
+}
