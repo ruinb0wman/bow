@@ -254,6 +254,35 @@ try {
     (await evalOn(ws, `window.browserAPI.listTabs().then((t) => t.length > 0)`)) === true,
     '关掉后窗口里仍有标签(不会变成空窗口)'
   )
+
+  // ---------- ⑦ 分屏场景(用户报的那个 bug 只在这里看得出来) ----------
+  // 现场:终端在分屏的某个窗格里,从面板点 × 后——会话从台账消失了,但那个窗格里还杵着一个
+  // 「会话已结束」的死页面。修法靠 close() → unregisterTab 拆组,这里把那条路径真正跑一遍。
+  const splitTer = await evalOn(
+    ws,
+    `(async () => {
+       const t = await window.browserAPI.createTab('bow://terminal', true)
+       await new Promise((r) => setTimeout(r, 1200))
+       const groups = await window.browserAPI.splitPane('right')
+       const g = groups.find((x) => x.tabIds.includes(t.id))
+       return { t, g, groups }
+     })()`
+  )
+  check(splitTer?.g?.tabIds?.length === 2, '分屏成功:终端与空白窗格同组', splitTer?.g)
+
+  await evalOn(ws, `window.browserAPI.plugins.invoke('terminal','closeSession',${splitTer.t.id})`)
+  const collapsed = await waitFor(async () => {
+    const groups = await evalOn(ws, `window.browserAPI.getGroups()`)
+    const g = groups.find((x) => x.tabIds.includes(splitTer.t.id))
+    // 期望:这个组里不再有那个终端标签(组塌缩到 1 个窗格或整组消失)
+    if (g) return g.tabIds.length === 1 && !g.tabIds.includes(splitTer.t.id) ? g : null
+    return groups.length > 0 ? { gone: true, groups } : null
+  })
+  check(collapsed !== null, '分屏里关会话后那个窗格也拆掉了(不留死终端页)', collapsed)
+  check(
+    (await evalOn(ws, `window.browserAPI.listTabs().then((t) => t.some((x) => x.id === ${splitTer.t.id}))`)) === false,
+    '分屏里的终端标签确实没了'
+  )
   // 按钮上那个数字的含义是:有代理等用户时显示**待办数**(红底,行动导向);否则显示总数(暗色)。
   // 总数在 tooltip 里一直有 —— 所以这里两个都断言,顺便看住这个约定。
   const buttonTitle = () => evalOn(ws, `document.querySelector('.herd-btn')?.getAttribute('title') ?? null`)
