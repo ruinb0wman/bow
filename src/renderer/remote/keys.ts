@@ -15,6 +15,8 @@ export interface QuickKey {
 export const QUICK_KEYS: QuickKey[] = [
   { label: 'Esc', data: '\x1b', title: 'Escape' },
   { label: 'Tab', data: '\t', title: 'Tab' },
+  // 手机输入法把 / 压到第二页,而路径几乎每行都要打
+  { label: '/', data: '/', title: '斜杠(路径)' },
   { label: '↑', data: '\x1b[A', title: '上' },
   { label: '↓', data: '\x1b[B', title: '下' },
   { label: '→', data: '\x1b[C', title: '右' },
@@ -22,7 +24,10 @@ export const QUICK_KEYS: QuickKey[] = [
   { label: 'C-c', data: '\x03', title: '中断(Ctrl+C)' },
   { label: 'C-d', data: '\x04', title: 'EOF(Ctrl+D)' },
   { label: 'C-l', data: '\x0c', title: '清屏(Ctrl+L)' },
-  { label: 'C-r', data: '\x12', title: '反向搜索(Ctrl+R)' }
+  { label: 'C-r', data: '\x12', title: '反向搜索(Ctrl+R)' },
+  // 全屏程序(vim / less / tmux)自己管屏幕:本地回看对它们没意义,要把翻页键**发给**它们
+  { label: 'PgUp', data: '\x1b[5~', title: 'PageUp(发给程序)' },
+  { label: 'PgDn', data: '\x1b[6~', title: 'PageDown(发给程序)' }
 ]
 
 /**

@@ -153,6 +153,47 @@ async function evalOn(wsUrl, expression) {
   }
 }
 
+/** 发一条任意 CDP 命令(Runtime.evaluate 之外的域,例如 Input.dispatchMouseEvent) */
+async function cdpCall(wsUrl, method, params = {}) {
+  const ws = new WebSocket(wsUrl)
+  try {
+    await new Promise((resolve, reject) => {
+      ws.once('open', resolve)
+      ws.once('error', () => reject(new Error('连不上 target')))
+      setTimeout(() => reject(new Error('连 target 超时')), 5000)
+    })
+    return await new Promise((resolve, reject) => {
+      ws.onmessage = (event) => {
+        const message = JSON.parse(String(event.data))
+        if (message.id !== 1) return
+        if (message.error) reject(new Error(message.error.message))
+        else resolve(message.result)
+      }
+      ws.send(JSON.stringify({ id: 1, method, params }))
+      setTimeout(() => reject(new Error(`${method} 超时`)), 8000)
+    })
+  } finally {
+    ws.close()
+  }
+}
+
+/** 在页面里用**真鼠标事件**点一个元素(合成 click 不会触发焦点变化,验不出抢焦点) */
+async function realClick(wsUrl, selector) {
+  const box = await evalOn(
+    wsUrl,
+    `(() => {
+       const el = document.querySelector(${JSON.stringify(selector)})
+       if (!el) return null
+       const r = el.getBoundingClientRect()
+       return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+     })()`
+  )
+  if (!box) throw new Error(`找不到元素:${selector}`)
+  const base = { x: box.x, y: box.y, button: 'left', clickCount: 1 }
+  await cdpCall(wsUrl, 'Input.dispatchMouseEvent', { type: 'mousePressed', ...base })
+  await cdpCall(wsUrl, 'Input.dispatchMouseEvent', { type: 'mouseReleased', ...base })
+}
+
 /** 连远程 WS,收集消息(与 tests/terminalRemoteProtocol.test.ts 同一个套路,但走真网络) */
 async function connectWs(url, headers = {}) {
   const ws = new WebSocket(url, { headers })
@@ -375,7 +416,8 @@ try {
   check(loggedIn === true, '页面登录成功并连上 WS')
 
   // 电脑上开一个终端 → 页面列表该出现一行
-  await evalOn(chromeWs, `window.browserAPI.plugins.invoke('terminal','createSession',{})`)
+  const pageCreated = await evalOn(chromeWs, `window.browserAPI.plugins.invoke('terminal','createSession',{})`)
+  const pageSessionId = pageCreated?.tabId
   const rowShown = await waitFor(
     async () => (await evalOn(pageWs, `document.querySelectorAll('.row').length`)) === 1,
     20000
@@ -389,6 +431,87 @@ try {
     15000
   )
   check(termReady === true, '点会话进入终端视图(xterm + 按键条渲染在普通浏览器里)')
+
+  // 按键条的铁律:点它**不能**让终端失焦(否则手机软键盘立刻收起,后面敲的字也进不去)
+  await evalOn(pageWs, `(() => { document.querySelector('.xterm-helper-textarea').focus(); return true })()`)
+  const focusedBefore = await evalOn(
+    pageWs,
+    `document.activeElement?.className ?? ''`
+  )
+  check(String(focusedBefore).includes('xterm-helper-textarea'), '终端可以先拿到焦点')
+  await realClick(pageWs, '.keybar .key.mod')
+  const focusedAfter = await evalOn(pageWs, `document.activeElement?.className ?? ''`)
+  check(
+    String(focusedAfter).includes('xterm-helper-textarea'),
+    '真点一下 Ctrl 按钮后焦点仍在终端(软键盘不会收起)',
+    focusedAfter
+  )
+  const ctrlOn = await evalOn(pageWs, `document.querySelector('.keybar .key.mod')?.classList.contains('on') ?? null`)
+  check(ctrlOn === true, 'Ctrl 确实点亮了(动作没被 preventDefault 吞掉)')
+
+  // 符号键:手机输入法把 / 埋在第二页,必须有一键
+  const hasSlash = await evalOn(
+    pageWs,
+    `[...document.querySelectorAll('.keybar .key')].some((el) => el.textContent.trim() === '/')`
+  )
+  check(hasSlash === true, '按键条上有 / 键')
+
+  // 历史回看:这一段**不依赖 shell**(Windows 默认是 PowerShell,`seq` 不存在)。
+  // 回看要验的是 UI(xterm 缓冲区 + 按钮),直接往终端里写 300 行更确定。
+  await evalOn(
+    pageWs,
+    `(() => { const t = window.__bowRemoteTerm; for (let i = 0; i < 300; i++) t.write('line ' + i + '\\r\\n'); return true })()`
+  )
+  const hasHistory = await waitFor(
+    async () =>
+      (await evalOn(pageWs, `((window.__bowRemoteTerm?.buffer.active.baseY ?? 0) > 0 ? true : null)`)) === true,
+    10000
+  )
+  check(hasHistory === true, '缓冲区里已有历史(可回看)')
+
+  await evalOn(pageWs, `window.__bowRemoteTerm.scrollToBottom()`)
+  const atBottom = await evalOn(
+    pageWs,
+    `(() => { const b = window.__bowRemoteTerm.buffer.active; return b.viewportY === b.baseY })()`
+  )
+  check(atBottom === true, '视口停在底部')
+
+  await evalOn(pageWs, `document.querySelector('.scroll-pad .sc').click()`)
+  const inHistory = await waitFor(
+    async () =>
+      (await evalOn(
+        pageWs,
+        `(() => { const b = window.__bowRemoteTerm.buffer.active; return b.viewportY < b.baseY ? true : null })()`
+      )) === true,
+    5000
+  )
+  check(inHistory === true, '点 ▲ 能向上翻看历史(本地回看,不发按键给 shell)')
+
+  // 翻着历史时又来了输出:视口**不动**,但出现「新输出」提示
+  await evalOn(pageWs, `(() => { window.__bowRemoteTerm.write('LATE OUTPUT\\r\\n'); return true })()`)
+  const stayedPut = await waitFor(
+    async () =>
+      (await evalOn(
+        pageWs,
+        `(() => {
+           const b = window.__bowRemoteTerm.buffer.active
+           const badge = document.querySelector('.sc-bottom')?.textContent?.trim() ?? ''
+           return b.viewportY < b.baseY && badge === '新输出' ? true : null
+         })()`
+      )) === true,
+    8000
+  )
+  check(stayedPut === true, '翻着历史时新输出不拽走视口,只提示「新输出」')
+
+  const backToBottom = await evalOn(
+    pageWs,
+    `(() => {
+       document.querySelector('.sc-bottom').click()
+       const b = window.__bowRemoteTerm.buffer.active
+       return b.viewportY === b.baseY ? 'bottom' : 'not-bottom'
+     })()`
+  )
+  check(backToBottom === 'bottom', '「最新」能回到最新输出', backToBottom)
 
   // 收尾:关掉这个页标签
   await evalOn(chromeWs, `window.browserAPI.closeTab(${JSON.stringify(pageTab?.id ?? 0)})`).catch(() => {})

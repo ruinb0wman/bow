@@ -44,6 +44,17 @@ describe('applyModifiers', () => {
 })
 
 describe('QUICK_KEYS', () => {
+  it('有 / 键(手机输入法把斜杠埋到第二页,路径几乎每行都要打)', () => {
+    const slash = QUICK_KEYS.find((k) => k.label === '/')
+    expect(slash?.data).toBe('/')
+  })
+
+  it('PgUp / PgDn 发的是 CSI 5~/6~(给 vim/less/tmux 用,不是本地回看)', () => {
+    const byLabel = new Map(QUICK_KEYS.map((k) => [k.label, k.data]))
+    expect(byLabel.get('PgUp')).toBe('\x1b[5~')
+    expect(byLabel.get('PgDn')).toBe('\x1b[6~')
+  })
+
   it('含手机上最需要的那些键,且序列正确', () => {
     const byLabel = new Map(QUICK_KEYS.map((k) => [k.label, k.data]))
     expect(byLabel.get('Esc')).toBe('\x1b')

@@ -24,11 +24,53 @@ const host = ref<HTMLElement | null>(null)
 const ctrl = ref(false)
 const alt = ref(false)
 const status = ref('')
+/** 视口是否停在「历史」里(不在底部) */
+const scrolledBack = ref(false)
+/** 翻着历史时又来了新输出:提示「↓ 新输出」,但**不**把视口拽走 */
+const pendingOutput = ref(false)
 
 let term: Terminal | null = null
 let fit: FitAddon | null = null
 let observer: ResizeObserver | null = null
 let sizeTimer: number | undefined
+
+/**
+ * 把焦点还给终端。按键条上的任何操作之后都要调 —— 手机上一旦失焦,软键盘就收起,
+ * 后面敲的字也进不了终端。
+ */
+function refocus(): void {
+  term?.focus()
+}
+
+/** 回看/回底不是「一个字符」:顺手把粘滞修饰键熄灭,免得滚动后第一下打字变成 Ctrl+C */
+function clearModifiers(): void {
+  ctrl.value = false
+  alt.value = false
+}
+
+/** 本地回看(不往 shell 发任何字节):上和下各一屏 */
+function scrollPage(dir: -1 | 1): void {
+  clearModifiers()
+  term?.scrollPages(dir)
+  syncScroll()
+  refocus()
+}
+
+function toBottom(): void {
+  clearModifiers()
+  term?.scrollToBottom()
+  pendingOutput.value = false
+  syncScroll()
+  refocus()
+}
+
+/** 同步「是否停在历史里」。xterm 的 viewportY < baseY 就表示视口在底部之上 */
+function syncScroll(): void {
+  const buffer = term?.buffer.active
+  const atHistory = !!buffer && buffer.viewportY < buffer.baseY
+  scrolledBack.value = atHistory
+  if (!atHistory) pendingOutput.value = false
+}
 
 function sendInput(data: string): void {
   const withMods = applyModifiers(data, { ctrl: ctrl.value, alt: alt.value })
@@ -42,6 +84,17 @@ function sendInput(data: string): void {
 
 function sendRaw(data: string): void {
   props.socket?.send({ t: 'input', id: props.sessionId, data })
+  refocus()
+}
+
+/** KeyBar 的粘滞修饰键切换:点完立刻把焦点还给终端,不然软键盘已经收起来了 */
+function setCtrl(next: boolean): void {
+  ctrl.value = next
+  refocus()
+}
+function setAlt(next: boolean): void {
+  alt.value = next
+  refocus()
 }
 
 /** 容器尺寸变了 → 重新算格子 → 告诉 pty */
@@ -83,6 +136,9 @@ onMounted(() => {
   term.loadAddon(fit)
   term.open(host.value)
   term.onData(sendInput)
+  // 测试缝(与 bow://terminal 页的 `__bowTerminal` 同一个套路):e2e 要断言「真的翻到了历史里」,
+  // 而 xterm 6 的可滚动 DOM 不是 `.xterm-viewport` 一个简单元素 —— 直接读它的 buffer 才可靠。
+  ;(window as unknown as Record<string, unknown>).__bowRemoteTerm = term
   refit()
 
   observer = new ResizeObserver(() => refit())
@@ -91,6 +147,8 @@ onMounted(() => {
 
   // 回放:attach 之前的历史(服务端在 attach 时一次性给)
   if (props.replay) term.write(props.replay)
+  // 拖动/翻页后 xterm 自己不会通知,靠这两个事件跟上
+  term.onScroll(syncScroll)
   // 键盘弹出/收起会改视口高度,但不一定触发 ResizeObserver
   window.visualViewport?.addEventListener('resize', refit)
 })
@@ -100,6 +158,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('orientationchange', refit)
   window.visualViewport?.removeEventListener('resize', refit)
   if (sizeTimer !== undefined) window.clearTimeout(sizeTimer)
+  if ((window as unknown as Record<string, unknown>).__bowRemoteTerm) {
+    delete (window as unknown as Record<string, unknown>).__bowRemoteTerm
+  }
   term?.dispose()
   term = null
   fit = null
@@ -107,7 +168,12 @@ onBeforeUnmount(() => {
 
 /** 父组件把数据/退出塞进来 */
 defineExpose({
-  write: (chunk: string) => term?.write(chunk),
+  write: (chunk: string) => {
+    term?.write(chunk)
+    // 翻着历史时:只做提示,不把视口拽回底部(否则一有输出就没法看历史)
+    if (scrolledBack.value) pendingOutput.value = true
+    syncScroll()
+  },
   exit: (code: number) => {
     status.value = `shell 已退出(代码 ${code})`
   }
@@ -128,14 +194,36 @@ watch(
       <span v-if="status" class="term-status">{{ status }}</span>
     </div>
     <div ref="host" class="term-host" />
-    <KeyBar
-      :ctrl="ctrl"
-      :alt="alt"
-      @update:ctrl="ctrl = $event"
-      @update:alt="alt = $event"
-      @send="sendRaw"
-      @paste="paste"
-    />
+    <!--
+      本地回看:浮动按钮,不做手势。手机上是唯一能看历史的入口
+      (xterm 的可滚动层在 canvas 下面,手指根本落不到它上面,原生滑动永远不生效)。
+    -->
+    <div class="scroll-pad">
+      <button class="sc" tabindex="-1" title="向上看一屏(本地回看,不发给 shell)" @pointerdown.prevent @click="scrollPage(-1)">
+        ▲
+      </button>
+      <button
+        v-if="scrolledBack"
+        class="sc"
+        tabindex="-1"
+        title="向下看一屏"
+        @pointerdown.prevent
+        @click="scrollPage(1)"
+      >
+        ▼
+      </button>
+      <button
+        v-if="scrolledBack"
+        class="sc sc-bottom"
+        tabindex="-1"
+        :title="pendingOutput ? '有新输出,点这里回到最新' : '回到最新'"
+        @pointerdown.prevent
+        @click="toBottom"
+      >
+        {{ pendingOutput ? '新输出' : '最新' }}
+      </button>
+    </div>
+    <KeyBar :ctrl="ctrl" :alt="alt" @update:ctrl="setCtrl" @update:alt="setAlt" @send="sendRaw" @paste="paste" />
   </div>
 </template>
 
@@ -175,5 +263,33 @@ watch(
   min-height: 0;
   padding: 4px 6px;
   overflow: hidden;
+}
+
+/* 浮动回看按钮:贴在按键条上方右侧,半透明,不挡正文中间那块 */
+.scroll-pad {
+  position: absolute;
+  right: 8px;
+  bottom: 64px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 5;
+}
+.sc {
+  width: 44px;
+  min-height: 40px;
+  padding: 0;
+  border-radius: 22px;
+  background: rgba(44, 46, 54, 0.82);
+  border-color: rgba(255, 255, 255, 0.12);
+  font-size: 14px;
+  opacity: 0.85;
+}
+.sc-bottom {
+  width: 54px;
+  font-size: 12px;
+}
+.term-wrap {
+  position: relative;
 }
 </style>
