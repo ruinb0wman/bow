@@ -487,8 +487,13 @@ try {
   )
   check(inHistory === true, '点 ▲ 能向上翻看历史(本地回看,不发按键给 shell)')
 
-  // 翻着历史时又来了输出:视口**不动**,但出现「新输出」提示
-  await evalOn(pageWs, `(() => { window.__bowRemoteTerm.write('LATE OUTPUT\\r\\n'); return true })()`)
+  // 翻着历史时又来了输出:视口**不动**,但出现「新输出」提示。
+  // 这里必须走**真路径**(pty → WS → App 的 write 包装),不能直接调 xterm.write ——
+  // 直写会绕过「翻着历史时打标记」那段逻辑,断言就变成了偶然通过(`echo` 在 PowerShell 里也有)。
+  await evalOn(
+    chromeWs,
+    `window.browserAPI.plugins.invoke('terminal','sendText',${JSON.stringify(pageSessionId)},${JSON.stringify('echo LATE_OUTPUT\r')})`
+  )
   const stayedPut = await waitFor(
     async () =>
       (await evalOn(
@@ -512,6 +517,40 @@ try {
      })()`
   )
   check(backToBottom === 'bottom', '「最新」能回到最新输出', backToBottom)
+
+  // ---------- ⑥ 「谁刚碰过,尺寸归谁」:手机抢走宽度 → 电脑上点一下抢回来 ----------
+  // 用户的原始抱怨:手机点进会话后,电脑那个终端一直是手机宽度,只能拖窗口才恢复。
+  const sizes = async () => await evalOn(chromeWs, `window.browserAPI.plugins.invoke('terminal','listSessions')`)
+  const pcSize = (await sizes()).find((s) => s.id === pageSessionId)
+  check(pcSize?.cols > 0, '电脑端终端的尺寸已知', pcSize && { cols: pcSize.cols, rows: pcSize.rows })
+
+  const taker = await connectWs(wsUrl, { cookie })
+  await taker.next((m) => m.t === 'hello')
+  taker.ws.send(JSON.stringify({ t: 'attach', id: pageSessionId, cols: 40, rows: 20 }))
+  await taker.next((m) => m.t === 'attached')
+  const takenOver = await waitFor(async () => {
+    const hit = (await sizes()).find((s) => s.id === pageSessionId)
+    return hit?.cols === 40 ? hit : null
+  }, 10000)
+  check(takenOver !== null, '手机 attach 会把 pty 缩到手机宽度(现状)', takenOver && { cols: takenOver.cols })
+
+  // 电脑上的终端页被点一下(真鼠标事件)→ 重新 fit → 把宽度抢回来
+  const terminalWs = await waitFor(async () => {
+    const t = (await targets()).find((t) => /\/renderer\/terminal\.html/.test(t.url ?? ''))
+    return t?.webSocketDebuggerUrl ?? null
+  }, 10000)
+  check(terminalWs !== null, '找得到电脑端终端页的 target')
+  await realClick(terminalWs, '.xterm')
+  const reclaimed = await waitFor(async () => {
+    const hit = (await sizes()).find((s) => s.id === pageSessionId)
+    return hit && hit.cols !== 40 ? hit : null
+  }, 10000)
+  check(
+    reclaimed !== null && reclaimed.cols === pcSize.cols,
+    '在电脑上点一下终端,宽度自动恢复成电脑的(不必拖窗口)',
+    reclaimed && { cols: reclaimed.cols, want: pcSize.cols }
+  )
+  taker.close()
 
   // 收尾:关掉这个页标签
   await evalOn(chromeWs, `window.browserAPI.closeTab(${JSON.stringify(pageTab?.id ?? 0)})`).catch(() => {})

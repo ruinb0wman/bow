@@ -250,6 +250,21 @@ function exposeDebugHandle(): void {
   }
 }
 
+/**
+ * 「谁刚碰过,尺寸就归谁」—— 本页一被使用者接手就重新 fit 一次,把 pty 的 cols/rows 抢回来。
+ *
+ * 为什么需要它:远程(手机)attach 时会把 pty 缩到手机宽度,而本页只会在**容器尺寸变化**时
+ * 重新 fit —— 所以手机上点开一个会话后,电脑这边会一直停在手机宽度,只能拖窗口才对回来。
+ * 这两个信号都只说明一件事:「使用者现在在这里」:
+ * - 焦点/可见性变化(切回这个标签、窗口重新获得焦点);
+ * - 页内的 pointerdown / keydown(点进终端、直接开始敲)。
+ *
+ * 反过来手机那边也做了同样的事(它一被碰就 fit),所以两边都能把自己抢回来。
+ */
+function reclaimOnInteraction(): void {
+  refit()
+}
+
 onMounted(async () => {
   exposeDebugHandle()
   await boot()
@@ -260,7 +275,17 @@ onMounted(async () => {
     observer.observe(host.value)
   }
   window.addEventListener('resize', refit)
+  window.addEventListener('focus', reclaimOnInteraction)
+  // capture:真正的按键/点击被 xterm 自己接走,冒泡阶段可能到不了这里
+  window.addEventListener('pointerdown', reclaimOnInteraction, true)
+  window.addEventListener('keydown', reclaimOnInteraction, true)
+  document.addEventListener('visibilitychange', onVisibility)
 })
+
+/** 标签重新可见(切回来)= 使用者在这里 */
+function onVisibility(): void {
+  if (!document.hidden) reclaimOnInteraction()
+}
 
 onBeforeUnmount(() => {
   alive = false
@@ -268,6 +293,10 @@ onBeforeUnmount(() => {
   unsubs = []
   host.value?.removeEventListener('copy', onNativeCopy)
   window.removeEventListener('resize', refit)
+  window.removeEventListener('focus', reclaimOnInteraction)
+  window.removeEventListener('pointerdown', reclaimOnInteraction, true)
+  window.removeEventListener('keydown', reclaimOnInteraction, true)
+  document.removeEventListener('visibilitychange', onVisibility)
   observer?.disconnect()
   observer = null
   if (sizeTimer != null) {

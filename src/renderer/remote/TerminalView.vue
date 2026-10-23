@@ -144,6 +144,9 @@ onMounted(() => {
   observer = new ResizeObserver(() => refit())
   observer.observe(host.value)
   window.addEventListener('orientationchange', refit)
+  // 「谁刚碰过,尺寸归谁」:手机这边一碰也重新 fit,把 pty 挣回手机宽度
+  // (电脑那边在 focus/pointerdown/keydown 时做同样的事,两边互相抢得回来)
+  window.addEventListener('pointerdown', refit, true)
 
   // 回放:attach 之前的历史(服务端在 attach 时一次性给)
   if (props.replay) term.write(props.replay)
@@ -157,6 +160,7 @@ onBeforeUnmount(() => {
   observer?.disconnect()
   window.removeEventListener('orientationchange', refit)
   window.visualViewport?.removeEventListener('resize', refit)
+  window.removeEventListener('pointerdown', refit, true)
   if (sizeTimer !== undefined) window.clearTimeout(sizeTimer)
   if ((window as unknown as Record<string, unknown>).__bowRemoteTerm) {
     delete (window as unknown as Record<string, unknown>).__bowRemoteTerm
