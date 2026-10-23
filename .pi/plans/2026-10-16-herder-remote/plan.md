@@ -513,3 +513,14 @@ read 尾部 → resize 落到台账 → close 事件 → 标签一起关掉 → 
 点进去 xterm 与按键条都渲染出来。
 
 顺手修掉的:设置页的两个分区(`TerminalSettings` + `RemoteSettings`)在 `ui.ts` 里按顺序注册。
+
+## 17. Windows 侧复验(2026-10-16)
+
+在用户真实环境(Windows 的 bow + Windows node)上把整条链路跑了一遍:
+
+- `e2e-remote.mjs` **29/29 全绿**(含普通浏览器上下文里的远程页、xterm、按键条);
+- 真机 `bind: 'lan'` 探针:启动成功,`lanUrls = ["http://192.168.1.20:8899"]` —— 地址来自操作系统网卡枚举;
+- 顺手确认:Windows 侧需要 `bun install`(`ws` 是运行时依赖,electron-vite 默认外部化),
+  以及 `out/remote/` 必须一起同步/重建。
+
+至此 **P0 + S5–S8(局域网远程)完成**。S9–S11(隧道)因无域名搁置,S12(移动端打磨)未做。

@@ -31,7 +31,12 @@ const dir = process.env.BOW_E2E_DIR ?? join(tmpdir(), 'bow-e2e')
 const run = process.pid
 const userdata = join(dir, `remote-userdata-${run}`)
 const debugPort = 9200 + (run % 200)
-const electron = createRequire(import.meta.url)('electron')
+/** 跨平台:从 WSL 用 Windows 的 node 跑时,ELECTRON_BIN 指向 electron.exe;headless 只在 Linux 有 */
+const isWin = process.platform === 'win32' || /\.exe$/i.test(process.env.ELECTRON_BIN ?? '')
+const electron =
+  process.env.ELECTRON_BIN || (isWin
+    ? join(root, 'node_modules', 'electron', 'dist', 'electron.exe')
+    : createRequire(import.meta.url)('electron'))
 const PASSWORD = `e2e-remote-${run}-pass`
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -80,7 +85,7 @@ mkdirSync(userdata, { recursive: true })
 
 const child = spawn(
   electron,
-  ['.', '--no-sandbox', '--ozone-platform=headless', `--user-data-dir=${userdata}`, `--remote-debugging-port=${debugPort}`],
+  ['.', '--no-sandbox', ...(isWin ? [] : ['--ozone-platform=headless']), `--user-data-dir=${userdata}`, `--remote-debugging-port=${debugPort}`],
   { cwd: root, stdio: 'ignore' }
 )
 
