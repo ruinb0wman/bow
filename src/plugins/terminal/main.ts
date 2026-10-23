@@ -34,6 +34,7 @@ import { SessionHub } from './remote/hub'
 import { RemoteAuth, createAuthKey } from './remote/auth'
 import { startRemoteServer } from './remote/server'
 import type { RemoteServerHandle } from './remote/server'
+import type { RemoteSessionApi } from './remote/protocol'
 import {
   MAX_SESSIONS,
   REMOTE_DEFAULT_PORT,
@@ -417,6 +418,43 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
 
   // ---------- 远程服务(S5:启停 + 状态;鉴权与 WS 协议在 S6/S7)----------
 
+  /**
+   * 远程要的会话操作(server 只认识这个窄接口,不知道 pty / 回放缓冲长什么样)。
+   * 全部复用本文件里那批函数 —— 面板 / MCP / 远程三个门脸一份实现。
+   */
+  function remoteSessionApi(): RemoteSessionApi {
+    return {
+      list: () => listSessions(),
+      attach: (id, cols, rows) => {
+        const session = sessions.get(id)
+        if (!session) return { ok: false, error: '会话不存在(可能已被关闭)' }
+        // 「最后一个 resize 的客户端胜」:远程 attach 会把自己的尺寸推给 pty
+        resize(id, cols, rows)
+        return {
+          ok: true,
+          replay: replayText(session.replay),
+          cols: session.cols,
+          rows: session.rows,
+          title: session.profileName
+        }
+      },
+      input: (id, data) => write(id, data),
+      resize: (id, cols, rows) => resize(id, cols, rows),
+      readTail: (id, chars) => readTail(id, chars),
+      create: (input) => {
+        const created = createSession(input)
+        if (!created.ok) return { ok: false, error: created.error }
+        // pty 异步起:这里不阻塞等 spawn(远程页靠随后的 sessions/data 事件追状态)
+        return { ok: true, id: created.tabId, state: 'starting' }
+      },
+      close: (id) => {
+        if (!sessions.has(id)) return false
+        killSession(id, 'closed-by-request')
+        return true
+      }
+    }
+  }
+
   function remoteStatus(): TerminalRemoteStatus {
     const want = store?.get().remote ?? defaultRemoteSettings()
     return {
@@ -507,8 +545,8 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
         bind: want.bind,
         hub,
         auth: new RemoteAuth({ password: want.password, key: remoteKey() }),
-        // 探活/登录后首屏用的台账(SessionInfo 不含任何环境信息以外的敏感内容)
-        sessions: () => listSessions()
+        // 探活/登录后首屏/WS 上行全部走这一份会话操作
+        sessions: remoteSessionApi()
       })
       remotePassword = want.password
       remoteError = null

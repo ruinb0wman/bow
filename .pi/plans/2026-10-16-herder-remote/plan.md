@@ -469,3 +469,24 @@ P2 可以延后而不影响前面任何一步 —— 在那之前用 `ssh -L POR
 - **测试替身把两个存储返回成了同一个对象**:插件写 `terminal-remote.json` 的签名密钥时把
   `terminal.json` 的设置冲掉了,表现是「远程服务启动后又被自己关掉」。真 `JsonStore` 是按 filename
   隔离的 —— 替身现在也按 filename 隔离,并在注释里写明为什么。
+
+## 15. S7 落地记录(2026-10-16)
+
+**加了什么**:`remote/protocol.ts`(上行消息逐字段校验 + `RemoteSessionApi` 窄接口)、
+`/ws` 升级(路径 + 鉴权 + Origin 三道都在握手阶段判)、hub → WS 的 `HubSink` 适配、
+`ws@8` 的类型(`@types/ws`,devDep)、`scripts/e2e-remote.mjs`。
+
+四个决定:
+1. **一条连接多路复用所有会话**。手机切来切去不该反复握手;订阅是**连接级**的(hub),
+   所以 `detach` 在服务端目前是空操作 —— 留着是为了协议完整,将来要做「按会话退订」再说。
+2. **远程 attach 不 spawn**,只订阅已存在的会话(那是 `create` 的事)。`attach` 会把自己的
+   `cols/rows` 推给 pty,沿用 D1 定的「最后一个 resize 者胜」。
+3. **服务端不自己发 `closed`**:`close` 成功后由插件 `killSession` publish 到 hub
+   (与面板的 × 同一条路径)。写测试时踩到过这点 —— 假实现不发就会「等消息超时」。
+4. **握手里的三道闸**:路径是 `/ws`、`auth.verifyRequest`(cookie 或 Bearer)、跨站 Origin 拒。
+   任一不过直接回 401 并销毁 socket,不进 WS 世界。
+
+**e2e 覆盖(24 项全绿)**:设置开关 → 监听 → `/healthz` 公开 → 未登录 401 → 错口令 401 →
+口令 204 + cookie(且不带 Secure)→ 带 cookie 读台账 → 无 cookie 握手被拒 → 跨站 Origin 握手被拒 →
+hello 带服务名与台账 → create → 台账推送 → attach 拿回放/尺寸 → input 经真 pty 回显 →
+read 尾部 → resize 落到台账 → close 事件 → 标签一起关掉 → 会话清零 → 关开关停服 → 端口放开。

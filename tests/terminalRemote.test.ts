@@ -13,6 +13,7 @@ import type { HubEvent, HubSink } from '../src/plugins/terminal/remote/hub'
 import { REMOTE_DEFAULT_PORT, defaultRemoteSettings, normalizeRemote } from '../src/plugins/terminal/shared'
 import type { SessionInfo } from '../src/plugins/terminal/shared'
 import { listLanAddresses, startRemoteServer } from '../src/plugins/terminal/remote/server'
+import type { RemoteSessionApi } from '../src/plugins/terminal/remote/protocol'
 import { LoginThrottle, REMOTE_COOKIE_NAME, RemoteAuth } from '../src/plugins/terminal/remote/auth'
 import { connect } from 'node:net'
 import { localRequest } from './localHttp'
@@ -31,6 +32,22 @@ function fakeSink(opts: { buffered?: number; throwOnSend?: boolean } = {}) {
     drop: (reason) => drops.push(reason)
   }
   return { sink, events, drops, state }
+}
+
+/**
+ * 最小会话 API:这个文件只验 HTTP 层(探活/登录/守卫),所以除 `list` 外全部回「不存在」。
+ * WS 与会话操作的往返在 `terminalRemoteProtocol.test.ts`。
+ */
+function apiWith(list: SessionInfo[] = []): RemoteSessionApi {
+  return {
+    list: () => list,
+    attach: () => ({ ok: false, error: '会话不存在' }),
+    input: () => false,
+    resize: () => false,
+    readTail: () => ({ ok: false, error: '会话不存在' }),
+    create: () => ({ ok: false, error: '会话不存在' }),
+    close: () => false
+  }
 }
 
 /** 每个用例一份 auth(口令固定,密钥固定,时钟真实) */
@@ -162,6 +179,7 @@ describe('远程 HTTP 骨架', () => {
       bind: 'loopback',
       hub,
       auth: mkAuth(),
+      sessions: apiWith(),
       listAddresses: () => ['192.168.1.9']
     })
     try {
@@ -186,6 +204,7 @@ describe('远程 HTTP 骨架', () => {
       bind: 'lan',
       hub,
       auth: mkAuth(),
+      sessions: apiWith(),
       listAddresses: () => ['192.168.1.9', '10.0.0.3']
     })
     try {
@@ -208,7 +227,7 @@ describe('远程 HTTP 骨架', () => {
       bind: 'loopback',
       hub,
       auth: mkAuth(),
-      sessions: () => [session(1), session(2)],
+      sessions: apiWith([session(1), session(2)]),
       listAddresses: () => []
     })
     try {
@@ -227,12 +246,14 @@ describe('远程 HTTP 骨架', () => {
 
   it('close() 之后端口真的释放(否则插件重新启用会 EADDRINUSE)', async () => {
     const hub = new SessionHub()
-    const first = await startRemoteServer({ port: 0, bind: 'loopback', hub, auth: mkAuth(), listAddresses: () => [] })
+    const first = await startRemoteServer({ port: 0, bind: 'loopback', hub, auth: mkAuth(),
+      sessions: apiWith(), listAddresses: () => [] })
     const port = first.port
     await first.close()
 
     // 能立刻在同一个端口上重新监听 = 真的释放了
-    const second = await startRemoteServer({ port, bind: 'loopback', hub, auth: mkAuth(), listAddresses: () => [] })
+    const second = await startRemoteServer({ port, bind: 'loopback', hub, auth: mkAuth(),
+      sessions: apiWith(), listAddresses: () => [] })
     await second.close()
 
     // 关掉之后端口真的没人听:用裸 TCP 判,不用 fetch
@@ -251,10 +272,12 @@ describe('远程 HTTP 骨架', () => {
 
   it('端口被占用时抛错(调用方靠它把原因显示到设置页)', async () => {
     const hub = new SessionHub()
-    const first = await startRemoteServer({ port: 0, bind: 'loopback', hub, auth: mkAuth(), listAddresses: () => [] })
+    const first = await startRemoteServer({ port: 0, bind: 'loopback', hub, auth: mkAuth(),
+      sessions: apiWith(), listAddresses: () => [] })
     try {
       await expect(
-        startRemoteServer({ port: first.port, bind: 'loopback', hub, auth: mkAuth(), listAddresses: () => [] })
+        startRemoteServer({ port: first.port, bind: 'loopback', hub, auth: mkAuth(),
+      sessions: apiWith(), listAddresses: () => [] })
       ).rejects.toMatchObject({ code: 'EADDRINUSE' })
     } finally {
       await first.close()
@@ -269,7 +292,7 @@ describe('远程 HTTP 骨架', () => {
       bind: 'loopback',
       hub,
       auth,
-      sessions: () => [session(1)],
+      sessions: apiWith([session(1)]),
       listAddresses: () => []
     })
     try {
@@ -364,6 +387,7 @@ describe('远程 HTTP 骨架', () => {
       bind: 'loopback',
       hub,
       auth: mkAuth(),
+      sessions: apiWith(),
       listAddresses: () => []
     })
     try {

@@ -14,14 +14,21 @@
 import { createServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import { networkInterfaces } from 'node:os'
+import { WebSocketServer } from 'ws'
+import type { WebSocket } from 'ws'
 import { LoginThrottle, REMOTE_COOKIE_NAME, REMOTE_COOKIE_TTL_MS, RemoteAuth } from './auth'
-import type { SessionHub } from './hub'
-import type { SessionInfo } from '../shared'
+import { parseClientMessage } from './protocol'
+import type { RemoteSessionApi, ServerMessage } from './protocol'
+import type { HubEvent, SessionHub, HubSink } from './hub'
 
 /** 应用名:远程页与健康检查都靠它确认「对面是 bow 的终端服务」 */
 export const REMOTE_SERVICE_NAME = 'bow-terminal-remote'
+/** WS 路径。单独一个常量:客户端与服务端只靠它对上 */
+export const REMOTE_WS_PATH = '/ws'
 /** 登录接口的请求体上限:口令就几十字节,大 body 只可能是攻击 */
 const MAX_LOGIN_BODY_BYTES = 4 * 1024
+/** 单条 WS 消息上限:按键流很小,1MB 已经宽松 */
+const MAX_WS_PAYLOAD = 1024 * 1024
 
 export interface RemoteServerOptions {
   /** 0 = 让系统分配(单测用) */
@@ -32,8 +39,8 @@ export interface RemoteServerOptions {
   auth: RemoteAuth
   /** 登录退避;省略时用默认参数(单测可注入假时钟) */
   throttle?: LoginThrottle
-  /** 台账(登录后的首屏 / healthz 的数量) */
-  sessions?: () => SessionInfo[]
+  /** 会话操作(由插件实现);也是 `/healthz` 与 `/api/sessions` 的数据源 */
+  sessions: RemoteSessionApi
   /** 注入用:列出本机非回环 IPv4 地址(单测不碰真实网卡) */
   listAddresses?: () => string[]
 }
@@ -45,6 +52,8 @@ export interface RemoteServerHandle {
   host: string
   /** 本机访问地址(设置页/复制用) */
   url: string
+  /** 本机 WS 地址(远程页与 e2e 用;浏览器侧按同源自己拼也行) */
+  wsUrl: string
   /** 局域网访问地址(仅 lan 模式非空) */
   lanUrls: string[]
   close(): Promise<void>
@@ -121,6 +130,19 @@ export async function startRemoteServer(options: RemoteServerOptions): Promise<R
     })
   })
 
+  // ---------- WebSocket(一条连接多路复用所有会话)----------
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_PAYLOAD })
+  http.on('upgrade', (req: IncomingMessage, socket, head) => {
+    const path = (req.url ?? '/').split('?')[0]
+    // 路径不对 / 没登录 / 跨站 Origin:一律在握手阶段拒,不进 WS 世界
+    if (path !== REMOTE_WS_PATH || !options.auth.verifyRequest(req.headers)) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
+      socket.destroy()
+      return
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => attachClient(options, ws))
+  })
+
   const address = http.address()
   const port = typeof address === 'object' && address ? address.port : options.port
   const addresses = (options.listAddresses ?? listLanAddresses)()
@@ -130,14 +152,121 @@ export async function startRemoteServer(options: RemoteServerOptions): Promise<R
     bind: options.bind,
     host,
     url: `http://127.0.0.1:${port}`,
+    wsUrl: `ws://127.0.0.1:${port}${REMOTE_WS_PATH}`,
     lanUrls: options.bind === 'lan' ? addresses.map((ip) => `http://${ip}:${port}`) : [],
     close: () =>
       new Promise<void>((resolve) => {
+        // 先掐 WS(不然它们会把 http.close 拖住),再关监听
+        for (const client of wss.clients) {
+          try {
+            client.close(1001, '服务已停止')
+          } catch {
+            /* 已经断了 */
+          }
+        }
+        wss.close()
         http.close(() => resolve())
         // keep-alive 连接会卡住 close 的回调:全部掐掉
         http.closeAllConnections?.()
       })
   }
+}
+
+/**
+ * 一条已鉴权的 WS 连接:订阅 hub + 处理上行消息。
+ *
+ * hub 事件靠 `HubSink` 转成 JSON 下行;`buffered()` 直接把 ws 的 `bufferedAmount` 交出去,
+ * 于是「跟不上的客户端」由 hub 统一判定并踢掉(策略只有一处)。
+ */
+function attachClient(options: RemoteServerOptions, ws: WebSocket): void {
+  const send = (message: ServerMessage | HubEvent): void => {
+    if (ws.readyState !== ws.OPEN) return
+    ws.send(JSON.stringify(message))
+  }
+
+  const sink: HubSink = {
+    buffered: () => ws.bufferedAmount,
+    send: (event) => send(event),
+    drop: (reason) => {
+      try {
+        ws.close(1008, reason.slice(0, 100))
+      } catch {
+        /* 已经断了 */
+      }
+    }
+  }
+  const unsubscribe = options.hub.subscribe(sink)
+  let closed = false
+  const done = (): void => {
+    if (closed) return
+    closed = true
+    unsubscribe()
+  }
+
+  ws.on('close', done)
+  ws.on('error', done)
+
+  // 首屏:服务名 + 当前台账(客户端不用先发 list)
+  send({ t: 'hello', service: REMOTE_SERVICE_NAME, sessions: options.sessions.list() })
+
+  ws.on('message', (raw) => {
+    let parsedRaw: unknown
+    try {
+      parsedRaw = JSON.parse(String(raw))
+    } catch {
+      send({ t: 'error', message: '消息不是合法 JSON' })
+      return
+    }
+    const parsed = parseClientMessage(parsedRaw)
+    if (!parsed.ok) {
+      send({ t: 'error', message: parsed.error })
+      return
+    }
+    const msg = parsed.message
+    switch (msg.t) {
+      case 'list':
+        send({ t: 'sessions', sessions: options.sessions.list() })
+        return
+      case 'attach': {
+        const result = options.sessions.attach(msg.id, msg.cols, msg.rows)
+        if (!result.ok) send({ t: 'error', message: result.error ?? '会话不存在' })
+        else
+          send({
+            t: 'attached',
+            id: msg.id,
+            replay: result.replay ?? '',
+            cols: result.cols ?? msg.cols,
+            rows: result.rows ?? msg.rows,
+            title: result.title ?? ''
+          })
+        return
+      }
+      case 'detach':
+        // 订阅是连接级的(hub),这里没有「单个会话的订阅」要退 —— 留着是为了协议完整
+        return
+      case 'input':
+        if (!options.sessions.input(msg.id, msg.data)) send({ t: 'error', message: '会话不存在' })
+        return
+      case 'resize':
+        if (!options.sessions.resize(msg.id, msg.cols, msg.rows)) send({ t: 'error', message: '会话不存在' })
+        return
+      case 'read': {
+        const result = options.sessions.readTail(msg.id, msg.chars)
+        if (!result.ok) send({ t: 'error', message: result.error ?? '读不到这个会话' })
+        else send({ t: 'read', id: msg.id, text: result.text ?? '' })
+        return
+      }
+      case 'create': {
+        const result = options.sessions.create(msg)
+        if (!result.ok || result.id == null) send({ t: 'error', message: result.error ?? '开不了新会话' })
+        else send({ t: 'created', id: result.id, state: result.state ?? 'starting' })
+        return
+      }
+      case 'close':
+        if (!options.sessions.close(msg.id)) send({ t: 'error', message: '会话不存在' })
+        return
+    }
+  })
 }
 
 function handle(options: RemoteServerOptions, req: IncomingMessage, res: ServerResponse): void {
@@ -158,7 +287,7 @@ async function route(options: RemoteServerOptions, req: IncomingMessage, res: Se
       ok: true,
       service: REMOTE_SERVICE_NAME,
       bind: options.bind,
-      sessions: options.sessions?.().length ?? 0
+      sessions: options.sessions.list().length
     })
     return
   }
@@ -176,7 +305,7 @@ async function route(options: RemoteServerOptions, req: IncomingMessage, res: Se
   }
 
   if (req.method === 'GET' && path === '/api/sessions') {
-    sendJson(res, 200, { ok: true, sessions: options.sessions?.() ?? [] })
+    sendJson(res, 200, { ok: true, sessions: options.sessions.list() })
     return
   }
 
