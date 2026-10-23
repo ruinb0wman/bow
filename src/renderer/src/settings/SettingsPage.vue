@@ -126,7 +126,7 @@ onBeforeUnmount(() => {
         <span class="settings-hint">设置即时保存</span>
       </header>
 
-      <div class="settings-body" :class="{ 'settings-body-plugin': !!activePluginId }">
+      <div class="settings-body">
         <GeneralSettings v-if="activeId === SETTINGS_GENERAL_ID" />
         <ShortcutsHelp v-else-if="activeId === SETTINGS_SHORTCUTS_ID" />
         <PluginManager v-else-if="activeId === SETTINGS_PLUGINS_ID" @configure="configurePlugin" />
@@ -250,11 +250,5 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   padding-bottom: 16px;
-}
-
-/* 插件分区:占满剩余高度,让历史/广告等长列表用足空间 */
-.settings-body-plugin {
-  overflow: hidden;
-  padding-bottom: 0;
 }
 </style>

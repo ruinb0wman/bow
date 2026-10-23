@@ -169,7 +169,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* 父层 `.settings-body-plugin` 是 overflow:hidden,这一节必须自己滚(约定见 ARCHITECTURE §7.3) */
+/* 长列表在自己框内滚,不带动整页 */
 .downloads-settings {
   flex: 1;
   min-height: 0;

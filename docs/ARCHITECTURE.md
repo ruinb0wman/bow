@@ -934,15 +934,15 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
   以及从 `logseq/config.edn` **只读**读到的那一节(日志目录 / 页面目录 / 日期格式 / 默认模板 / `:hidden`)。
   刻意没有「默认模板」下拉框 —— 模板名属于 Logseq 自己的配置,这里只显示读到了什么。
   整节自带 `padding: 4px 14px 20px`(左右 14px 与全局 `.set-row` 的 `12px 14px` 对齐)与
-  `flex: 1; min-height: 0; overflow-y: auto` —— 父层 `.settings-body-plugin` 是 `overflow: hidden`,
-  不自己滚的话内容一长就会被裁掉(最近图 + 索引 + config 只读节在小窗口下会超)。
+  `flex: 1; min-height: 0; overflow-y: auto` —— 长列表在自己框内滚,整页不跟着跑
+  (`.settings-body` 本身也能滚,所以不自带滚动的分区不会被裁掉)。
 - **终端**分区:字体族 / 字号 / 滚动缓冲三个外观项 + shell 配置列表(名称/可执行文件/参数/工作目录,
   单选一套作默认)。「从预设添加」的候选由 `listCandidates` 给出(平台预设 + 在 PATH/常见路径里能否找到),
   参数与工作目录都即时保存;字号/字体改动经 `settings-changed` 广播,**已打开的终端立即跟随**。
 - **下载**分区:保存目录(显示解析后的实际路径 + 「系统默认」标记,可「选择目录」/「打开目录」)、
   「下载前询问保存位置」开关(关掉后静默保存到该目录,同名文件自动加 `(1)` 不覆盖)、记录保留条数
   (默认 500,范围 1–5000,**进行中的记录永不裁剪**)、「清空全部记录」。整节同样自带 `padding: 4px 14px 20px`
-  与 `flex: 1; min-height: 0; overflow-y: auto`(父层 `.settings-body-plugin` 是 `overflow: hidden`)。
+  与 `flex: 1; min-height: 0; overflow-y: auto`(长列表在分区内滚,不带动整页)。
 
 ---
 

@@ -167,7 +167,7 @@ onMounted(() => {
 
 <style scoped>
 /* 插件分区的公共形态(与其他插件的 `.set-row` 对齐:左右 14px);
-   父层 `.settings-body-plugin` 是 `overflow: hidden`,这一节必须自己滚,否则内容一长就被裁掉 */
+   长列表在自己框内滚,不带动整页 */
 .logseq-settings {
   flex: 1;
   min-height: 0;
