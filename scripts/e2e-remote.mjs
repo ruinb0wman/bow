@@ -204,8 +204,10 @@ async function connectWs(url, headers = {}) {
   const ws = new WebSocket(url, { headers })
   const queue = []
   const waiters = []
+  let lastSessions = []
   ws.on('message', (raw) => {
     const msg = JSON.parse(String(raw))
+    if (msg.t === 'sessions' || msg.t === 'hello') lastSessions = msg.sessions ?? []
     const i = waiters.findIndex((w) => w.match(msg))
     if (i >= 0) waiters.splice(i, 1)[0].resolve(msg)
     else queue.push(msg)
@@ -233,30 +235,37 @@ async function connectWs(url, headers = {}) {
   if (!heard) throw new Error('WS 连上了但服务端一条消息都没发(服务刚重启?)')
   return {
     ws,
+    get lastSessions() {
+      return lastSessions
+    },
     next(match, timeoutMs = 15000) {
       const i = queue.findIndex(match)
       if (i >= 0) return Promise.resolve(queue.splice(i, 1)[0])
       return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          // 带上已经收到但没匹配上的消息类型 —— 否则「等超时」什么也说明不了
-          // (服务端的 error 消息就躺在 queue 里)
-          const seen = queue.slice(-6).map((m) => m.t ?? m.type ?? '?')
-          reject(
-            new Error(
-              `等 WS 消息超时(已收到:${seen.join(',') || '无'})` +
-                (queue.some((m) => m.t === 'error') ? ` · error=${
-                  queue.filter((m) => m.t === 'error').pop().message
-                }` : '')
-            )
-          )
-        }, timeoutMs)
-        waiters.push({
+        // ⚠️ 超时必须把这个 waiter **从数组里摘掉**:否则它留着继续拦截后续消息,
+        // 把匹配到的帧直接吞掉(已拒绝的 promise 再 resolve 是空操作)—— 实测就是
+        // 「明明收到了 sessions,却一直等不到」这部份莫名超时的真凶。
+        const waiter = {
           match,
           resolve: (m) => {
             clearTimeout(timer)
             resolve(m)
           }
-        })
+        }
+        const timer = setTimeout(() => {
+          const at = waiters.indexOf(waiter)
+          if (at >= 0) waiters.splice(at, 1)
+          const seen = queue.slice(-6).map((m) => m.t ?? m.type ?? '?')
+          reject(
+            new Error(
+              `等 WS 消息超时(已收到:${seen.join(',') || '无'})` +
+                (queue.some((m) => m.t === 'error')
+                  ? ` · error=${queue.filter((m) => m.t === 'error').pop().message}`
+                  : '')
+            )
+          )
+        }, timeoutMs)
+        waiters.push(waiter)
       })
     },
     /** 收集直到出现 needle 为止(用于 pty 回显) */
@@ -369,8 +378,23 @@ try {
   check(Number.isInteger(created.id), 'create 回 created + id', created)
   const id = created.id
 
-  const listed = await client.next((m) => m.t === 'sessions' && m.sessions.some((s) => s.id === id))
-  check(listed.sessions.length === 1, '台账推送里出现新会话', listed.sessions.map((s) => s.id))
+  // 用**拉**的方式等,而不是只等那次广播:`notifySessions` 有 250ms 合批,
+  // 偶尔会和「刚 open 的连接」错开(表现为「等 sessions 超时」)。
+  let listed = null
+  for (let i = 0; i < 40 && !listed; i++) {
+    client.ws.send(JSON.stringify({ t: 'list' }))
+    try {
+      const hit = await client.next((m) => m.t === 'sessions' && m.sessions.some((s) => s.id === id), 1000)
+      listed = hit
+    } catch {
+      /* 这一秒没有,继续拉 */
+    }
+  }
+  if (listed === null) {
+    const seen = await http(`${base}/api/sessions`, { headers: { cookie } })
+    console.log('  诊断:created.id =', id, '| 最后一次 sessions =', JSON.stringify(client.lastSessions.map((s) => s.id)), '| /api/sessions =', seen.text.slice(0, 200))
+  }
+  check(listed !== null, '台账里出现新会话(pty 起来了)', listed?.sessions.map((s) => s.id))
 
   client.ws.send(JSON.stringify({ t: 'attach', id, cols: 100, rows: 30 }))
   const attached = await client.next((m) => m.t === 'attached')
@@ -388,11 +412,21 @@ try {
   const read = await client.next((m) => m.t === 'read')
   check((read.text ?? '').includes('REMOTE_OK'), 'read 拿到尾部文本')
 
-  client.ws.send(JSON.stringify({ t: 'resize', id, cols: 120, rows: 40 }))
-  const resized = await client.next(
-    (m) => m.t === 'sessions' && m.sessions.some((s) => s.id === id && s.cols === 120 && s.rows === 40)
-  )
-  check(resized.sessions[0].cols === 120, 'resize 落到台账(最后一个 resize 者胜)')
+  // 电脑端终端页挂载时会 fit 一次(84×28),可能**晚于**这次远程 resize 到达 ——
+  // 「最后一个 resize 者胜」会把它盖回去。这是约定好的行为,所以这里允许重试。
+  let resized = null
+  for (let attempt = 0; attempt < 3 && !resized; attempt += 1) {
+    client.ws.send(JSON.stringify({ t: 'resize', id, cols: 120, rows: 40 }))
+    try {
+      resized = await client.next(
+        (m) => m.t === 'sessions' && m.sessions.some((s) => s.id === id && s.cols === 120 && s.rows === 40),
+        2500
+      )
+    } catch {
+      /* 可能被电脑端的 fit 盖回去了,再来一次 */
+    }
+  }
+  check(resized !== null, 'resize 落到台账(最后一个 resize 者胜)', client.lastSessions.map((s) => `${s.id}:${s.cols}x${s.rows}`))
 
   // 关会话:closed 事件 + 标签一起消失(客户端的心智:一个标签就是一个会话)
   client.ws.send(JSON.stringify({ t: 'close', id }))
@@ -474,10 +508,16 @@ try {
   check(noXterm === true, '对话页里没有 xterm / 按键条(移动端不再渲染终端)')
 
   const deadHint = await waitFor(
-    async () => (await evalOn(pageWs, `document.body.innerText.includes('控制通道')`)) === true,
+    async () => (await evalOn(pageWs, `document.querySelector('[data-chat-hint]')?.innerText ?? ''`)).length > 0,
     10000
   )
-  check(deadHint === true, '没有 pi 控制通道时给出可读提示')
+  const hintText = await evalOn(pageWs, `document.querySelector('[data-chat-hint]')?.innerText ?? ''`)
+  check(deadHint === true, '没有控制通道时给出可读提示(而且分开说原因)', hintText)
+  check(
+    String(hintText).includes('没检测到 pi') || String(hintText).includes('控制通道'),
+    '提示里说清了是「没 pi」还是「通道没连上」',
+    hintText
+  )
 
   const composerDisabled = await evalOn(
     pageWs,

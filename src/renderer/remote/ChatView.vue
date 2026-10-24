@@ -15,11 +15,20 @@ import type { AskRequest, ChatMessage, RemoteSocket } from './ws'
 const props = defineProps<{
   sessionId: number
   title: string
+  cwd: string
   messages: ChatMessage[]
   busy: boolean
   pending: number
   live: boolean
   asks: AskRequest[]
+  /** WS 是否连着(断线时给一条横幅,别让人以为发出去了) */
+  connected: boolean
+  /** 台账里这个会话有没有代理状态(有 = 终端里确有 pi,只是控制通道没连上) */
+  hasAgent: boolean
+  /** 上一次发送失败的原因(用来把草稿还回去) */
+  lastError: string
+  /** 失败的时刻:同一个原因重复出现时也要触发 watch */
+  errorAt: number
 }>()
 
 const emit = defineEmits<{
@@ -79,13 +88,26 @@ watch(
   }
 )
 
+const lastSent = ref('')
+
 function send(): void {
   const text = draft.value.trim()
   if (!text) return
+  lastSent.value = text
   draft.value = ''
   emit('send', { text })
   void nextTick(() => scrollToBottom(true))
 }
+
+// 发失败了就把刚发的那句还回输入框(草稿不能凭空消失)
+watch(
+  () => props.errorAt,
+  () => {
+    if (!props.lastError || !lastSent.value) return
+    if (!draft.value.trim()) draft.value = lastSent.value
+    lastSent.value = ''
+  }
+)
 
 /** 插话:agent 正在跑时立刻说(而不是等这一轮结束) */
 function steer(): void {
@@ -100,6 +122,19 @@ const status = computed(() => {
   if (!props.live) return '没有控制通道'
   if (props.busy) return '在跑'
   return '空闲'
+})
+
+/**
+ * 为什么没有控制通道 —— 两种原因能分开,就不用让人猜:
+ * 台账里有代理状态 = 终端里的 pi 确实装了扩展(它同时在发 OSC 状态),那问题在控制通道本身;
+ * 台账里也没有 = 这个终端里没检测到 pi,或者 pi 没装扩展。
+ */
+const deadReason = computed(() => {
+  if (props.live) return ''
+  if (props.hasAgent) {
+    return 'pi 在跑,但手机没连上它的控制通道 —— 重开这个终端(让它拿到 BOW_* 变量),或在 pi 里 /reload 升级扩展。'
+  }
+  return '这个终端里没检测到 pi(或者 pi 没装扩展:设置页 → 终端 → Pi 联动 装一下)。'
 })
 
 // ---------- pi 的提问(手机也能答;终端里那个框同时还在,谁先答要谁) ----------
@@ -141,15 +176,16 @@ const visibleAsks = computed(() => props.asks.filter((ask) => !hiddenAsks.value.
     <header class="head">
       <button class="back" title="返回会话列表" @click="emit('back')">←</button>
       <span class="name">{{ title }}</span>
+      <span v-if="cwd" class="cwd">{{ cwd }}</span>
       <span class="badge" :class="{ busy, dead: !live }">{{ status }}</span>
       <span v-if="pending > 0" class="badge queue">有排队</span>
       <button v-if="busy && live" class="stop" title="停止当前这一轮" @click="emit('abort')">停止</button>
     </header>
 
+    <p v-if="!connected" class="banner" data-chat-banner>连接断了,正在重连……(没接上的话,消息不会发出去)</p>
+
     <div ref="scroller" class="msgs" @scroll="onScroll">
-      <p v-if="!live" class="hint">
-        这个会话还没有控制通道 —— 在 bow 里重开一下这个终端(或在 pi 里 <code>/reload</code>)即可。
-      </p>
+      <p v-if="!live" class="hint" data-chat-hint>{{ deadReason }}</p>
       <p v-if="messages.length === 0" class="hint">还没有对话。下面输入第一句。</p>
 
       <template v-for="msg in messages" :key="msg.id">
@@ -267,6 +303,24 @@ const visibleAsks = computed(() => props.asks.filter((ask) => !hiddenAsks.value.
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+}
+.cwd {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--mono);
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: none;
+}
+.banner {
+  margin: 0;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: #e5c07b;
+  background: rgba(229, 192, 123, 0.12);
+  border-bottom: 1px solid rgba(229, 192, 123, 0.3);
 }
 .badge {
   font-size: 11px;

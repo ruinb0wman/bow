@@ -178,6 +178,14 @@ export default function (pi: ExtensionAPI) {
     publish()
   })
 
+  // 压缩 / 切分支之后,服务端缓存的那份就是旧的了 —— 重发一份快照让手机跟上
+  pi.on('session_compact', () => {
+    snapshot()
+  })
+  pi.on('session_tree', () => {
+    snapshot()
+  })
+
   pi.on('session_shutdown', () => {
     if (!root) return
     emit('idle')

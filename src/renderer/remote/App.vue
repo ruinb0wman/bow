@@ -22,7 +22,7 @@ const sessions = ref<SessionInfo[]>([])
 const state = ref<'connecting' | 'open' | 'closed' | 'refused'>('connecting')
 
 /** 当前打开的会话(空 = 显示列表) */
-const active = reactive<{ id: number | null; title: string }>({ id: null, title: '' })
+const active = reactive<{ id: number | null; title: string; cwd: string }>({ id: null, title: '', cwd: '' })
 
 /** 对话快照(服务端缓存的那份镜像;手机不存历史) */
 const chat = reactive<{ messages: ChatMessage[]; busy: boolean; pending: number; live: boolean; asks: AskRequest[] }>({
@@ -32,13 +32,15 @@ const chat = reactive<{ messages: ChatMessage[]; busy: boolean; pending: number;
   live: false,
   asks: []
 })
-const chatError = ref('')
+const chatError = reactive<{ text: string; at: number }>({ text: '', at: 0 })
 
 let socket: RemoteSocket | null = null
 let now = ref(Date.now())
 let ticker: number | undefined
 
 const rows = computed(() => sortSessionsByAttention(sessions.value))
+/** 当前会话在台账里的样子(cwd / 有没有代理状态):列表刷新时跟着更新 */
+const activeInfo = computed(() => sessions.value.find((s) => s.id === active.id) ?? null)
 const activeSession = computed(() => sessions.value.find((s) => s.id === active.id) ?? null)
 
 const STATE_LABEL: Record<string, string> = { working: '在跑', blocked: '等你', idle: '空闲' }
@@ -107,7 +109,7 @@ function handle(msg: ServerMessage): void {
       chat.pending = msg.pending
       chat.live = msg.live
       chat.asks = msg.asks ?? []
-      chatError.value = ''
+      chatError.text = ''
       break
     case 'ask':
       if (msg.id !== active.id) break
@@ -140,7 +142,11 @@ function handle(msg: ServerMessage): void {
       break
     case 'error':
       if (!authed.value) loginError.value = msg.message
-      else chatError.value = msg.message
+      else {
+        // `at` 每次变:同一条错误重复出现时,页面那侧的 watch 仍然会触发(草稿要还回去)
+        chatError.text = msg.message
+        chatError.at = Date.now()
+      }
       break
     default:
       break
@@ -154,7 +160,7 @@ function requestChat(id: number): void {
   chat.pending = 0
   chat.live = false
   chat.asks = []
-  chatError.value = ''
+  chatError.text = ''
   socket?.send({ t: 'chat', id })
 }
 
@@ -162,6 +168,7 @@ function attach(id: number): void {
   const info = sessions.value.find((s) => s.id === id)
   active.id = id
   active.title = info?.title ?? ''
+  active.cwd = info?.cwd ?? ''
   requestChat(id)
 }
 
@@ -262,16 +269,21 @@ const needsLogin = computed(() => !authed.value || state.value === 'refused')
 
     <!-- 对话 -->
     <div v-else-if="active.id != null" class="chat-wrap">
-      <p v-if="chatError" class="err-bar" @click="chatError = ''">{{ chatError }}</p>
+      <p v-if="chatError.text" class="err-bar" @click="chatError.text = ''">{{ chatError.text }}</p>
       <ChatView
         :key="active.id"
         :session-id="active.id"
         :title="active.title"
+        :cwd="activeInfo?.cwd ?? active.cwd"
         :messages="chat.messages"
         :busy="chat.busy"
         :pending="chat.pending"
         :live="chat.live"
         :asks="chat.asks"
+        :connected="state === 'open'"
+        :has-agent="activeInfo?.agent != null"
+        :last-error="chatError.text"
+        :error-at="chatError.at"
         @back="back"
         @send="send"
         @abort="abort"
