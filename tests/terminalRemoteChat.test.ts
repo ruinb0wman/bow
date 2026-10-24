@@ -23,6 +23,7 @@ import { startRemoteServer } from '../src/plugins/terminal/remote/server'
 import { parseClientMessage } from '../src/plugins/terminal/remote/protocol'
 import type { RemoteSessionApi } from '../src/plugins/terminal/remote/protocol'
 import type { SessionInfo } from '../src/plugins/terminal/shared'
+import { KEYBOARD_OPEN_MIN_PX, keyboardInsetOf } from '../src/renderer/remote/keyboardInset'
 import { localRequest } from './localHttp'
 
 const PASSWORD = 'test-password-123'
@@ -443,5 +444,24 @@ describe('提问(手机回答 pi 的弹框)', () => {
     expect(parseClientMessage({ t: 'answer', id: 1, requestId: '', value: true }).ok).toBe(false)
     expect(parseClientMessage({ t: 'answer', id: 1, requestId: 'q1', value: 42 }).ok).toBe(false)
     expect(parseClientMessage({ t: 'answer', id: 0, requestId: 'q1', value: true }).ok).toBe(false)
+  })
+})
+
+describe('软键盘:高度差算得对', () => {
+  it('键盘没开 → 0', () => {
+    expect(keyboardInsetOf(762, 762, 0)).toBe(0)
+  })
+  it('Android(resizes-content):布局也缩了 → 差额是 0,不会双重位移', () => {
+    expect(keyboardInsetOf(450, 450, 0)).toBe(0)
+  })
+  it('iOS(布局不动,只有可见区缩 + 上推)→ 把差额算出来', () => {
+    expect(keyboardInsetOf(844, 508, 0)).toBe(336)
+    expect(keyboardInsetOf(844, 508, 60)).toBe(276)
+  })
+  it('工具栏收起那几十像素不算键盘', () => {
+    expect(keyboardInsetOf(844, 780, 0)).toBeLessThan(KEYBOARD_OPEN_MIN_PX)
+  })
+  it('怪异输入被夹到 0(可见区比布局还高)', () => {
+    expect(keyboardInsetOf(500, 700, 0)).toBe(0)
   })
 })

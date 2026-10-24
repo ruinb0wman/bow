@@ -768,3 +768,25 @@ P1 → P3 → P2。每档都要过 `npm run test:pi:chat`(真 pi,会调一次模
   现在允许重试。
 
 结果:`test:e2e:remote` 连跑 6 次全绿(42 项);vitest 1520;`test:pi:ask` 11;`test:pi:chat` 7。
+
+### 21.7 软键盘遮住输入框(2026-10-16)
+
+布局是 `html/body/#app { height: 100% }` 的 flex 列。键盘一弹:
+Android Chrome(108+)默认 `resizes-visual` —— 只缩视觉视口,布局视口不变,输入框被盖住;
+iOS Safari 布局视口根本不动,只能自己量。
+
+- `index.html` 的 viewport 加 `interactive-widget=resizes-content`:让 Android 连**布局**一起缩
+  (`height:100%` 自然变矮);
+- `keyboardInset.ts`:量 `innerHeight - visualViewport.height - offsetTop` 写进 `--kb-inset`
+  (iOS / 旧 Chrome 的兜底),`.app` 高度是 `calc(100% - var(--kb-inset, 0px))`;
+  两条路**叠加安全** —— 上了 `resizes-content` 后 innerHeight 一起缩,差额算出来就是 0;
+- `.kb-open` 时 composer 去掉 `env(safe-area-inset-bottom)`(键盘顶掉了 home indicator 那条);
+- 聚焦 composer / 提问卡片输入框后 320ms:`scrollIntoView({block:'nearest'})` + 列表回底。
+
+**实测(模拟器 api35,`show_ime_with_hard_keyboard=1`,CDP 发真触摸点输入框)**:
+`innerHeight` 762 → **450**,`.app` 高度 450,composer 底边 450 = 可见区底边 —— 输入框正好落在键盘上方。
+
+⚠️ 验的时候踩到一个前提:**会话没有控制通道时 composer 是 `disabled` 的,点不出键盘**,
+所以要用提问卡片里的输入框(或一个有 pi 的会话)来验。
+数学部分抽成 `keyboardInsetOf()` 纯函数,`tests/terminalRemoteChat.test.ts` 里 5 个用例
+(没开 / resizes-content / iOS 偏移 / 工具栏收起 / 怪异输入)。

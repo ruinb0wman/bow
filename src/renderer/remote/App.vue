@@ -329,7 +329,8 @@ const needsLogin = computed(() => !authed.value || state.value === 'refused')
 
 <style scoped>
 .app {
-  height: 100%;
+  /* 扣掉软键盘占的高度(--kb-inset 由 keyboardInset.ts 写入;iOS 上 `resizes-content` 不生效) */
+  height: calc(100% - var(--kb-inset, 0px));
   display: flex;
   flex-direction: column;
 }

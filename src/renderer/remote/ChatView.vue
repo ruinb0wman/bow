@@ -61,6 +61,15 @@ function toggleTool(msg: ChatMessage): void {
   expanded.value = next
 }
 
+/** 键盘弹出后:输入框进视野 + 列表回底(等动画结束再动,不然算出的是旧高度) */
+function onFocus(): void {
+  window.setTimeout(() => {
+    const el = document.activeElement as HTMLElement | null
+    el?.scrollIntoView({ block: 'nearest' })
+    scrollToBottom(true)
+  }, 320)
+}
+
 function onScroll(): void {
   const el = scroller.value
   if (!el) return
@@ -244,6 +253,7 @@ const visibleAsks = computed(() => props.asks.filter((ask) => !hiddenAsks.value.
             class="ask-input"
             :rows="ask.kind === 'editor' ? 4 : 1"
             :placeholder="ask.placeholder || (ask.kind === 'editor' ? '在这里写…' : '输入…')"
+            @focus="onFocus"
             @keydown.enter.exact.prevent="answerText(ask)"
           />
           <div class="ask-actions">
@@ -267,6 +277,7 @@ const visibleAsks = computed(() => props.asks.filter((ask) => !hiddenAsks.value.
         inputmode="text"
         placeholder="说点什么…"
         :disabled="!live"
+        @focus="onFocus"
         @keydown.enter.exact.prevent="send"
       />
       <button class="primary" :disabled="!live || !draft.trim()" @click="send">发送</button>
@@ -439,6 +450,11 @@ const visibleAsks = computed(() => props.asks.filter((ask) => !hiddenAsks.value.
   color: #c8ccd6;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+:global(.kb-open) .composer {
+  /* 键盘把 home indicator 那条安全区顶掉了,再加就是白留一截 */
+  padding-bottom: 8px;
 }
 
 .composer {
