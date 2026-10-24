@@ -210,6 +210,20 @@ interface ChatCtx {
   abort?: () => void
   hasPendingMessages?: () => boolean
   sessionManager?: { buildContextEntries?: () => Array<{ type?: string; message?: PiMessage }> }
+  /** pi 的对话框接口(`select` / `confirm` / `input` / `editor`);下面会包一层 */
+  ui?: Record<string, unknown>
+}
+
+/** 手机上的题面(与 bow 侧 `remote/piChat.ts` 的 `AskRequest` 同形) */
+interface AskRequest {
+  requestId: string
+  kind: 'confirm' | 'select' | 'input' | 'editor'
+  title: string
+  message?: string
+  options?: string[]
+  placeholder?: string
+  prefill?: string
+  timeout?: number
 }
 
 function textOf(content: string | PiPart[] | undefined): string {
@@ -361,6 +375,87 @@ function startChatBridge(pi: ExtensionAPI): void {
     t.unref?.()
   }
 
+  /** 手机正在等回答的题:requestId → resolve(手机返回的值) */
+  const pendingAsks = new Map<string, (value: unknown) => void>()
+  /**
+   * 已经包过的 `ctx.ui`。
+   * ⚠️ 不能用「对象身份」去重:pi 每次给的 `ctx`(连带 `ui`)可能是**新对象**,
+   * 那样会反复包装形成链条 —— 实测表现是**一次提问出现两条** `extension_ui_request`,
+   * 结果也变得随机。所以改为在**包装函数自己身上**打标记,看到标记就不再包。
+   */
+  const wrappedMark = Symbol.for('bow.chat.uiWrapped')
+
+  const askId = (): string => `ask-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+
+  const limit = (value: unknown, max: number): string | undefined => {
+    if (typeof value !== 'string' || !value) return undefined
+    return value.length > max ? `${value.slice(0, max)}…` : value
+  }
+
+  /**
+   * 接管 pi 的对话框。关键:**原始方法照旧调** —— 终端里那条路一点不变;
+   * 同时把题面发到手机,谁先答要谁。手机先答就用 `opts.signal` 把终端的框程序化关掉
+   * (`ExtensionUIDialogOptions.signal` 的语义就是「程序化 dismiss」);
+   * 关不掉(editor 没有 opts)也不影响结果 —— 那个框晚一点被点掉而已。
+   */
+  function wrapDialogs(context: ChatCtx): void {
+    const ui = context.ui
+    if (!ui || typeof ui !== 'object') return
+
+    for (const kind of ['confirm', 'select', 'input', 'editor'] as const) {
+      const original = ui[kind]
+      if (typeof original !== 'function') continue
+      if ((original as unknown as Record<symbol, unknown>)[wrappedMark]) continue
+      const wrapped = async (...args: unknown[]): Promise<unknown> => {
+        const requestId = askId()
+        const controller = new AbortController()
+        // editor(title, prefill) 没有第三个参数,也就没有 signal 能用来关掉终端的框
+        const given = kind === 'editor' ? undefined : (args[2] as { signal?: AbortSignal; timeout?: number } | undefined)
+        if (given?.signal) {
+          if (given.signal.aborted) controller.abort()
+          else given.signal.addEventListener('abort', () => controller.abort(), { once: true })
+        }
+        const ask: AskRequest = {
+          requestId,
+          kind,
+          title: limit(args[0], 300) ?? kind,
+          ...(kind === 'confirm' ? { message: limit(args[1], 2000) ?? '' } : {}),
+          ...(kind === 'select' && Array.isArray(args[1])
+            ? { options: (args[1] as unknown[]).map((option) => limit(option, 200) ?? '').slice(0, 20) }
+            : {}),
+          ...(kind === 'input' ? { placeholder: limit(args[1], 200) ?? '' } : {}),
+          ...(kind === 'editor' ? { prefill: limit(args[1], 4000) ?? '' } : {}),
+          ...(given?.timeout ? { timeout: given.timeout } : {})
+        }
+        send({ type: 'ask', ask })
+
+        const fromPhone = new Promise<{ from: 'phone'; value: unknown }>((resolve) => {
+          pendingAsks.set(requestId, (value) => resolve({ from: 'phone', value }))
+        })
+        const patched =
+          kind === 'editor' ? args : [...args.slice(0, 2), { ...(given ?? {}), signal: controller.signal }]
+        const fromTerminal = (original as (...a: unknown[]) => Promise<unknown>)
+          .apply(ui, patched)
+          .then((value) => ({ from: 'terminal' as const, value }))
+          .catch(() => ({ from: 'terminal' as const, value: undefined }))
+
+        const first = await Promise.race([fromPhone, fromTerminal])
+        pendingAsks.delete(requestId)
+        if (first.from === 'phone') {
+          try {
+            controller.abort()
+          } catch {
+            /* 已经结束了 */
+          }
+        }
+        send({ type: 'ask-done', requestId })
+        return first.value
+      }
+      ;(wrapped as unknown as Record<symbol, unknown>)[wrappedMark] = true
+      ui[kind] = wrapped
+    }
+  }
+
   const snapshot = (): void => {
     const messages: ChatMsg[] = []
     try {
@@ -375,7 +470,7 @@ function startChatBridge(pi: ExtensionAPI): void {
   }
 
   const onDown = (raw: string): void => {
-    let msg: { type?: string; text?: unknown; deliverAs?: unknown } | null = null
+    let msg: { type?: string; text?: unknown; deliverAs?: unknown; requestId?: unknown; value?: unknown } | null = null
     try {
       msg = JSON.parse(raw) as typeof msg
     } catch {
@@ -384,6 +479,12 @@ function startChatBridge(pi: ExtensionAPI): void {
     if (!msg || typeof msg.type !== 'string') return
     if (msg.type === 'history') {
       snapshot()
+      return
+    }
+    // 手机答了某个题:resolve 给等着的那一层(原始的终端对话框由 controller.abort 收掉)
+    if (msg.type === 'answer' && typeof msg.requestId === 'string') {
+      const resolve = pendingAsks.get(msg.requestId)
+      if (resolve) resolve(msg.value)
       return
     }
     if (msg.type === 'abort') {
@@ -455,19 +556,24 @@ function startChatBridge(pi: ExtensionAPI): void {
 
   pi.on('session_start', (_event, eventCtx) => {
     ctx = eventCtx as unknown as ChatCtx
+    wrapDialogs(ctx)
     stateSoon()
   })
   pi.on('agent_start', (_event, eventCtx) => {
     ctx = eventCtx as unknown as ChatCtx
+    wrapDialogs(ctx)
     busy = true
     state()
   })
   pi.on('agent_settled', (_event, eventCtx) => {
     ctx = eventCtx as unknown as ChatCtx
+    wrapDialogs(ctx)
     busy = false
     state()
   })
-  pi.on('message_end', (event) => {
+  pi.on('message_end', (event, eventCtx) => {
+    // 顺手把可能新出现的 ui 对象也包上(pi 每次给的 ctx 可能是新对象)
+    if (eventCtx) wrapDialogs(eventCtx as unknown as ChatCtx)
     const messages = chatMessages((event as { message?: PiMessage }).message)
     for (const message of messages) send({ type: 'message', message })
   })
@@ -475,6 +581,8 @@ function startChatBridge(pi: ExtensionAPI): void {
     stopped = true
     if (timer) clearTimeout(timer)
     timer = null
+    // 还挂着没人答的题:直接放掉(终端那条路会自己收)
+    pendingAsks.clear()
     try {
       socket?.close()
     } catch {

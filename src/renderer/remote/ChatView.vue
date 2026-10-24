@@ -10,7 +10,7 @@
  * 这里只读「忙 / 有排队」两个状态。
  */
 import { computed, nextTick, ref, watch } from 'vue'
-import type { ChatMessage, RemoteSocket } from './ws'
+import type { AskRequest, ChatMessage, RemoteSocket } from './ws'
 
 const props = defineProps<{
   sessionId: number
@@ -19,12 +19,14 @@ const props = defineProps<{
   busy: boolean
   pending: number
   live: boolean
+  asks: AskRequest[]
 }>()
 
 const emit = defineEmits<{
   (e: 'back'): void
   (e: 'send', payload: { text: string; deliverAs?: 'steer' | 'followUp' }): void
   (e: 'abort'): void
+  (e: 'answer', payload: { requestId: string; value: boolean | string }): void
 }>()
 
 const draft = ref('')
@@ -99,6 +101,39 @@ const status = computed(() => {
   if (props.busy) return '在跑'
   return '空闲'
 })
+
+// ---------- pi 的提问(手机也能答;终端里那个框同时还在,谁先答要谁) ----------
+
+/** 每个输入型提问的草稿(requestId → 文本) */
+const answerDraft = ref<Record<string, string>>({})
+
+draftDefaults()
+function draftDefaults(): void {
+  for (const ask of props.asks) {
+    if (answerDraft.value[ask.requestId] !== undefined) continue
+    if (ask.kind === 'input' || ask.kind === 'editor') answerDraft.value[ask.requestId] = ask.prefill ?? ''
+  }
+}
+watch(() => props.asks.map((a) => a.requestId).join(','), draftDefaults)
+
+function answerText(ask: AskRequest): void {
+  const text = (answerDraft.value[ask.requestId] ?? '').trim()
+  if (!text) return
+  emit('answer', { requestId: ask.requestId, value: text })
+}
+
+function answerChoice(ask: AskRequest, value: boolean | string): void {
+  emit('answer', { requestId: ask.requestId, value })
+}
+
+/** 手机上不想答:卡片先收起来(pi 那边等终端;它自己被答掉时也会消失) */
+const hiddenAsks = ref<Set<string>>(new Set())
+function hideAsk(ask: AskRequest): void {
+  const next = new Set(hiddenAsks.value)
+  next.add(ask.requestId)
+  hiddenAsks.value = next
+}
+const visibleAsks = computed(() => props.asks.filter((ask) => !hiddenAsks.value.has(ask.requestId)))
 </script>
 
 <template>
@@ -139,6 +174,54 @@ const status = computed(() => {
           <pre v-if="toolOpen(msg)" class="tool-body">{{ msg.toolArgs || '' }}{{ msg.toolResult ? `\n\n${msg.toolResult}` : '' }}</pre>
         </div>
       </template>
+    </div>
+
+    <!-- pi 在等回答:卡片贴在输入框上方(终端里那个框同时还在,谁先答要谁) -->
+    <div v-if="visibleAsks.length" class="asks">
+      <div v-for="ask in visibleAsks" :key="ask.requestId" class="ask" data-ask>
+        <div class="ask-head">
+          <span class="ask-kind">{{ ask.kind === 'confirm' ? '需要确认' : ask.kind === 'select' ? '请选择' : '需要输入' }}</span>
+          <button class="ask-x" title="先不管(在电脑上答)" @click="hideAsk(ask)">×</button>
+        </div>
+        <div class="ask-title" data-ask-title>{{ ask.title }}</div>
+        <div v-if="ask.message" class="ask-msg">{{ ask.message }}</div>
+
+        <div v-if="ask.kind === 'confirm'" class="ask-actions">
+          <button class="primary" data-ask-answer="yes" @click="answerChoice(ask, true)">允许</button>
+          <button class="danger" data-ask-answer="no" @click="answerChoice(ask, false)">拒绝</button>
+        </div>
+
+        <div v-else-if="ask.kind === 'select'" class="ask-actions wrap">
+          <button
+            v-for="option in ask.options ?? []"
+            :key="option"
+            data-ask-answer="option"
+            @click="answerChoice(ask, option)"
+          >
+            {{ option }}
+          </button>
+        </div>
+
+        <template v-else>
+          <textarea
+            v-model="answerDraft[ask.requestId]"
+            class="ask-input"
+            :rows="ask.kind === 'editor' ? 4 : 1"
+            :placeholder="ask.placeholder || (ask.kind === 'editor' ? '在这里写…' : '输入…')"
+            @keydown.enter.exact.prevent="answerText(ask)"
+          />
+          <div class="ask-actions">
+            <button
+              class="primary"
+              data-ask-answer="text"
+              :disabled="!(answerDraft[ask.requestId] ?? '').trim()"
+              @click="answerText(ask)"
+            >
+              提交
+            </button>
+          </div>
+        </template>
+      </div>
     </div>
 
     <div class="composer">
@@ -340,5 +423,83 @@ textarea {
   flex: none;
   color: #9dc0ff;
   border-color: rgba(74, 142, 247, 0.45);
+}
+
+/* pi 的提问卡片:贴在输入框上方,一眼能看见 */
+.asks {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid rgba(229, 192, 123, 0.35);
+  background: rgba(229, 192, 123, 0.07);
+}
+.ask {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(229, 192, 123, 0.4);
+  border-radius: 10px;
+  background: #22232a;
+}
+.ask-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.ask-kind {
+  font-size: 11px;
+  color: #e5c07b;
+  letter-spacing: 0.04em;
+}
+.ask-x {
+  min-height: 28px;
+  min-width: 28px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+}
+.ask-title {
+  font-size: 14px;
+  font-weight: 600;
+  word-break: break-word;
+}
+.ask-msg {
+  font-size: 13px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow: auto;
+}
+.ask-actions {
+  display: flex;
+  gap: 8px;
+}
+.ask-actions.wrap {
+  flex-wrap: wrap;
+}
+.ask-actions > button {
+  flex: 1;
+  min-width: 90px;
+  min-height: 40px;
+}
+.ask-input {
+  font: inherit;
+  font-size: 16px;
+  color: inherit;
+  background: #16171b;
+  border: 1px solid #383a44;
+  border-radius: 8px;
+  padding: 8px 10px;
+  resize: none;
+  max-height: 140px;
+}
+button.danger {
+  color: var(--danger);
+  border-color: rgba(229, 83, 75, 0.5);
 }
 </style>

@@ -346,6 +346,11 @@ function attachClient(options: RemoteServerOptions, ws: WebSocket): void {
         if (!options.piChat?.abort(msg.id)) send({ t: 'error', message: '这个会话没有控制通道' })
         return
       }
+      case 'answer': {
+        const result = options.piChat?.answer(msg.id, msg.requestId, msg.value)
+        if (!result?.ok) send({ t: 'error', message: result?.error ?? '对话桥没启用' })
+        return
+      }
     }
   })
 }

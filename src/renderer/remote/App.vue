@@ -11,7 +11,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { sortSessionsByAttention, formatAgo, lastActiveAt, shortPath } from '@plugins/terminal/shared'
 import ChatView from './ChatView.vue'
 import { connectRemote, wsUrlOf } from './ws'
-import type { ChatMessage, RemoteSocket, ServerMessage, SessionInfo } from './ws'
+import type { AskRequest, ChatMessage, RemoteSocket, ServerMessage, SessionInfo } from './ws'
 
 const password = ref('')
 const loginError = ref('')
@@ -25,11 +25,12 @@ const state = ref<'connecting' | 'open' | 'closed' | 'refused'>('connecting')
 const active = reactive<{ id: number | null; title: string }>({ id: null, title: '' })
 
 /** 对话快照(服务端缓存的那份镜像;手机不存历史) */
-const chat = reactive<{ messages: ChatMessage[]; busy: boolean; pending: number; live: boolean }>({
+const chat = reactive<{ messages: ChatMessage[]; busy: boolean; pending: number; live: boolean; asks: AskRequest[] }>({
   messages: [],
   busy: false,
   pending: 0,
-  live: false
+  live: false,
+  asks: []
 })
 const chatError = ref('')
 
@@ -105,7 +106,16 @@ function handle(msg: ServerMessage): void {
       chat.busy = msg.busy
       chat.pending = msg.pending
       chat.live = msg.live
+      chat.asks = msg.asks ?? []
       chatError.value = ''
+      break
+    case 'ask':
+      if (msg.id !== active.id) break
+      if (!chat.asks.some((ask) => ask.requestId === msg.ask.requestId)) chat.asks.push(msg.ask)
+      break
+    case 'ask-done':
+      if (msg.id !== active.id) break
+      chat.asks = chat.asks.filter((ask) => ask.requestId !== msg.requestId)
       break
     case 'chat-message':
       if (msg.id !== active.id) break
@@ -143,6 +153,7 @@ function requestChat(id: number): void {
   chat.busy = false
   chat.pending = 0
   chat.live = false
+  chat.asks = []
   chatError.value = ''
   socket?.send({ t: 'chat', id })
 }
@@ -170,6 +181,12 @@ function send(payload: { text: string; deliverAs?: 'steer' | 'followUp' }): void
 function abort(): void {
   if (active.id == null) return
   socket?.send({ t: 'abort', id: active.id })
+}
+
+/** 回答 pi 的提问(终端里那个框会跟着关掉) */
+function answer(payload: { requestId: string; value: boolean | string }): void {
+  if (active.id == null) return
+  socket?.send({ t: 'answer', id: active.id, ...payload })
 }
 
 onMounted(() => {
@@ -227,9 +244,11 @@ const needsLogin = computed(() => !authed.value || state.value === 'refused')
         :busy="chat.busy"
         :pending="chat.pending"
         :live="chat.live"
+        :asks="chat.asks"
         @back="back"
         @send="send"
         @abort="abort"
+        @answer="answer"
       />
     </div>
 

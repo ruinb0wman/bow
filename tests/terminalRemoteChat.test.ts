@@ -16,7 +16,7 @@ import {
   PiChatHub,
   sanitizeChatMessage
 } from '../src/plugins/terminal/remote/piChat'
-import type { ChatMessage, ChatSink } from '../src/plugins/terminal/remote/piChat'
+import type { AskRequest, ChatMessage, ChatSink } from '../src/plugins/terminal/remote/piChat'
 import { SessionHub } from '../src/plugins/terminal/remote/hub'
 import { RemoteAuth } from '../src/plugins/terminal/remote/auth'
 import { startRemoteServer } from '../src/plugins/terminal/remote/server'
@@ -66,7 +66,7 @@ describe('sanitizeChatMessage', () => {
 describe('PiChatHub', () => {
   it('快照缓存:没有 pi 端也能回空快照并标 live=false', () => {
     const hub = new PiChatHub()
-    expect(hub.snapshot(7)).toEqual({ id: 7, live: false, messages: [], busy: false, pending: 0 })
+    expect(hub.snapshot(7)).toEqual({ id: 7, live: false, messages: [], busy: false, pending: 0, asks: [] })
   })
 
   it('pi 连上/断开改 live,并广播 chat-state', () => {
@@ -362,5 +362,86 @@ describe('WS 往返:pi 端(令牌)+ 手机端(cookie)', () => {
       phone.close()
       await server.close()
     }
+  })
+})
+
+describe('提问(手机回答 pi 的弹框)', () => {
+  const ask = (requestId: string, kind: AskRequest['kind'], extra: Partial<AskRequest> = {}): AskRequest => ({
+    requestId,
+    kind,
+    title: '要跑测试吗?',
+    ...extra
+  })
+
+  it('ask 存进快照并广播;ask-done 删掉', () => {
+    const hub = new PiChatHub()
+    const viewer = fakeSink()
+    hub.attachViewer(viewer.sink)
+    hub.attachPi(1, fakeSink().sink)
+
+    hub.fromPi(1, { type: 'ask', ask: ask('q1', 'confirm', { message: '这会执行 npm test' }) })
+    expect(viewer.messages.at(-1)).toMatchObject({ t: 'ask', id: 1, ask: { requestId: 'q1', kind: 'confirm' } })
+    expect(hub.snapshot(1).asks.map((a) => a.requestId)).toEqual(['q1'])
+
+    hub.fromPi(1, { type: 'ask-done', requestId: 'q1' })
+    expect(viewer.messages.at(-1)).toEqual({ t: 'ask-done', id: 1, requestId: 'q1' })
+    expect(hub.snapshot(1).asks).toEqual([])
+  })
+
+  it('热重启(重连)后手机还能看到没答的题', () => {
+    const hub = new PiChatHub()
+    const first = fakeSink()
+    const detach = hub.attachPi(1, first.sink)
+    hub.fromPi(1, { type: 'ask', ask: ask('q1', 'select', { options: ['甲', '乙'] }) })
+    detach()
+
+    // 新的手机连上来:snapshot 里带着题面,不需要 pi 再发一遍
+    expect(hub.snapshot(1).asks).toEqual([expect.objectContaining({ requestId: 'q1', options: ['甲', '乙'] })])
+  })
+
+  it('answer 转发给 pi、立刻把卡片拿掉、并广播 ask-done', () => {
+    const hub = new PiChatHub()
+    const pi = fakeSink()
+    const viewer = fakeSink()
+    hub.attachViewer(viewer.sink)
+    hub.attachPi(1, pi.sink)
+    hub.fromPi(1, { type: 'ask', ask: ask('q1', 'confirm') })
+
+    expect(hub.answer(1, 'q1', true)).toEqual({ ok: true })
+    expect(pi.messages.at(-1)).toEqual({ type: 'answer', requestId: 'q1', value: true })
+    expect(hub.snapshot(1).asks).toEqual([])
+    expect(viewer.messages.at(-1)).toEqual({ t: 'ask-done', id: 1, requestId: 'q1' })
+  })
+
+  it('类型不对 / 已经不在了 / 没有控制通道 → 如实报错(不静默)', () => {
+    const hub = new PiChatHub()
+    hub.attachPi(1, fakeSink().sink)
+    hub.fromPi(1, { type: 'ask', ask: ask('q1', 'confirm') })
+    hub.fromPi(1, { type: 'ask', ask: ask('q2', 'input') })
+
+    expect(hub.answer(1, 'q1', 'yes')).toMatchObject({ ok: false }) // confirm 要 boolean
+    expect(hub.answer(1, 'q2', true)).toMatchObject({ ok: false }) // 输入型要字符串
+    expect(hub.answer(1, 'nope', true)).toMatchObject({ ok: false }) // 已经不在
+    expect(hub.answer(9, 'q1', true)).toMatchObject({ ok: false }) // 没有控制通道
+  })
+
+  it('重复投递的同一条消息只占一行(同一个扩展被加载两次时)', () => {
+    const hub = new PiChatHub()
+    hub.attachPi(1, fakeSink().sink)
+    const message = msg('a1', 'assistant', { text: '只说一次' })
+    hub.fromPi(1, { type: 'message', message })
+    hub.fromPi(1, { type: 'message', message })
+    expect(hub.snapshot(1).messages).toHaveLength(1)
+  })
+
+  it('协议:answer 要 id + requestId + boolean/string', () => {
+    expect(parseClientMessage({ t: 'answer', id: 1, requestId: 'q1', value: true })).toEqual({
+      ok: true,
+      message: { t: 'answer', id: 1, requestId: 'q1', value: true }
+    })
+    expect(parseClientMessage({ t: 'answer', id: 1, requestId: 'q1', value: '乙' })).toMatchObject({ ok: true })
+    expect(parseClientMessage({ t: 'answer', id: 1, requestId: '', value: true }).ok).toBe(false)
+    expect(parseClientMessage({ t: 'answer', id: 1, requestId: 'q1', value: 42 }).ok).toBe(false)
+    expect(parseClientMessage({ t: 'answer', id: 0, requestId: 'q1', value: true }).ok).toBe(false)
   })
 })

@@ -693,3 +693,32 @@ S13 之后手机端已经是「对话」,能读能写能排队能中断。剩下
 
 P1 → P3 → P2。每档都要过 `npm run test:pi:chat`(真 pi,会调一次模型)、
 `npm run test`、`test:e2e:remote`、`test:e2e:agent`,再加手机上的清单。
+
+### 21.4 P1 落地记录(2026-10-16)
+
+**Spike 先做,结论全绿**(`npm run test:pi:ask`,8 项,不花模型调用):
+
+| 问题 | 结果 |
+| --- | --- |
+| 别的扩展发起的 `ctx.ui.confirm` 会被我们的包装拦到吗 | ✅ 会(题面 title/message 都到了手机) |
+| 终端那一路还在吗 | ✅ 原始调用照旧被请求(终端里那个框不会消失不见) |
+| 手机先答 | ✅ `confirm` 的返回值就是手机的 `true` |
+| 手机不答、终端答 | ✅ 返回值来自终端(`false`) |
+
+做法:扩展把 `ctx.ui` 的 `select / confirm / input / editor` 包一层,
+`Promise.race([原始调用, 手机回答])`;手机先答就用 `opts.signal` `abort` 掉终端那个框
+(`ExtensionUIDialogOptions.signal` 的语义就是「程序化 dismiss」)。`editor` 没有 opts,
+关不掉终端的框(不影响结果,那个框晚点被点掉)。`custom()` 不接管,直接落到终端。
+
+**踩到的坑(重要)**:第一次跑 spike 时一次提问出现**两条** `extension_ui_request`、结果随机。
+原因不是 API,是 pi 同时加载了**两份**扩展(`~/.pi/agent/extensions/` 里装的那份 + 冒烟里
+`--extension` 加的那份),两份各自包了一层。两条修法都留了:
+
+- 包装函数**自己身上打 `Symbol.for('bow.chat.uiWrapped')` 标记**再跳过 —— 不能按 `ctx.ui`
+  的对象身份去重,pi 每次给的 `ctx`(连带 `ui`)可能是新对象;
+- bow 侧 `PiChatHub` 对同一条消息按 `(role, id)` **就地更新**而不是追加 —— 顺带解决
+  「同一个扩展被加载两次时消息翻倍」;
+- 冒烟里用空的 `PI_CODING_AGENT_DIR` 隔离,只加载 `--extension` 指定的那份。
+
+**已知边界**:`editor` 的终端框关不掉;`timeout` 由 pi 自己掌握(到点它按默认值走,手机上的卡片
+会在 `ask-done` 时消失);手机上的「×」只是本地收起卡片(pi 那边继续等终端)。

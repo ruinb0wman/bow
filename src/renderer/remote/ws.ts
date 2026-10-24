@@ -35,9 +35,11 @@ export type ServerMessage =
   | { t: 'closed'; id: number; reason: string }
   | { t: 'read'; id: number; text: string }
   | { t: 'created'; id: number; state: 'starting' | 'running' }
-  | { t: 'chat'; id: number; live: boolean; messages: ChatMessage[]; busy: boolean; pending: number }
+  | { t: 'chat'; id: number; live: boolean; messages: ChatMessage[]; busy: boolean; pending: number; asks: AskRequest[] }
   | { t: 'chat-message'; id: number; message: ChatMessage }
   | { t: 'chat-state'; id: number; live: boolean; busy: boolean; pending: number }
+  | { t: 'ask'; id: number; ask: AskRequest }
+  | { t: 'ask-done'; id: number; requestId: string }
   | { t: 'error'; message: string }
 
 /** 一条要显示的对话行(与主进程 `remote/piChat.ts` 的 `ChatMessage` 同形) */
@@ -51,6 +53,18 @@ export interface ChatMessage {
   toolError?: boolean
 }
 
+/** pi 的一个提问(与主进程的 `AskRequest` 同形) */
+export interface AskRequest {
+  requestId: string
+  kind: 'confirm' | 'select' | 'input' | 'editor'
+  title: string
+  message?: string
+  options?: string[]
+  placeholder?: string
+  prefill?: string
+  timeout?: number
+}
+
 export type ClientMessage =
   | { t: 'list' }
   | { t: 'attach'; id: number; cols: number; rows: number }
@@ -61,6 +75,7 @@ export type ClientMessage =
   | { t: 'chat'; id: number }
   | { t: 'prompt'; id: number; text: string; deliverAs?: 'steer' | 'followUp' }
   | { t: 'abort'; id: number }
+  | { t: 'answer'; id: number; requestId: string; value: boolean | string }
 
 export type ConnectionState = 'connecting' | 'open' | 'closed' | 'refused'
 

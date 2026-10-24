@@ -38,6 +38,8 @@ export interface ChatSnapshot {
   messages: ChatMessage[]
   busy: boolean
   pending: number
+  /** 正在等回答的题(手机重连后要把卡片重新画出来) */
+  asks: AskRequest[]
 }
 
 /** 每个会话保留的消息条数(手机只显示最近的;再往前的去电脑上看) */
@@ -48,6 +50,22 @@ export const MAX_CHAT_TEXT = 4000
 export const MAX_CHAT_TOOL = 1200
 /** viewer 的积压上限:超过就跳过这一条(见文件头) */
 export const CHAT_MAX_BUFFERED = 1024 * 1024
+
+/**
+ * pi 的一个提问(权限门 / `ask_user_question` / plan 批准……)——手机要能就地点。
+ * 与扩展里的 `AskRequest` 同形;`custom()`(自定义组件)不接管,所以没有这个 kind。
+ */
+export interface AskRequest {
+  requestId: string
+  kind: 'confirm' | 'select' | 'input' | 'editor'
+  title: string
+  message?: string
+  options?: string[]
+  placeholder?: string
+  prefill?: string
+  /** pi 自己给的超时(到点它会自己选默认值) */
+  timeout?: number
+}
 
 export interface ChatSink {
   send(message: unknown): void
@@ -98,6 +116,8 @@ export class PiChatHub {
   private readonly pis = new Map<number, ChatSink>()
   private readonly viewers = new Set<ChatSink>()
   private readonly chats = new Map<number, ChatState>()
+  /** sessionId → (requestId → 题面):只在有人答/pi 自己收掉时才删 */
+  private readonly asks = new Map<number, Map<string, AskRequest>>()
 
   /** 手机连接数(测试/日志用) */
   get viewerCount(): number {
@@ -129,7 +149,7 @@ export class PiChatHub {
 
   snapshot(sessionId: number): ChatSnapshot {
     const state = this.stateOf(sessionId)
-    return { id: sessionId, live: this.pis.has(sessionId), ...state }
+    return { id: sessionId, live: this.pis.has(sessionId), ...state, asks: [...(this.asks.get(sessionId)?.values() ?? [])] }
   }
 
   /**
@@ -160,9 +180,10 @@ export class PiChatHub {
       case 'message': {
         const message = sanitizeChatMessage(msg.message)
         if (!message) return
-        // tool 调用与它的结果共用 id:就地合并,手机端一次调用只占一行
-        const index =
-          message.role === 'tool' ? chat.messages.findIndex((m) => m.role === 'tool' && m.id === message.id) : -1
+        // 同一个 (role, id) 就地更新而不是追加:
+        // ① 工具调用与它的结果共用 toolCallId → 合并成一行;
+        // ② 同一个扩展被加载两次(比如装了一份又用 --extension 加一份)时,两条连接会发同一条消息 → 去重。
+        const index = chat.messages.findIndex((m) => m.role === message.role && m.id === message.id)
         if (index >= 0) chat.messages[index] = { ...chat.messages[index], ...message }
         else chat.messages = [...chat.messages, message].slice(-MAX_CHAT_MESSAGES)
         this.chats.set(sessionId, chat)
@@ -178,6 +199,23 @@ export class PiChatHub {
         chat.pending = count(msg.pending)
         this.chats.set(sessionId, chat)
         this.broadcast({ t: 'chat-state', id: sessionId, live: true, busy: chat.busy, pending: chat.pending })
+        return
+      }
+      // ---- 提问:手机要么答、要么等 pi 自己收(终端里还能点) ----
+      case 'ask': {
+        const ask = sanitizeAsk(msg.ask)
+        if (!ask) return
+        const bySession = this.asks.get(sessionId) ?? new Map<string, AskRequest>()
+        bySession.set(ask.requestId, ask)
+        this.asks.set(sessionId, bySession)
+        this.broadcast({ t: 'ask', id: sessionId, ask })
+        return
+      }
+      case 'ask-done': {
+        const requestId = typeof msg.requestId === 'string' ? msg.requestId : ''
+        if (!requestId) return
+        this.asks.get(sessionId)?.delete(requestId)
+        this.broadcast({ t: 'ask-done', id: sessionId, requestId })
         return
       }
       default:
@@ -208,9 +246,31 @@ export class PiChatHub {
     }
   }
 
+  /**
+   * 手机回答一个提问。**先删后转**:卡片立刻消失,不等 pi 回话;
+   * pi 那边答完还会发一条 `ask-done`(幂等)。
+   */
+  answer(sessionId: number, requestId: string, value: boolean | string): { ok: boolean; error?: string } {
+    const sink = this.pis.get(sessionId)
+    if (!sink) return { ok: false, error: '这个会话还没有控制通道(在 bow 里重开终端即可)' }
+    const ask = this.asks.get(sessionId)?.get(requestId)
+    if (!ask) return { ok: false, error: '这个提问已经不在了(可能已在电脑上答过)' }
+    if (ask.kind === 'confirm' && typeof value !== 'boolean') return { ok: false, error: '这个提问要的是「是 / 否」' }
+    if (ask.kind !== 'confirm' && typeof value !== 'string') return { ok: false, error: '这个提问要的是一个选项或一段文字' }
+    try {
+      sink.send({ type: 'answer', requestId, value })
+    } catch {
+      return { ok: false, error: '发给 pi 失败' }
+    }
+    this.asks.get(sessionId)?.delete(requestId)
+    this.broadcast({ t: 'ask-done', id: sessionId, requestId })
+    return { ok: true }
+  }
+
   /** 会话被关掉:丢缓存(重新开的会话是新的) */
   forget(sessionId: number): void {
     this.chats.delete(sessionId)
+    this.asks.delete(sessionId)
   }
 
   /** 服务停机:断开所有连接,但**保留缓存** —— 重新启用后手机还能看到上次的对话 */
@@ -250,4 +310,31 @@ function closeQuietly(sink: ChatSink, reason: string): void {
   } catch {
     /* 已经断了 */
   }
+}
+
+/** 上行提问逐字段校验(跨进程输入一律不信形状) */
+export function sanitizeAsk(raw: unknown): AskRequest | null {
+  if (!raw || typeof raw !== 'object') return null
+  const m = raw as Record<string, unknown>
+  const requestId = cap(m.requestId, 80)
+  const title = cap(m.title, 300)
+  if (!requestId || !title) return null
+  const kind = m.kind
+  if (kind !== 'confirm' && kind !== 'select' && kind !== 'input' && kind !== 'editor') return null
+  const out: AskRequest = { requestId: requestId.trim(), kind, title: title.trim() }
+  const message = cap(m.message, 2000)
+  if (message) out.message = message
+  if (Array.isArray(m.options)) {
+    out.options = m.options
+      .map((option) => cap(option, 200))
+      .filter((option): option is string => option !== undefined)
+      .slice(0, 20)
+  }
+  const placeholder = cap(m.placeholder, 200)
+  if (placeholder) out.placeholder = placeholder
+  const prefill = cap(m.prefill, 4000)
+  if (prefill) out.prefill = prefill
+  const timeout = count(m.timeout)
+  if (timeout) out.timeout = timeout
+  return out
 }

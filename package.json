@@ -74,7 +74,8 @@
     "test:e2e:herd": "node scripts/e2e-herd.mjs",
     "test:e2e:remote": "node scripts/e2e-remote.mjs",
     "build:remote": "vite build --config vite.remote.config.ts",
-    "test:pi:chat": "node scripts/pi-chat-smoke.mjs"
+    "test:pi:chat": "node scripts/pi-chat-smoke.mjs",
+    "test:pi:ask": "node scripts/pi-ask-smoke.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

@@ -9,7 +9,7 @@
  */
 
 import type { SessionInfo } from '../shared'
-import type { ChatMessage } from './piChat'
+import type { ChatMessage, AskRequest } from './piChat'
 
 /** 输入文本的单条上限:按键流很小,超过这个数一定是搞错了 */
 export const MAX_INPUT_CHARS = 64 * 1024
@@ -36,6 +36,8 @@ export type ClientMessage =
   | { t: 'chat'; id: number }
   | { t: 'prompt'; id: number; text: string; deliverAs?: PromptDelivery }
   | { t: 'abort'; id: number }
+  /** 回答 pi 的一个提问(`confirm` 给 boolean,其余给 string) */
+  | { t: 'answer'; id: number; requestId: string; value: boolean | string }
 
 export type ServerMessage =
   | { t: 'hello'; service: string; sessions: SessionInfo[] }
@@ -46,9 +48,11 @@ export type ServerMessage =
   | { t: 'closed'; id: number; reason: string }
   | { t: 'read'; id: number; text: string }
   | { t: 'created'; id: number; state: 'starting' | 'running' }
-  | { t: 'chat'; id: number; live: boolean; messages: ChatMessage[]; busy: boolean; pending: number }
+  | { t: 'chat'; id: number; live: boolean; messages: ChatMessage[]; busy: boolean; pending: number; asks: AskRequest[] }
   | { t: 'chat-message'; id: number; message: ChatMessage }
   | { t: 'chat-state'; id: number; live: boolean; busy: boolean; pending: number }
+  | { t: 'ask'; id: number; ask: AskRequest }
+  | { t: 'ask-done'; id: number; requestId: string }
   | { t: 'error'; message: string }
 
 export type ParseResult = { ok: true; message: ClientMessage } | { ok: false; error: string }
@@ -150,6 +154,19 @@ export function parseClientMessage(raw: unknown): ParseResult {
           ...(msg.deliverAs === undefined ? {} : { deliverAs: msg.deliverAs as PromptDelivery })
         }
       }
+    }
+
+    case 'answer': {
+      const id = positiveId(msg.id)
+      if (id === null) return { ok: false, error: 'id 必须是正整数' }
+      const requestId = typeof msg.requestId === 'string' ? msg.requestId.trim() : ''
+      if (!requestId || requestId.length > 80) return { ok: false, error: 'requestId 必须是字符串' }
+      const value = msg.value
+      if (typeof value !== 'boolean' && typeof value !== 'string') {
+        return { ok: false, error: 'value 必须是布尔或字符串' }
+      }
+      if (typeof value === 'string' && value.length > MAX_PROMPT_CHARS) return { ok: false, error: 'value 太长' }
+      return { ok: true, message: { t: 'answer', id, requestId, value } }
     }
 
     default:
