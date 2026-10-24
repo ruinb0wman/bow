@@ -215,6 +215,22 @@ async function connectWs(url, headers = {}) {
     ws.once('error', reject)
     setTimeout(() => reject(new Error('WS 连接超时')), 8000)
   })
+  // 握手成功但一条消息都没来,说明服务那头刚重启过(applyRemote 会断开在线的连接)。
+  // 推一下 `list` 让连接重新有动静;还不行就明确报错,而不是让后面的断言各自超时。
+  let heard = false
+  ws.on('message', () => {
+    heard = true
+  })
+  for (const delay of [1500, 3000]) {
+    await new Promise((r) => setTimeout(r, delay))
+    if (heard) break
+    try {
+      ws.send(JSON.stringify({ t: 'list' }))
+    } catch {
+      /* 已经关了 */
+    }
+  }
+  if (!heard) throw new Error('WS 连上了但服务端一条消息都没发(服务刚重启?)')
   return {
     ws,
     next(match, timeoutMs = 15000) {
@@ -468,6 +484,48 @@ try {
     `document.querySelector('.composer textarea')?.disabled === true`
   )
   check(composerDisabled === true, '没有控制通道时输入框是禁用的(不假装能发)')
+
+  // ---------- 提问卡片(pi 的弹框 → 手机上的按钮) ----------
+  // 真 pi 那半由 `npm run test:pi:ask` 覆盖(扩展 + 令牌 + 谁先答)。
+  // 这里验的是**页面**:服务端消息进来能不能画出卡片、点下去发出去的帧对不对。
+  await evalOn(
+    pageWs,
+    `(() => { window.__bowRemote.handle(${JSON.stringify({
+      t: 'chat',
+      id: pageSessionId,
+      live: true,
+      messages: [],
+      busy: true,
+      pending: 0,
+      asks: [
+        {
+          requestId: 'e2e-q1',
+          kind: 'confirm',
+          title: '允许执行 npm test 吗?',
+          message: '这会跑完整测试'
+        }
+      ]
+    })}) ; return true })()`
+  )
+  const askShown = await waitFor(
+    async () => (await evalOn(pageWs, `!!document.querySelector('[data-ask]')`)) === true,
+    10000
+  )
+  check(askShown === true, '提问卡片出现在输入框上方')
+  const askTitle = await evalOn(pageWs, `document.querySelector('[data-ask-title]')?.innerText ?? ''`)
+  check(String(askTitle).includes('npm test'), '卡片上带着题面标题', askTitle)
+
+  await evalOn(pageWs, `document.querySelector('[data-ask-answer=yes]').click()`)
+  const answered = await waitFor(async () => {
+    const sent = await evalOn(pageWs, `JSON.stringify(window.__bowRemote.sent.filter((f) => f.t === 'answer'))`)
+    return String(sent).includes('e2e-q1') ? sent : null
+  }, 5000)
+  check(answered !== null, '点「允许」发出 answer 帧(值来自手机)', answered)
+  const askGone = await waitFor(
+    async () => (await evalOn(pageWs, `document.querySelector('[data-ask]') === null`)) === true,
+    5000
+  )
+  check(askGone === true, '答完卡片消失')
 
   const backToList = await evalOn(
     pageWs,

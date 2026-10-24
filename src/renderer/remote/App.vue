@@ -173,23 +173,50 @@ function back(): void {
   active.id = null
 }
 
+function note(payload: Record<string, unknown>): void {
+  const seam = (window as unknown as { __bowRemote?: { sent: Array<Record<string, unknown>> } }).__bowRemote
+  seam?.sent.push(payload)
+}
+
 function send(payload: { text: string; deliverAs?: 'steer' | 'followUp' }): void {
   if (active.id == null) return
-  socket?.send({ t: 'prompt', id: active.id, ...payload })
+  const frame = { t: 'prompt', id: active.id, ...payload }
+  note(frame)
+  socket?.send(frame as never)
 }
 
 function abort(): void {
   if (active.id == null) return
-  socket?.send({ t: 'abort', id: active.id })
+  const frame = { t: 'abort', id: active.id }
+  note(frame)
+  socket?.send(frame as never)
 }
 
 /** 回答 pi 的提问(终端里那个框会跟着关掉) */
 function answer(payload: { requestId: string; value: boolean | string }): void {
   if (active.id == null) return
-  socket?.send({ t: 'answer', id: active.id, ...payload })
+  const frame = { t: 'answer', id: active.id, ...payload }
+  note(frame)
+  socket?.send(frame as never)
+  // 本地先收卡片:点了就该立刻有反馈,不等服务端回执(echo 的 ask-done 是幂等的)
+  chat.asks = chat.asks.filter((ask) => ask.requestId !== payload.requestId)
+}
+
+/**
+ * 测试缝(与 `window.__bowRemoteTerm` 同一套路):e2e 直接喂一条服务端消息,
+ * 并检查页面发出的帧 —— 手机上那些卡片只有真 DOM 才验得到。
+ */
+function installTestSeam(): void {
+  const seam = {
+    handle,
+    chat,
+    sent: [] as Array<Record<string, unknown>>
+  }
+  ;(window as unknown as Record<string, unknown>).__bowRemote = seam
 }
 
 onMounted(() => {
+  installTestSeam()
   // 已经有 cookie(上次登录过)就直接连;握手失败会落到 refused,那时显示登录框
   connect()
   ticker = window.setInterval(() => {
