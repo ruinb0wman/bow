@@ -347,18 +347,24 @@ export function isWslShell(shell: string): boolean {
  * 不带 flag 的条目是「原样共享」(带 `/p` 会做路径翻译;我们的值是 `1`,不需要)。
  * 不是 wsl.exe 的 profile 一律原样返回(同一个对象引用),不引入任何额外变量。
  */
-export function withBowTerminalEnv(env: Record<string, string>, shell: string): Record<string, string> {
-  if (!isWslShell(shell)) return env
-  const base = env[BOW_TERMINAL_ENV] ?? '1'
+export function withBowTerminalEnv(
+  env: Record<string, string>,
+  shell: string,
+  extra: Record<string, string> = {}
+): Record<string, string> {
+  const vars: Record<string, string> = { [BOW_TERMINAL_ENV]: env[BOW_TERMINAL_ENV] ?? '1', ...extra }
+  // 没有额外变量时保持原样(与旧行为一致:非 WSL 的 shell 不动环境)
+  if (!isWslShell(shell)) return Object.keys(extra).length === 0 ? env : { ...env, ...vars }
   const entries = (env.WSLENV ?? '')
     .split(':')
     .filter(Boolean)
   // 已经列过(哪怕带 flag,如 `BOW_TERMINAL/u`)就不重复加
-  const listed = entries.some((entry) => entry.split('/')[0] === BOW_TERMINAL_ENV)
+  const listed = new Set(entries.map((entry) => entry.split('/')[0]))
+  const add = Object.keys(vars).filter((name) => !listed.has(name))
   return {
     ...env,
-    [BOW_TERMINAL_ENV]: base,
-    ...(listed ? {} : { WSLENV: [...entries, BOW_TERMINAL_ENV].join(':') })
+    ...vars,
+    ...(add.length ? { WSLENV: [...entries, ...add].join(':') } : {})
   }
 }
 

@@ -32,6 +32,7 @@
  */
 
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { readFileSync } from 'node:fs'
 import { basename } from 'node:path'
 
 /** 必须与 bow 侧 `BOW_OSC_PREFIX`(`src/shared/agentState.ts`)逐字一致;字面量而不是 import,见上面的「自包含」 */
@@ -41,6 +42,42 @@ const SIGNAL_VERSION = 1
 
 /** bow 的终端插件给 pty 注入的门禁(见 bow 的 `cleanEnv`);其它终端里这个扩展什么都不做 */
 const IN_BOW = process.env.BOW_TERMINAL === '1'
+
+/**
+ * 对话桥的接头暗号(同一个门禁里再细分):会话 id + 服务地址 + 本会话的控制令牌。
+ * 三个都齐才开通道 —— 老版本的 bow 只注入 `BOW_TERMINAL`,那时这里静默不做事。
+ */
+const CHAT_SESSION_ID = Number(process.env.BOW_SESSION_ID ?? '')
+const CHAT_URL = process.env.BOW_REMOTE_URL ?? ''
+const CHAT_TOKEN = process.env.BOW_CONTROL_TOKEN ?? ''
+
+/** 对话消息:与 bow 侧 `remote/piChat.ts` 的 `ChatMessage` 同形(自包含,不 import) */
+interface ChatMsg {
+  id: string
+  role: 'user' | 'assistant' | 'tool' | 'notice'
+  text?: string
+  toolName?: string
+  toolArgs?: string
+  toolResult?: string
+  toolError?: boolean
+}
+
+/** pi 的消息形状(只用到这里列出的字段;pi 的消息类型比这多得多) */
+interface PiPart {
+  type?: string
+  text?: string
+  id?: string
+  name?: string
+  arguments?: unknown
+}
+interface PiMessage {
+  role?: string
+  content?: string | PiPart[]
+  toolCallId?: string
+  toolName?: string
+  isError?: boolean
+  timestamp?: number
+}
 
 type State = 'working' | 'blocked' | 'idle'
 
@@ -149,4 +186,302 @@ export default function (pi: ExtensionAPI) {
   // 兜底:被 Ctrl+C / 异常路径带走时也别让 bow 的角标永远停在「正在执行」。
   // pty 上的小写入是同步的(`process.stdout` 指向 tty 时 Node 用同步写),exit 钩子里写得出去。
   process.on('exit', () => emit('idle'))
+
+  startChatBridge(pi)
+}
+
+// --------------------------------------------------------------------------------------------
+// 对话桥(手机端不用 xterm 了:读的是 pi 的消息对象,不是终端字节)
+// --------------------------------------------------------------------------------------------
+
+interface WsLike {
+  readyState: number
+  send(data: string): void
+  close(): void
+  onopen: (() => void) | null
+  onmessage: ((event: { data: unknown }) => void) | null
+  onclose: (() => void) | null
+  onerror: (() => void) | null
+}
+type WsCtor = new (url: string) => WsLike
+
+/** 会话上下文里这里用到的部分(不 import 类型,保持自包含) */
+interface ChatCtx {
+  abort?: () => void
+  hasPendingMessages?: () => boolean
+  sessionManager?: { buildContextEntries?: () => Array<{ type?: string; message?: PiMessage }> }
+}
+
+function textOf(content: string | PiPart[] | undefined): string {
+  if (typeof content === 'string') return content.trim()
+  if (!Array.isArray(content)) return ''
+  return content
+    .filter((part) => part?.type === 'text' && typeof part.text === 'string')
+    .map((part) => part.text as string)
+    .join('\n')
+    .trim()
+}
+
+function safeJson(value: unknown, max = 1200): string {
+  let text: string
+  try {
+    text = typeof value === 'string' ? value : JSON.stringify(value ?? null)
+  } catch {
+    text = String(value)
+  }
+  if (typeof text !== 'string') text = ''
+  return text.length > max ? `${text.slice(0, max)}…` : text
+}
+
+/**
+ * pi 的一条消息 → 手机上的若干行。
+ * 工具调用与它的结果共用 `toolCallId` 作 id,bow 侧会合并成一行(一次调用只占一行)。
+ */
+function chatMessages(message: PiMessage | undefined): ChatMsg[] {
+  if (!message) return []
+  const ts = typeof message.timestamp === 'number' ? message.timestamp : Date.now()
+  const base = `${ts}-${Math.random().toString(36).slice(2, 8)}`
+  if (message.role === 'user') {
+    const text = textOf(message.content)
+    return text ? [{ id: base, role: 'user', text }] : []
+  }
+  if (message.role === 'assistant') {
+    const out: ChatMsg[] = []
+    const text = textOf(message.content)
+    if (text) out.push({ id: base, role: 'assistant', text })
+    for (const part of Array.isArray(message.content) ? message.content : []) {
+      if (part?.type !== 'toolCall') continue
+      out.push({
+        id: typeof part.id === 'string' && part.id ? part.id : `${base}-${out.length}`,
+        role: 'tool',
+        ...(part.name ? { toolName: part.name } : {}),
+        ...(part.arguments === undefined ? {} : { toolArgs: safeJson(part.arguments) })
+      })
+    }
+    return out
+  }
+  if (message.role === 'toolResult') {
+    const result = textOf(message.content)
+    return [
+      {
+        id: message.toolCallId || base,
+        role: 'tool',
+        ...(message.toolName ? { toolName: message.toolName } : {}),
+        ...(result ? { toolResult: result } : {}),
+        ...(message.isError ? { toolError: true } : {})
+      }
+    ]
+  }
+  return []
+}
+
+/** WSL2 里 bow(Windows 侧)的回环地址是发行版自己的回环 —— 要走默认网关的 IP */
+function wslGateway(): string | null {
+  try {
+    if (!/microsoft/i.test(readFileSync('/proc/version', 'utf8'))) return null
+    for (const line of readFileSync('/proc/net/route', 'utf8').split('\n').slice(1)) {
+      const cols = line.trim().split(/\s+/)
+      if (cols.length < 3 || cols[1] !== '00000000') continue
+      const hex = cols[2]
+      if (!/^[0-9a-fA-F]{8}$/.test(hex)) continue
+      return [6, 4, 2, 0].map((i) => parseInt(hex.slice(i, i + 2), 16)).join('.')
+    }
+  } catch {
+    /* 不是 Linux / 读不到路由表 */
+  }
+  return null
+}
+
+function chatUrls(): string[] {
+  if (!CHAT_URL) return []
+  const url = `${CHAT_URL}${CHAT_URL.includes('?') ? '&' : '?'}role=pi&session=${CHAT_SESSION_ID}&token=${encodeURIComponent(
+    CHAT_TOKEN
+  )}`
+  const out = [url]
+  const gateway = wslGateway()
+  if (gateway) {
+    try {
+      const parsed = new URL(url)
+      if (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost') {
+        parsed.hostname = gateway
+        out.push(parsed.toString())
+      }
+    } catch {
+      /* URL 坏就算了 */
+    }
+  }
+  return out
+}
+
+/**
+ * 对话桥:与 bow 的远程服务维持一条 WS,把 pi 的消息推过去,把手机的话收进来。
+ *
+ * 为什么不自己写队列:pi 自己的 `sendUserMessage(text, { deliverAs })` 就是队列 ——
+ * `followUp` 排在这一轮之后,`steer` 立刻插话。这里只负责「忙的时候别忘了带参数」
+ * (不带 `deliverAs` 在 streaming 中会直接抛错)。
+ */
+function startChatBridge(pi: ExtensionAPI): void {
+  if (!IN_BOW) return
+  if (!Number.isInteger(CHAT_SESSION_ID) || CHAT_SESSION_ID <= 0) return
+  const Ctor = (globalThis as unknown as { WebSocket?: WsCtor }).WebSocket
+  if (!Ctor || !CHAT_URL || !CHAT_TOKEN) return
+
+  const urls = chatUrls()
+  if (!urls.length) return
+
+  let socket: WsLike | null = null
+  let stopped = false
+  let retry = 0
+  let attempt = 0
+  let timer: NodeJS.Timeout | null = null
+  let busy = false
+  let ctx: ChatCtx | null = null
+
+  const send = (payload: unknown): void => {
+    if (!socket || socket.readyState !== 1) return
+    try {
+      socket.send(JSON.stringify(payload))
+    } catch {
+      /* 断线由 onclose 处理 */
+    }
+  }
+
+  /** `hasPendingMessages()` 只有布尔值:这里当「有没有排队」的标记用(手机上显示「有排队」) */
+  const pending = (): number => {
+    try {
+      return ctx?.hasPendingMessages?.() ? 1 : 0
+    } catch {
+      return 0
+    }
+  }
+
+  const state = (): void => send({ type: 'state', busy, pending: pending() })
+  const stateSoon = (): void => {
+    const t = setTimeout(state, 60)
+    t.unref?.()
+  }
+
+  const snapshot = (): void => {
+    const messages: ChatMsg[] = []
+    try {
+      for (const entry of ctx?.sessionManager?.buildContextEntries?.() ?? []) {
+        if (entry?.type !== 'message') continue
+        for (const message of chatMessages(entry.message)) messages.push(message)
+      }
+    } catch {
+      /* 拿不到历史就只发状态 */
+    }
+    send({ type: 'snapshot', messages: messages.slice(-60), busy, pending: pending() })
+  }
+
+  const onDown = (raw: string): void => {
+    let msg: { type?: string; text?: unknown; deliverAs?: unknown } | null = null
+    try {
+      msg = JSON.parse(raw) as typeof msg
+    } catch {
+      return
+    }
+    if (!msg || typeof msg.type !== 'string') return
+    if (msg.type === 'history') {
+      snapshot()
+      return
+    }
+    if (msg.type === 'abort') {
+      try {
+        ctx?.abort?.()
+      } catch {
+        /* 没在跑 */
+      }
+      stateSoon()
+      return
+    }
+    if (msg.type === 'prompt' && typeof msg.text === 'string' && msg.text.trim()) {
+      const deliverAs = msg.deliverAs === 'steer' || msg.deliverAs === 'followUp' ? msg.deliverAs : undefined
+      try {
+        // streaming 中不带 deliverAs 会抛错 —— 所以忙的时候一律当「排队」
+        if (deliverAs) pi.sendUserMessage(msg.text, { deliverAs })
+        else if (busy) pi.sendUserMessage(msg.text, { deliverAs: 'followUp' })
+        else pi.sendUserMessage(msg.text)
+      } catch (err) {
+        send({
+          type: 'message',
+          message: {
+            id: `err-${Date.now()}`,
+            role: 'notice',
+            text: `发送失败:${err instanceof Error ? err.message : String(err)}`
+          }
+        })
+      }
+      stateSoon()
+    }
+  }
+
+  const schedule = (): void => {
+    if (stopped || timer) return
+    const delay = Math.min(3000 * 2 ** Math.min(retry, 3), 30_000)
+    retry += 1
+    attempt += 1
+    timer = setTimeout(() => {
+      timer = null
+      connect()
+    }, delay)
+    timer.unref?.()
+  }
+
+  function connect(): void {
+    if (stopped) return
+    const url = urls[attempt % urls.length]
+    let sock: WsLike
+    try {
+      sock = new Ctor!(url)
+    } catch {
+      schedule()
+      return
+    }
+    socket = sock
+    sock.onopen = () => {
+      retry = 0
+      snapshot()
+    }
+    sock.onmessage = (event) => onDown(String(event.data))
+    sock.onclose = () => {
+      if (socket === sock) socket = null
+      schedule()
+    }
+    sock.onerror = () => {
+      /* 交给 onclose */
+    }
+  }
+
+  pi.on('session_start', (_event, eventCtx) => {
+    ctx = eventCtx as unknown as ChatCtx
+    stateSoon()
+  })
+  pi.on('agent_start', (_event, eventCtx) => {
+    ctx = eventCtx as unknown as ChatCtx
+    busy = true
+    state()
+  })
+  pi.on('agent_settled', (_event, eventCtx) => {
+    ctx = eventCtx as unknown as ChatCtx
+    busy = false
+    state()
+  })
+  pi.on('message_end', (event) => {
+    const messages = chatMessages((event as { message?: PiMessage }).message)
+    for (const message of messages) send({ type: 'message', message })
+  })
+  pi.on('session_shutdown', () => {
+    stopped = true
+    if (timer) clearTimeout(timer)
+    timer = null
+    try {
+      socket?.close()
+    } catch {
+      /* 已经断了 */
+    }
+    socket = null
+  })
+
+  connect()
 }

@@ -186,6 +186,22 @@ describe('withBowTerminalEnv:WSL profile 必须走 WSLENV', () => {
     expect(env.BOW_TERMINAL).toBe('1')
     expect(env.WSLENV).toBe('BOW_TERMINAL')
   })
+
+  it('对话桥的三个变量:非 WSL 直接加,WSL 一并列进 WSLENV', () => {
+    const extra = {
+      BOW_SESSION_ID: '7',
+      BOW_REMOTE_URL: 'ws://127.0.0.1:8770/ws',
+      BOW_CONTROL_TOKEN: 'abc123'
+    }
+    expect(withBowTerminalEnv(base, '/bin/bash', extra)).toMatchObject({ ...extra, BOW_TERMINAL: '1' })
+    expect(withBowTerminalEnv(base, 'wsl.exe', extra).WSLENV).toBe(
+      'BOW_TERMINAL:BOW_SESSION_ID:BOW_REMOTE_URL:BOW_CONTROL_TOKEN'
+    )
+    // 已经列过的(哪怕带 flag)不重复加,只补缺的
+    expect(withBowTerminalEnv({ ...base, WSLENV: 'BOW_SESSION_ID:BOW_TERMINAL/w' }, 'wsl.exe', extra).WSLENV).toBe(
+      'BOW_SESSION_ID:BOW_TERMINAL/w:BOW_REMOTE_URL:BOW_CONTROL_TOKEN'
+    )
+  })
 })
 
 describe('回放缓冲', () => {

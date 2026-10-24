@@ -18,10 +18,12 @@ import { networkInterfaces } from 'node:os'
 import { WebSocketServer } from 'ws'
 import type { WebSocket } from 'ws'
 import { LoginThrottle, REMOTE_COOKIE_NAME, REMOTE_COOKIE_TTL_MS, RemoteAuth } from './auth'
+import { PiChatHub } from './piChat'
 import { parseClientMessage } from './protocol'
 import { readStaticFile } from './static'
 import type { RemoteSessionApi, ServerMessage } from './protocol'
 import type { HubEvent, SessionHub, HubSink } from './hub'
+import type { ChatSink } from './piChat'
 
 /** 应用名:远程页与健康检查都靠它确认「对面是 bow 的终端服务」 */
 export const REMOTE_SERVICE_NAME = 'bow-terminal-remote'
@@ -52,6 +54,11 @@ export interface RemoteServerOptions {
   readFile?: (path: string) => Promise<Buffer>
   /** 注入用:列出本机非回环 IPv4 地址(单测不碰真实网卡) */
   listAddresses?: () => string[]
+  /**
+   * 对话桥(pi 对话 → 手机,手机 → pi)。省略 = 只提供终端流(S13 之前的场景 / 单测)。
+   * pi 端的连接不走 cookie:它用会话自己的控制令牌(见 `RemoteSessionApi.controlToken`)。
+   */
+  piChat?: PiChatHub
 }
 
 export interface RemoteServerHandle {
@@ -142,9 +149,33 @@ export async function startRemoteServer(options: RemoteServerOptions): Promise<R
   // ---------- WebSocket(一条连接多路复用所有会话)----------
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_PAYLOAD })
   http.on('upgrade', (req: IncomingMessage, socket, head) => {
-    const path = (req.url ?? '/').split('?')[0]
-    // 路径不对 / 没登录 / 跨站 Origin:一律在握手阶段拒,不进 WS 世界
-    if (path !== REMOTE_WS_PATH || !options.auth.verifyRequest(req.headers)) {
+    let url: URL
+    try {
+      url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    } catch {
+      socket.destroy()
+      return
+    }
+    if (url.pathname !== REMOTE_WS_PATH) {
+      socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n')
+      socket.destroy()
+      return
+    }
+    // pi 里的扩展:只认该会话的控制令牌(pty 环境变量带过来的),不吃 cookie
+    if (url.searchParams.get('role') === 'pi') {
+      const sessionId = Number(url.searchParams.get('session'))
+      const token = url.searchParams.get('token') ?? ''
+      const expected = Number.isInteger(sessionId) && sessionId > 0 ? options.sessions.controlToken(sessionId) : null
+      if (!expected || !token || !equalToken(token, expected)) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
+        socket.destroy()
+        return
+      }
+      wss.handleUpgrade(req, socket, head, (ws) => attachPi(options, ws, sessionId))
+      return
+    }
+    // 手机:路径不对 / 没登录 / 跨站 Origin 一律在握手阶段拒
+    if (!options.auth.verifyRequest(req.headers)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
       socket.destroy()
       return
@@ -166,6 +197,7 @@ export async function startRemoteServer(options: RemoteServerOptions): Promise<R
     close: () =>
       new Promise<void>((resolve) => {
         // 先掐 WS(不然它们会把 http.close 拖住),再关监听
+        options.piChat?.clear('服务已停止')
         for (const client of wss.clients) {
           try {
             client.close(1001, '服务已停止')
@@ -187,6 +219,14 @@ export async function startRemoteServer(options: RemoteServerOptions): Promise<R
  * hub 事件靠 `HubSink` 转成 JSON 下行;`buffered()` 直接把 ws 的 `bufferedAmount` 交出去,
  * 于是「跟不上的客户端」由 hub 统一判定并踢掉(策略只有一处)。
  */
+/** 令牌比较用恒定时长(长度不同也算一轮,不提前返回) */
+function equalToken(a: string, b: string): boolean {
+  const len = Math.max(a.length, b.length)
+  let diff = a.length ^ b.length
+  for (let i = 0; i < len; i += 1) diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0)
+  return diff === 0
+}
+
 function attachClient(options: RemoteServerOptions, ws: WebSocket): void {
   const send = (message: ServerMessage | HubEvent): void => {
     if (ws.readyState !== ws.OPEN) return
@@ -205,11 +245,25 @@ function attachClient(options: RemoteServerOptions, ws: WebSocket): void {
     }
   }
   const unsubscribe = options.hub.subscribe(sink)
+  // 同一个连接也是对话的订阅者(两类消息共用这条 WS,不需要第二条连接)
+  const chatSink: ChatSink = {
+    send: (message) => send(message as ServerMessage),
+    buffered: () => ws.bufferedAmount,
+    drop: (reason) => {
+      try {
+        ws.close(1008, reason.slice(0, 100))
+      } catch {
+        /* 已经断了 */
+      }
+    }
+  }
+  const detachChat = options.piChat?.attachViewer(chatSink)
   let closed = false
   const done = (): void => {
     if (closed) return
     closed = true
     unsubscribe()
+    detachChat?.()
   }
 
   ws.on('close', done)
@@ -274,8 +328,69 @@ function attachClient(options: RemoteServerOptions, ws: WebSocket): void {
       case 'close':
         if (!options.sessions.close(msg.id)) send({ t: 'error', message: '会话不存在' })
         return
+      // ---- 对话:手机只读快照 + 发话/中断 ----
+      case 'chat': {
+        if (!options.piChat) {
+          send({ t: 'error', message: '对话桥没启用' })
+          return
+        }
+        send({ t: 'chat', ...options.piChat.snapshot(msg.id) })
+        return
+      }
+      case 'prompt': {
+        const result = options.piChat?.prompt(msg.id, msg.text, msg.deliverAs)
+        if (!result?.ok) send({ t: 'error', message: result?.error ?? '对话桥没启用' })
+        return
+      }
+      case 'abort': {
+        if (!options.piChat?.abort(msg.id)) send({ t: 'error', message: '这个会话没有控制通道' })
+        return
+      }
     }
   })
+}
+
+/**
+ * pi 里的扩展连上来的控制通道:只收 JSON 帧,交给 `PiChatHub` 校验与广播。
+ * 连接断开时 hub 会把该会话标成「没有控制通道」,手机据此提示重开终端。
+ */
+function attachPi(options: RemoteServerOptions, ws: WebSocket, sessionId: number): void {
+  const piChat = options.piChat
+  if (!piChat) {
+    ws.close(1011, '对话桥没启用')
+    return
+  }
+  const sink: ChatSink = {
+    send: (message) => {
+      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(message))
+    },
+    buffered: () => ws.bufferedAmount,
+    drop: (reason) => {
+      try {
+        ws.close(1000, reason.slice(0, 100))
+      } catch {
+        /* 已经断了 */
+      }
+    }
+  }
+  const detach = piChat.attachPi(sessionId, sink)
+  ws.on('message', (raw) => {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(String(raw))
+    } catch {
+      return
+    }
+    piChat.fromPi(sessionId, parsed)
+  })
+  ws.on('close', detach)
+  ws.on('error', detach)
+  // 请求一份历史:pi 侧会回 `snapshot`(它也可以自己主动发)
+  try {
+    sink.send({ type: 'history' })
+  } catch {
+    /* 已经断了 */
+  }
 }
 
 function handle(options: RemoteServerOptions, req: IncomingMessage, res: ServerResponse): void {

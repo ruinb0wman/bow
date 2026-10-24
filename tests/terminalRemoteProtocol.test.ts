@@ -72,7 +72,8 @@ function fakeSessions(hub?: SessionHub) {
       const existed = live.delete(id)
       if (existed) hub?.publish({ t: 'closed', id, reason: 'closed-by-request' })
       return existed
-    }
+    },
+    controlToken: (id) => (live.has(id) ? `token-${id}` : null)
   }
   return { api, calls, live }
 }

@@ -2,7 +2,7 @@
  * 远程 WS 客户端:与主进程的 `remote/protocol.ts` 同一套消息。
  *
  * 断线重连是必须的(手机锁屏、切后台、WiFi 抖动):指数退避,封顶 5s;重连成功后由 App 重新
- * attach —— 主进程的 attach 会先发回放,所以画面能重建,不需要客户端自己缓存字节。
+ * 拉一次对话快照 —— 服务端有缓存,所以不用手机自己存历史。
  */
 
 export interface SessionAgentState {
@@ -35,15 +35,32 @@ export type ServerMessage =
   | { t: 'closed'; id: number; reason: string }
   | { t: 'read'; id: number; text: string }
   | { t: 'created'; id: number; state: 'starting' | 'running' }
+  | { t: 'chat'; id: number; live: boolean; messages: ChatMessage[]; busy: boolean; pending: number }
+  | { t: 'chat-message'; id: number; message: ChatMessage }
+  | { t: 'chat-state'; id: number; live: boolean; busy: boolean; pending: number }
   | { t: 'error'; message: string }
+
+/** 一条要显示的对话行(与主进程 `remote/piChat.ts` 的 `ChatMessage` 同形) */
+export interface ChatMessage {
+  id: string
+  role: 'user' | 'assistant' | 'tool' | 'notice'
+  text?: string
+  toolName?: string
+  toolArgs?: string
+  toolResult?: string
+  toolError?: boolean
+}
 
 export type ClientMessage =
   | { t: 'list' }
   | { t: 'attach'; id: number; cols: number; rows: number }
   | { t: 'input'; id: number; data: string }
   | { t: 'resize'; id: number; cols: number; rows: number }
-  | { t: 'create'; command?: string; args?: string[] }
+  | { t: 'create'; command?: string; args?: string[]; cwd?: string; name?: string }
   | { t: 'close'; id: number }
+  | { t: 'chat'; id: number }
+  | { t: 'prompt'; id: number; text: string; deliverAs?: 'steer' | 'followUp' }
+  | { t: 'abort'; id: number }
 
 export type ConnectionState = 'connecting' | 'open' | 'closed' | 'refused'
 

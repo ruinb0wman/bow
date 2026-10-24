@@ -1,16 +1,17 @@
 <script setup lang="ts">
 /**
- * 远程页:登录 → 会话列表 → 终端。
+ * 远程页:登录 → 会话列表 → 对话。
  *
- * 这一层只做三件事:登录拿 cookie、连 WS、把消息分派给列表或终端。
- * 会话排序复用主进程那套「注意力等级」(`sortSessionsByAttention`)—— 与牧群面板同一份逻辑,
- * 所以手机上「谁在等我」的次序和电脑上完全一致。
+ * 这一层只做四件事:登录拿 cookie、连 WS、把消息分派给列表或对话、发话/停止。
+ * 手机不再渲染 xterm(原因见 `ChatView.vue` 的头注释):读写都走 pi 的结构化接口,
+ * 对话快照缓存在服务端,所以切会话/断线重连都不用手机自己存历史。
+ * 会话排序复用主进程那套「注意力等级」(`sortSessionsByAttention`)—— 与牧群面板同一份逻辑。
  */
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { sortSessionsByAttention, formatAgo, lastActiveAt, shortPath } from '@plugins/terminal/shared'
-import TerminalView from './TerminalView.vue'
+import ChatView from './ChatView.vue'
 import { connectRemote, wsUrlOf } from './ws'
-import type { RemoteSocket, ServerMessage, SessionInfo } from './ws'
+import type { ChatMessage, RemoteSocket, ServerMessage, SessionInfo } from './ws'
 
 const password = ref('')
 const loginError = ref('')
@@ -21,13 +22,17 @@ const sessions = ref<SessionInfo[]>([])
 const state = ref<'connecting' | 'open' | 'closed' | 'refused'>('connecting')
 
 /** 当前打开的会话(空 = 显示列表) */
-const active = reactive<{ id: number | null; title: string; replay: string }>({
-  id: null,
-  title: '',
-  replay: ''
-})
+const active = reactive<{ id: number | null; title: string }>({ id: null, title: '' })
 
-const termRef = ref<InstanceType<typeof TerminalView> | null>(null)
+/** 对话快照(服务端缓存的那份镜像;手机不存历史) */
+const chat = reactive<{ messages: ChatMessage[]; busy: boolean; pending: number; live: boolean }>({
+  messages: [],
+  busy: false,
+  pending: 0,
+  live: false
+})
+const chatError = ref('')
+
 let socket: RemoteSocket | null = null
 let now = ref(Date.now())
 let ticker: number | undefined
@@ -75,8 +80,8 @@ function connect(): void {
   socket = connectRemote(wsUrlOf(window.location), {
     onState(next) {
       state.value = next
-      // 重连成功后重新 attach,靠服务端的回放把画面重建回来
-      if (next === 'open' && active.id != null) attach(active.id)
+      // 重连成功后重新拉一次快照(服务端有缓存,不用手机自己存)
+      if (next === 'open' && active.id != null) requestChat(active.id)
     },
     onMessage(msg) {
       handle(msg)
@@ -94,38 +99,59 @@ function handle(msg: ServerMessage): void {
         active.id = null
       }
       break
-    case 'attached':
+    case 'chat':
       if (msg.id !== active.id) break
-      active.replay = msg.replay
-      active.title = msg.title
-      termRef.value?.write(msg.replay)
+      chat.messages = msg.messages
+      chat.busy = msg.busy
+      chat.pending = msg.pending
+      chat.live = msg.live
+      chatError.value = ''
       break
-    case 'data':
-      if (msg.id === active.id) termRef.value?.write(msg.chunk)
+    case 'chat-message':
+      if (msg.id !== active.id) break
+      {
+        // 同一条工具调用会被「调用 + 结果」更新两次:按 id 就地替换
+        const index = chat.messages.findIndex((m) => m.id === msg.message.id && m.role === msg.message.role)
+        if (index >= 0) chat.messages.splice(index, 1, msg.message)
+        else chat.messages.push(msg.message)
+      }
+      break
+    case 'chat-state':
+      if (msg.id !== active.id) break
+      chat.busy = msg.busy
+      chat.pending = msg.pending
+      chat.live = msg.live
       break
     case 'exit':
-      if (msg.id === active.id) termRef.value?.exit(msg.code)
+      if (msg.id === active.id) chat.live = false
       break
     case 'closed':
       if (msg.id === active.id) active.id = null
       break
     case 'error':
       if (!authed.value) loginError.value = msg.message
+      else chatError.value = msg.message
       break
     default:
       break
   }
 }
 
+/** 拉一次对话快照(打开的会话 / 重连后 / 刚切过来) */
+function requestChat(id: number): void {
+  chat.messages = []
+  chat.busy = false
+  chat.pending = 0
+  chat.live = false
+  chatError.value = ''
+  socket?.send({ t: 'chat', id })
+}
+
 function attach(id: number): void {
   const info = sessions.value.find((s) => s.id === id)
   active.id = id
   active.title = info?.title ?? ''
-  active.replay = ''
-  termRef.value = null // 新视图挂载后再发 attach(尺寸要在挂载后才有)
-  requestAnimationFrame(() => {
-    socket?.send({ t: 'attach', id, cols: 80, rows: 24 })
-  })
+  requestChat(id)
 }
 
 function open(info: SessionInfo): void {
@@ -134,6 +160,16 @@ function open(info: SessionInfo): void {
 
 function back(): void {
   active.id = null
+}
+
+function send(payload: { text: string; deliverAs?: 'steer' | 'followUp' }): void {
+  if (active.id == null) return
+  socket?.send({ t: 'prompt', id: active.id, ...payload })
+}
+
+function abort(): void {
+  if (active.id == null) return
+  socket?.send({ t: 'abort', id: active.id })
 }
 
 /** 新终端:**不传 command** —— 主进程那边就是「开一个默认 shell」,与面板的「新终端」一致 */
@@ -163,7 +199,7 @@ const needsLogin = computed(() => !authed.value || state.value === 'refused')
     <!-- 登录 -->
     <div v-if="needsLogin" class="login">
       <div class="login-box">
-        <h1>bow 终端</h1>
+        <h1>bow</h1>
         <p class="hint">输入 bow 设置页里「远程控制」显示的口令</p>
         <form @submit.prevent="login">
           <input
@@ -185,22 +221,27 @@ const needsLogin = computed(() => !authed.value || state.value === 'refused')
       </div>
     </div>
 
-    <!-- 终端 -->
-    <TerminalView
-      v-else-if="active.id != null"
-      ref="termRef"
-      :key="active.id"
-      :session-id="active.id"
-      :title="active.title"
-      :socket="socket"
-      :replay="active.replay"
-      @back="back"
-    />
+    <!-- 对话 -->
+    <div v-else-if="active.id != null" class="chat-wrap">
+      <p v-if="chatError" class="err-bar" @click="chatError = ''">{{ chatError }}</p>
+      <ChatView
+        :key="active.id"
+        :session-id="active.id"
+        :title="active.title"
+        :messages="chat.messages"
+        :busy="chat.busy"
+        :pending="chat.pending"
+        :live="chat.live"
+        @back="back"
+        @send="send"
+        @abort="abort"
+      />
+    </div>
 
     <!-- 会话列表 -->
     <div v-else class="list">
       <header class="list-head">
-        <span class="brand">bow 终端</span>
+        <span class="brand">bow · 会话</span>
         <span class="count">{{ sessions.length }} 个会话</span>
         <span class="conn" :class="state">{{ state === 'open' ? '已连接' : state === 'connecting' ? '连接中…' : '已断开' }}</span>
         <button class="new" title="开一个新终端(默认 shell)" @click="createSession">＋</button>
@@ -239,6 +280,21 @@ const needsLogin = computed(() => !authed.value || state.value === 'refused')
   height: 100%;
   display: flex;
   flex-direction: column;
+}
+
+.err-bar {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #f0a8a3;
+  background: rgba(229, 83, 75, 0.12);
+  border-bottom: 1px solid rgba(229, 83, 75, 0.3);
+}
+.chat-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 /* 登录 */

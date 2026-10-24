@@ -106,6 +106,8 @@ src/
     settings.html + src/settings/       设置页(bow://settings 内部标签页)
     terminal.html + src/terminal/       终端页(bow://terminal 内部标签页;xterm 视图在终端插件的 ui/ 里)
     logseq.html + src/logseq/           笔记页(bow://logseq 内部标签页;编辑器视图在笔记插件的 ui/ 里)
+    remote/                             手机远程页(独立 vite 构建 → `out/remote/`,由终端插件的 remote 服务静态提供;
+                                        不经 preload、不依赖渲染层 IPC。页内只有登录 + 会话列表 + 对话)
     src/plugins/registry.ts             PLUGIN_UI 注册表 + SLOT_PLUGIN_ORDER(渲染层唯一登记点)
     src/plugins/slots.ts                collectSlot 纯函数(插槽合并顺序,可单测)
     src/components/                     SuggestPanel(地址栏下拉)/ SplitMenu(分屏面板)/ CloseConfirmModal(关闭窗口确认)/ ModalShell(弹层壳 + Esc 栈顶)

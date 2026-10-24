@@ -580,3 +580,75 @@ e2e(42 项,WSL + Windows 两侧全绿)直接复现用户的现场:
 
 ⚠️ 一个诚实的残留:被手机改小期间已经折行的那些行,xterm **不会重新回绕**(它没有 reflow,
 tmux 有)。新输出正常,旧行要等滚出屏幕。这是 xterm 的既有限制,不是这次的改动引入的。
+
+## 20. 手机端不再渲染 xterm:换成「对话 + 队列」(2026-10-16)
+
+用户在手机上实测后的结论:**不是尺寸问题,是数据源问题**。`working` 动画是「光标移动 + 局部重绘」,
+每一帧都会留在 pty 字节流里;宽度一变,pi 按新宽度重排、历史还是旧宽度画的 —— 手机上怎么渲染都是乱的。
+所以这一轮把手机端从「终端镜像」换成「结构化对话」,顺手把 S12(移动端打磨)作废。
+
+### 20.1 先验证「能不能绕过终端」(实测,不是猜)
+
+| 问题 | 结论 |
+| --- | --- |
+| pi 有结构化读写 API 吗 | 有:`pi --mode rpc`(JSONL)+ 扩展 API。`get_state` / `get_messages` / `get_commands` 零模型调用就有结构化回包 |
+| 在 TUI 里(bow 的形态)能注入消息不碰键盘吗 | 能:扩展调 `pi.sendUserMessage()` → `agent_start → message_start/end → agent_end → agent_settled`,一个按键都没用 |
+| 能读到结构化回复吗 | 能:扩展事件的 `message_end` 带完整 `message`(role/content);另有 session JSONL 与 RPC 的 `get_messages` |
+| 审批能被外部回答吗 | 能:`pi.on('tool_call', async …)` 是异步钩子,可 `await` 外部回答并返回 `{block:true}` |
+
+**一个被自己探针坑过的点**:第一版探针在 agent 跑到一半时 `sendUserMessage(text)`(不带参数),
+那条消息**凭空消失**。原因不是 API 不可靠 —— `agent-session.d.ts` 写明「streaming 且没给
+`streamingBehavior` 时**抛错**」,而扩展 API 的 `sendUserMessage` 返回 `void`、把异常吞了。
+正确用法是 `{ deliverAs: 'steer' | 'followUp' }`(pi-phone 的 `parent-session-worker.ts:458` 就是这么写的)。
+⇒ **队列不自己造**:忙的时候一律发 `followUp`,让 pi 排队;`steer` 给「插话」按钮。
+
+### 20.2 调研过的三个项目(照抄它们的调用方式,不照抄产品)
+
+- **pi-phone**(57★,面向 pi 0.58.4):扩展内镜像当前 TUI 会话 + 并行 `pi --mode rpc` 子进程。
+  我们借:`sendUserMessage({deliverAs})` / `ctx.abort()` / `sessionManager.buildContextEntries()` / 事件集。
+  不借:5168 行手机前端、Tailscale Serve、单写者 owner 模型。
+- **pi-mobile**(0.4.0):E2E 加密 + 锁屏答扩展弹框 + 语音,功能最全但依赖 Tailscale(用户明确不要)。
+- **remote-pi / Cockpit**(0.7.0):Flutter + Rust 中继 + SSH-only 主机;本地 agent mesh(`list_peers`/`agent_send`)
+  正是用户不要的「工头」那一层。
+- 结论:**不要自己再写手机端产品**;但 bow 的壳(多标签 + 会话台账 + 局域网鉴权)已经写完了,
+  所以只补一条「控制通道」,把对话搬进去。
+
+### 20.3 落地(改了什么)
+
+1. **扩展**(`packages/pi-bow/extensions/bow-agent-state.ts`,仍是自包含单文件,合并进已有 OSC 桥):
+   - 门禁:在 `BOW_TERMINAL=1` 之上再要 `BOW_SESSION_ID` / `BOW_REMOTE_URL` / `BOW_CONTROL_TOKEN`(老 bow 不注入 = 静默不做事);
+   - 上行:`message_end` → 一行行 `ChatMessage`(工具调用与它的 `toolResult` 共用 `toolCallId` 作 id);
+     `agent_start/settled` → `busy`;收到 `history` → 用 `sessionManager.buildContextEntries()` 回 `snapshot`;
+   - 下行:`prompt`(忙时缺省 `followUp`)/ `abort`(`ctx.abort()`);
+   - 用 Node 内建 `WebSocket`(pi 的 engines 是 node ≥22.19),断线 3s→30s 退避;
+   - **WSL2**:bow 在 Windows、pi 在发行版时,`127.0.0.1` 是发行版自己的回环 —— 扩展会从
+     `/proc/net/route` 取默认网关再补一个候选 URL(所以要 `remote.bind = lan` 才通,而手机上用远程本来就是 lan)。
+2. **bow 侧**:`remote/piChat.ts`(纯逻辑:`sanitizeChatMessage` / 缓存 / 工具行合并 / 慢 viewer 跳过 / 路由)、
+   `protocol.ts` 三条上行(`chat` / `prompt` / `abort`)与三条下行(`chat` / `chat-message` / `chat-state`)、
+   `RemoteSessionApi.controlToken(id)`(每会话随机令牌,`role=pi` 的 WS 只认它,不用口令也不用 cookie)。
+3. **pty**:spawn 时经 `withBowTerminalEnv(env, shell, extra)` 注入三件套(非 WSL 合并、
+   WSL 一并列进 `WSLENV`),每个会话一个新令牌。
+4. **手机页**:删掉 `TerminalView.vue` / `KeyBar.vue` / `keys.ts`(−400 行),新增 `ChatView.vue`:
+   气泡(用户右 / pi 左)、工具单行(点开看参数与结果)、`发送` / `插话` / `停止`、「有排队」标记、
+   没有控制通道时输入框禁用并给一句「重开终端即可」。
+5. **协议里的终端部分全部保留**(`attach/input/resize/read`):MCP 工具、本地终端页、e2e 都还在用,
+   只是手机页不再发它们。
+
+### 20.4 验证
+
+- vitest:`tests/terminalRemoteChat.test.ts` 16 例(校验 / 缓存 / 工具合并 / 上限 / 慢消费者 / 路由 / 令牌握手 / 真 WS 往返);
+  `tests/terminalShared.test.ts` 补 WSLENV 三件套;全库 **82 文件 / 1513 例**。
+- e2e(`npm run test:e2e:remote`,WSL 侧跑):**37 项全绿** —— 其中手机页那 5 项换成
+  「点会话进对话视图 / 没有 xterm 与按键条 / 没有控制通道时给提示且输入框禁用 / 返回列表」。
+- 真 pi 冒烟(**新增** `npm run test:pi:chat` → `scripts/pi-chat-smoke.mjs`):7 项全绿 ——
+  扩展带令牌连上 / 回 snapshot / 发话后 busy / 用户消息回显 / 助手结构化回复 / 回到 idle。
+
+### 20.5 已知边界(别当 bug)
+
+1. **已折行的旧行不会重新回绕**(xterm 没有 reflow)—— 但这一条对手机端**不再适用**:它不渲染终端了。
+2. `ctx.hasPendingMessages()` 只有布尔值 → 手机上只显示「有排队」,数不出几条。
+3. 历史只回最近 60 条、单条正文 4000 字符、工具输出 1200 字符(超出截断)。更早的去电脑上看。
+4. 本次改动**之前**就开着的终端里没有三件套 → 手机上显示「没有控制通道」,重开终端即可。
+5. WSL 那条依赖 `remote.bind = lan`(默认 loopback);Windows 原生 pi 则 loopback 就够。
+6. 审批仍未接管(P3):pi 问问题,手机看得见(`ui_prompt_start` 走 OSC 那条老路,列表上有「等你」),
+   但要回答还是得在电脑上点。`ctx.ui` 包装是下一步,pi-mobile 证明可行,我们没验。

@@ -17,6 +17,7 @@
  */
 
 import { app } from 'electron'
+import { randomBytes } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -31,6 +32,7 @@ import type { TerminalRunRequest } from '@shared/terminalRun'
 import { installPiBridge, piBridgeStatus, uninstallPiBridge } from './piBridge'
 import type { PiBridgeEnv, PiBridgeIo } from './piBridge'
 import { SessionHub } from './remote/hub'
+import { PiChatHub } from './remote/piChat'
 import { RemoteAuth, createAuthKey } from './remote/auth'
 import { startRemoteServer } from './remote/server'
 import type { RemoteServerHandle } from './remote/server'
@@ -111,6 +113,11 @@ interface Session {
   lastOutputAt: number | null
   /** 代理状态的结构化副本(台账要看);与 `agentKey` 的区别:后者是发往内核的去重键 */
   agent: SessionAgentState | null
+  /**
+   * 这个会话的控制令牌:pty 环境变量 `BOW_CONTROL_TOKEN` 交给 pi 里的扩展,
+   * 它拿它连 WS 的 `role=pi`。每个会话一份(同机其他进程猜不到)。
+   */
+  controlToken: string
 }
 
 /**
@@ -184,6 +191,8 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
   const runWaitMs = deps.runWaitMs ?? 3000
   /** 远程订阅扇出:pty 输出与台账的第二个出口(第一个是渲染层 IPC) */
   const hub = new SessionHub()
+  /** 对话桥:pi 的结构化对话 → 手机(见 remote/piChat 的注释,为什么不渲 xterm) */
+  const piChat = new PiChatHub()
   /** 远程服务句柄;null = 没在跑(未启用 / 启动失败 / 已停) */
   let remote: RemoteServerHandle | null = null
   /** 最近一次启动失败的原因(设置页要看得见,不能只进日志) */
@@ -293,6 +302,7 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
     }
     context?.ipc.emit(TERMINAL_EVENTS.sessionClosed, { tabId, reason })
     hub.publish({ t: 'closed', id: tabId, reason })
+    piChat.forget(tabId)
     context?.log('会话已结束', tabId, reason, session.profileName)
     notifySessions()
   }
@@ -451,7 +461,8 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
         if (!sessions.has(id)) return false
         killSession(id, 'closed-by-request')
         return true
-      }
+      },
+      controlToken: (id) => sessions.get(id)?.controlToken ?? null
     }
   }
 
@@ -492,6 +503,7 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
     remotePassword = null
     // 先告诉订阅者（S7 起有真客户端）服务要走，再关监听
     hub.clear('服务已停止')
+    piChat.clear('服务已停止')
     if (!handle) return
     try {
       await handle.close()
@@ -547,6 +559,8 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
         auth: new RemoteAuth({ password: want.password, key: remoteKey() }),
         // 探活/登录后首屏/WS 上行全部走这一份会话操作
         sessions: remoteSessionApi(),
+        // 对话桥:手机读 pi 的消息对象而不是终端字节(见 remote/piChat)
+        piChat,
         // 远程页的构建产物(`npm run build:remote` → out/remote)。
         // 打包后同样在 app 根目录下(build.files 已含 out/**)。目录不存在时 / 会给 503 + 提示。
         staticDir: join(app.getAppPath(), 'out', 'remote')
@@ -626,14 +640,20 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
     }
 
     try {
+      const controlToken = randomBytes(16).toString('hex')
       const proc = mod.spawn(spec.file, spec.args, {
         name: 'xterm-256color',
         cols,
         rows,
         cwd: spec.cwd,
-        // wsl.exe 的 profile 还要把 BOW_TERMINAL 列进 WSLENV —— 否则 Windows 侧的变量进不了发行版,
+        // wsl.exe 的 profile 还要把 BOW_* 列进 WSLENV —— 否则 Windows 侧的变量进不了发行版,
         // 终端里的 pi 扩展会认不出「自己在 bow 里」(见 withBowTerminalEnv 的注释与实测表)
-        env: withBowTerminalEnv(cleanEnv(process.env), spec.file)
+        // BOW_* 三件套是对话桥的接头暗号:会话 id + 服务地址 + 本会话的控制令牌
+        env: withBowTerminalEnv(cleanEnv(process.env), spec.file, {
+          BOW_SESSION_ID: String(tabId),
+          BOW_REMOTE_URL: `ws://127.0.0.1:${settings.remote.port}/ws`,
+          BOW_CONTROL_TOKEN: controlToken
+        })
       })
       const session: Session = {
         tabId,
@@ -651,7 +671,8 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
         cwd: spec.cwd,
         createdAt: Date.now(),
         lastOutputAt: null,
-        agent: null
+        agent: null,
+        controlToken
       }
       sessions.set(tabId, session)
       runFailures.delete(tabId)

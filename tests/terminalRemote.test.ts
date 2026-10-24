@@ -46,7 +46,8 @@ function apiWith(list: SessionInfo[] = []): RemoteSessionApi {
     resize: () => false,
     readTail: () => ({ ok: false, error: '会话不存在' }),
     create: () => ({ ok: false, error: '会话不存在' }),
-    close: () => false
+    close: () => false,
+    controlToken: () => null
   }
 }
 

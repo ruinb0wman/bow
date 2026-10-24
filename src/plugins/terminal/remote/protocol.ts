@@ -9,11 +9,17 @@
  */
 
 import type { SessionInfo } from '../shared'
+import type { ChatMessage } from './piChat'
 
 /** 输入文本的单条上限:按键流很小,超过这个数一定是搞错了 */
 export const MAX_INPUT_CHARS = 64 * 1024
+/** 手机发一句给 pi 的上限(对话输入,不是按键流) */
+export const MAX_PROMPT_CHARS = 32 * 1024
 /** read 的尾部上限(与主进程的 replay 上限一致) */
 export const MAX_READ_CHARS = 200_000
+/** 排队方式:`followUp` = 等这一轮结束再说(默认);`steer` = 现在就插话 */
+export type PromptDelivery = 'steer' | 'followUp'
+export const PROMPT_DELIVERIES: readonly PromptDelivery[] = ['steer', 'followUp'] as const
 export const COLS_RANGE = { min: 2, max: 500 } as const
 export const ROWS_RANGE = { min: 2, max: 300 } as const
 
@@ -26,6 +32,10 @@ export type ClientMessage =
   | { t: 'read'; id: number; chars?: number }
   | { t: 'create'; command?: string; args?: string[]; cwd?: string; name?: string }
   | { t: 'close'; id: number }
+  // ---- 对话(S13):手机不再渲染 xterm,读写都走 pi 的结构化接口 ----
+  | { t: 'chat'; id: number }
+  | { t: 'prompt'; id: number; text: string; deliverAs?: PromptDelivery }
+  | { t: 'abort'; id: number }
 
 export type ServerMessage =
   | { t: 'hello'; service: string; sessions: SessionInfo[] }
@@ -36,6 +46,9 @@ export type ServerMessage =
   | { t: 'closed'; id: number; reason: string }
   | { t: 'read'; id: number; text: string }
   | { t: 'created'; id: number; state: 'starting' | 'running' }
+  | { t: 'chat'; id: number; live: boolean; messages: ChatMessage[]; busy: boolean; pending: number }
+  | { t: 'chat-message'; id: number; message: ChatMessage }
+  | { t: 'chat-state'; id: number; live: boolean; busy: boolean; pending: number }
   | { t: 'error'; message: string }
 
 export type ParseResult = { ok: true; message: ClientMessage } | { ok: false; error: string }
@@ -111,6 +124,34 @@ export function parseClientMessage(raw: unknown): ParseResult {
       }
     }
 
+    // ---- 对话 ----
+    case 'chat':
+    case 'abort': {
+      const id = positiveId(msg.id)
+      if (id === null) return { ok: false, error: 'id 必须是正整数' }
+      return { ok: true, message: { t, id } as ClientMessage }
+    }
+
+    case 'prompt': {
+      const id = positiveId(msg.id)
+      if (id === null) return { ok: false, error: 'id 必须是正整数' }
+      const text = typeof msg.text === 'string' ? msg.text : ''
+      if (!text.trim()) return { ok: false, error: 'text 不能是空的' }
+      if (text.length > MAX_PROMPT_CHARS) return { ok: false, error: 'text 太长' }
+      if (msg.deliverAs !== undefined && !PROMPT_DELIVERIES.includes(msg.deliverAs as PromptDelivery)) {
+        return { ok: false, error: 'deliverAs 只能是 steer 或 followUp' }
+      }
+      return {
+        ok: true,
+        message: {
+          t: 'prompt',
+          id,
+          text,
+          ...(msg.deliverAs === undefined ? {} : { deliverAs: msg.deliverAs as PromptDelivery })
+        }
+      }
+    }
+
     default:
       return { ok: false, error: `未知消息类型:${t || '(空)'}` }
   }
@@ -145,4 +186,9 @@ export interface RemoteSessionApi {
   }
   /** 结束会话(与面板的 × 同义:连标签一起收) */
   close(id: number): boolean
+  /**
+   * 这个会话的控制令牌(pty spawn 时随机生成,经环境变量交给 pi 里的扩展)。
+   * WS 的 `role=pi` 只认它 —— 于是同机别的进程没法冒充某个会话的控制端。
+   */
+  controlToken(id: number): string | null
 }

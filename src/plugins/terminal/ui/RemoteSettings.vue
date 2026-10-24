@@ -88,7 +88,8 @@ onBeforeUnmount(() => {
 <template>
   <div v-if="remote" class="remote-settings">
     <p class="lead">
-      在局域网里的手机 / 平板上用浏览器操作这台机器上的终端。开启后同网段任何设备都能<strong>尝试</strong>连接 ——
+      在局域网里的手机 / 平板上用浏览器看住这台机器上的所有终端里的 <strong>pi</strong>:会话列表 + 对话
+      (用户 / pi 气泡、工具调用、发送 / 插话 / 停止)。开启后同网段任何设备都能<strong>尝试</strong>连接 ——
       口令是唯一那道门,请设长一点。
     </p>
 
@@ -167,7 +168,10 @@ onBeforeUnmount(() => {
           <code>{{ extra }}</code>
           <button class="mini" @click="copy(extra)">复制</button>
         </div>
-        <p class="tiny">在手机浏览器里打开上面的地址,输口令即可。手机要连同一个 WiFi。</p>
+        <p class="tiny">
+          在手机浏览器里打开上面的地址,输口令即可。手机要连同一个 WiFi。
+          本次改动之前就开着的终端没有控制通道,重开一下终端即可。
+        </p>
       </template>
       <template v-else>
         <div class="err">没有在运行</div>

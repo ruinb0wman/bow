@@ -3,7 +3,8 @@
  * 局域网远程控制的端到端验证(真 Electron + 真 pty + 真 WS 客户端)。
  *
  * 覆盖的链路:设置开关 → 监听 → `/login` 拿 cookie → WS 握手鉴权 → hello/attach/input/read/
- * resize/create/close → hub 把 pty 输出转回客户端 → 关闭会话时标签一起收。
+ * resize/create/close → hub 把 pty 输出转回客户端 → 关闭会话时标签一起收 →
+ * 手机页(对话视图,不再是 xterm)。
  *
  * 为什么必须真跑(unittest 盖不到):
  * - 握手阶段的鉴权(路径 / cookie / Origin)只有真握手才走得到,`upgrade` 里出错的表现是「连不上」;
@@ -216,7 +217,19 @@ async function connectWs(url, headers = {}) {
       const i = queue.findIndex(match)
       if (i >= 0) return Promise.resolve(queue.splice(i, 1)[0])
       return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('等 WS 消息超时')), timeoutMs)
+        const timer = setTimeout(() => {
+          // 带上已经收到但没匹配上的消息类型 —— 否则「等超时」什么也说明不了
+          // (服务端的 error 消息就躺在 queue 里)
+          const seen = queue.slice(-6).map((m) => m.t ?? m.type ?? '?')
+          reject(
+            new Error(
+              `等 WS 消息超时(已收到:${seen.join(',') || '无'})` +
+                (queue.some((m) => m.t === 'error') ? ` · error=${
+                  queue.filter((m) => m.t === 'error').pop().message
+                }` : '')
+            )
+          )
+        }, timeoutMs)
         waiters.push({
           match,
           resolve: (m) => {
@@ -382,7 +395,7 @@ try {
 
   // ---------- ⑤ 远程页本身(真浏览器上下文,无 preload) ----------
   // 这一段才是「手机上真的能用」的证据:bundle 在普通页面里跑得起来、登录表单能提交、
-  // WS 连上、会话行点进去 xterm 能渲染、按键条在。
+  // WS 连上、会话行点进去是**对话页**(不再渲染 xterm)。
   const pageUrl = `${base}/`
   const pageTab = await evalOn(chromeWs, `window.browserAPI.createTab(${JSON.stringify(pageUrl)}, true)`)
   const pageWs = await waitFor(async () => {
@@ -424,99 +437,43 @@ try {
   )
   check(rowShown === true, '应用里新建的终端出现在手机页列表里')
 
-  // 点进去:xterm 在普通浏览器里渲染出来,按键条也在
+  // 点进去:手机页是**对话**,不是 xterm。这里验的是「不再渲染终端」与「没有控制通道时如实提示」。
+  // 真 pi 端的往返(令牌握手 / 消息 / 发话 / 停止)由 vitest 的 terminalRemoteChat 覆盖 ——
+  // e2e 这边开的终端跑的是普通 shell,不会连对话桥。
   await evalOn(pageWs, `document.querySelector('.row').click()`)
-  const termReady = await waitFor(
-    async () => (await evalOn(pageWs, `!!document.querySelector('.xterm-screen') && !!document.querySelector('.keybar')`)) === true,
+  const chatReady = await waitFor(
+    async () => (await evalOn(pageWs, `!!document.querySelector('.chat') && !!document.querySelector('.composer textarea')`)) === true,
     15000
   )
-  check(termReady === true, '点会话进入终端视图(xterm + 按键条渲染在普通浏览器里)')
+  check(chatReady === true, '点会话进入对话视图(输入框在,不是终端)')
 
-  // 按键条的铁律:点它**不能**让终端失焦(否则手机软键盘立刻收起,后面敲的字也进不去)
-  await evalOn(pageWs, `(() => { document.querySelector('.xterm-helper-textarea').focus(); return true })()`)
-  const focusedBefore = await evalOn(
+  const noXterm = await evalOn(
     pageWs,
-    `document.activeElement?.className ?? ''`
+    `(() => (document.querySelector('.xterm-screen') || document.querySelector('.keybar')) ? false : true)()`
   )
-  check(String(focusedBefore).includes('xterm-helper-textarea'), '终端可以先拿到焦点')
-  await realClick(pageWs, '.keybar .key.mod')
-  const focusedAfter = await evalOn(pageWs, `document.activeElement?.className ?? ''`)
-  check(
-    String(focusedAfter).includes('xterm-helper-textarea'),
-    '真点一下 Ctrl 按钮后焦点仍在终端(软键盘不会收起)',
-    focusedAfter
-  )
-  const ctrlOn = await evalOn(pageWs, `document.querySelector('.keybar .key.mod')?.classList.contains('on') ?? null`)
-  check(ctrlOn === true, 'Ctrl 确实点亮了(动作没被 preventDefault 吞掉)')
+  check(noXterm === true, '对话页里没有 xterm / 按键条(移动端不再渲染终端)')
 
-  // 符号键:手机输入法把 / 埋在第二页,必须有一键
-  const hasSlash = await evalOn(
-    pageWs,
-    `[...document.querySelectorAll('.keybar .key')].some((el) => el.textContent.trim() === '/')`
-  )
-  check(hasSlash === true, '按键条上有 / 键')
-
-  // 历史回看:这一段**不依赖 shell**(Windows 默认是 PowerShell,`seq` 不存在)。
-  // 回看要验的是 UI(xterm 缓冲区 + 按钮),直接往终端里写 300 行更确定。
-  await evalOn(
-    pageWs,
-    `(() => { const t = window.__bowRemoteTerm; for (let i = 0; i < 300; i++) t.write('line ' + i + '\\r\\n'); return true })()`
-  )
-  const hasHistory = await waitFor(
-    async () =>
-      (await evalOn(pageWs, `((window.__bowRemoteTerm?.buffer.active.baseY ?? 0) > 0 ? true : null)`)) === true,
+  const deadHint = await waitFor(
+    async () => (await evalOn(pageWs, `document.body.innerText.includes('控制通道')`)) === true,
     10000
   )
-  check(hasHistory === true, '缓冲区里已有历史(可回看)')
+  check(deadHint === true, '没有 pi 控制通道时给出可读提示')
 
-  await evalOn(pageWs, `window.__bowRemoteTerm.scrollToBottom()`)
-  const atBottom = await evalOn(
+  const composerDisabled = await evalOn(
     pageWs,
-    `(() => { const b = window.__bowRemoteTerm.buffer.active; return b.viewportY === b.baseY })()`
+    `document.querySelector('.composer textarea')?.disabled === true`
   )
-  check(atBottom === true, '视口停在底部')
+  check(composerDisabled === true, '没有控制通道时输入框是禁用的(不假装能发)')
 
-  await evalOn(pageWs, `document.querySelector('.scroll-pad .sc').click()`)
-  const inHistory = await waitFor(
-    async () =>
-      (await evalOn(
-        pageWs,
-        `(() => { const b = window.__bowRemoteTerm.buffer.active; return b.viewportY < b.baseY ? true : null })()`
-      )) === true,
-    5000
-  )
-  check(inHistory === true, '点 ▲ 能向上翻看历史(本地回看,不发按键给 shell)')
-
-  // 翻着历史时又来了输出:视口**不动**,但出现「新输出」提示。
-  // 这里必须走**真路径**(pty → WS → App 的 write 包装),不能直接调 xterm.write ——
-  // 直写会绕过「翻着历史时打标记」那段逻辑,断言就变成了偶然通过(`echo` 在 PowerShell 里也有)。
-  await evalOn(
-    chromeWs,
-    `window.browserAPI.plugins.invoke('terminal','sendText',${JSON.stringify(pageSessionId)},${JSON.stringify('echo LATE_OUTPUT\r')})`
-  )
-  const stayedPut = await waitFor(
-    async () =>
-      (await evalOn(
-        pageWs,
-        `(() => {
-           const b = window.__bowRemoteTerm.buffer.active
-           const badge = document.querySelector('.sc-bottom')?.textContent?.trim() ?? ''
-           return b.viewportY < b.baseY && badge === '新输出' ? true : null
-         })()`
-      )) === true,
-    8000
-  )
-  check(stayedPut === true, '翻着历史时新输出不拽走视口,只提示「新输出」')
-
-  const backToBottom = await evalOn(
+  const backToList = await evalOn(
     pageWs,
-    `(() => {
-       document.querySelector('.sc-bottom').click()
-       const b = window.__bowRemoteTerm.buffer.active
-       return b.viewportY === b.baseY ? 'bottom' : 'not-bottom'
-     })()`
+    `(() => { document.querySelector('.head .back').click(); return true })()`
   )
-  check(backToBottom === 'bottom', '「最新」能回到最新输出', backToBottom)
+  const listBack = await waitFor(
+    async () => (await evalOn(pageWs, `document.querySelectorAll('.row').length >= 1`)) === true,
+    10000
+  )
+  check(backToList === true && listBack === true, '「←」能回到会话列表')
 
   // ---------- ⑥ 「谁刚碰过,尺寸归谁」:手机抢走宽度 → 电脑上点一下抢回来 ----------
   // 用户的原始抱怨:手机点进会话后,电脑那个终端一直是手机宽度,只能拖窗口才恢复。
