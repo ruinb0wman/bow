@@ -402,6 +402,23 @@ function startChatBridge(pi: ExtensionAPI): void {
     const ui = context.ui
     if (!ui || typeof ui !== 'object') return
 
+    /**
+     * 自定义组件(`ctx.ui.custom`)没法搬到手机上 —— 它是任意 TUI 组件。
+     * 但**支持 RPC 回退的扩展**(典型:`ask_user_question`)在 `custom()` 返回 `undefined` 时
+     * 会改用 `select` / `input` 逐个问,而那两个我们能接管。
+     * 所以 bow 里默认让 `custom()` 返回 `undefined`(手机上因此能答),代价是终端里不再渲染那种
+     * 自定义浮层;想保留浮层就设 `BOW_PI_CUSTOM_UI=native`。
+     */
+    const customNative = process.env.BOW_PI_CUSTOM_UI === 'native'
+    if (!customNative && typeof ui.custom === 'function') {
+      const patched = ui.custom as unknown as Record<symbol, unknown>
+      if (!patched[wrappedMark]) {
+        const fallback = (async (): Promise<undefined> => undefined) as unknown as Record<symbol, unknown> & (() => Promise<undefined>)
+        fallback[wrappedMark] = true
+        ui.custom = fallback
+      }
+    }
+
     for (const kind of ['confirm', 'select', 'input', 'editor'] as const) {
       const original = ui[kind]
       if (typeof original !== 'function') continue

@@ -722,3 +722,26 @@ P1 → P3 → P2。每档都要过 `npm run test:pi:chat`(真 pi,会调一次模
 
 **已知边界**:`editor` 的终端框关不掉;`timeout` 由 pi 自己掌握(到点它按默认值走,手机上的卡片
 会在 `ask-done` 时消失);手机上的「×」只是本地收起卡片(pi 那边继续等终端)。
+
+### 21.5 P1 补丁:`ctx.ui.custom` 的绕法(2026-10-16)
+
+实测发现手机仍然拿不到卡片。原因不是链路,是 `ask_user_question`(rpiv)走的是
+**`ctx.ui.custom`** —— 任意 TUI 浮层,搬不到手机上;我们只接管了 `select/confirm/input/editor`。
+
+它在 `rpc-fallback.ts` 里自带一条回退:`custom()` 解析为 `undefined` 时改用 `select`/`input`
+逐个问。于是扩展在 bow 里把 `custom` 换成 `async () => undefined`;
+想保留浮层就设 `BOW_PI_CUSTOM_UI=native`(代价是手机答不了那种弹框)。
+
+验证(`npm run test:pi:ask`,场景 C):探针先 `custom()` → `undefined` → 再 `select(['甲','乙'])`
+→ 手机选中「乙」→ `select` 返回「乙」。
+
+真机侧用**模拟器**(Windows 的 AVD `api35`)+ `adb reverse` + Chrome DevTools 验了页面:
+卡片(需要确认 / 题面 / 允许·拒绝)渲染正常,点「允许」发出
+`{t:'answer',id,requestId,value:true}`,卡片随即消失。
+
+顺带记两条环境事实(WSL 里踩到的):
+- 模拟器**到不了** WSL 里监听的服务(Windows 侧 8770 能开,WSL 的 45173 打不开);
+  要验就用 `adb reverse tcp:<port> tcp:<port>` 后在模拟器里开 `http://localhost:<port>/`;
+- 同一个会话的 pty 可能被 **attach 两次**都触发 spawn(`createSession` 之后页面再挂一次),
+  后写的 Session 覆盖前一个 → 前一个进程的令牌就失效了。排查时以
+  `/api/sessions` 里的 `pid` 为准去读 `/proc/<pid>/environ`,别猜。

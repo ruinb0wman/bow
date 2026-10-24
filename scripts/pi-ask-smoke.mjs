@@ -54,6 +54,17 @@ export default function (pi: ExtensionAPI) {
     fired = true
     setTimeout(async () => {
       try {
+        if (process.env.PROBE_MODE === 'custom-then-select') {
+          // 模拟 ask_user_question 的走法:先 custom(它在 bow 里返回 undefined),
+          // 再退回 select —— 这才是手机上能答的那条路。
+          const custom = await (ctx as any).ui.custom(() => ({ render: () => [] }))
+          log({ t: 'custom', result: custom === undefined ? 'undefined' : typeof custom })
+          if (custom === undefined) {
+            const picked = await (ctx as any).ui.select('选一个继续', ['甲', '乙'])
+            log({ t: 'select', answer: picked })
+          }
+          return
+        }
         const answer = await (ctx as any).ui.confirm(${JSON.stringify(TITLE)}, ${JSON.stringify(MESSAGE)}, { timeout: 25000 })
         log({ t: 'confirm', answer })
       } catch (err) {
@@ -115,7 +126,7 @@ function readLog(out) {
 }
 
 /** 跑一个场景,返回 { asks, log, terminalReplies } */
-async function scenario(name, { answerOnPhone }) {
+async function scenario(name, { answerOnPhone, mode, expectKind = 'confirm' }) {
   const dir = mkdtempSync(join(tmpdir(), 'bow-ask-'))
   const probePath = join(dir, 'probe.ts')
   const outPath = join(dir, 'probe.log')
@@ -134,6 +145,7 @@ async function scenario(name, { answerOnPhone }) {
         BOW_REMOTE_URL: `ws://127.0.0.1:${bow.state.port}/ws`,
         BOW_CONTROL_TOKEN: TOKEN,
         PROBE_OUT: outPath,
+        ...(mode ? { PROBE_MODE: mode } : {}),
         // ⚠️ 必须隔离 agent 目录:否则 pi 还会加载 `~/.pi/agent/extensions/` 里**已装的那一份**,
         // 同一个会话就有两个对话桥(两次包装 → 一次提问出现两条 extension_ui_request,结果随机)。
         // 这个冒烟不需要模型,用空目录正好。
@@ -174,13 +186,13 @@ async function scenario(name, { answerOnPhone }) {
     const deadline = Date.now() + 45_000
     while (bow.state.asks.length === 0 && Date.now() < deadline) await sleep(100)
     const ask = bow.state.asks[0]
-    if (ask && answerOnPhone) bow.answer(ask.requestId, true)
+    if (ask && answerOnPhone) bow.answer(ask.requestId, expectKind === 'select' ? '乙' : true)
 
     // 等探针记下结论
     let result = null
     const until = Date.now() + 30_000
     while (!result && Date.now() < until) {
-      const hit = readLog(outPath).find((r) => r.t === 'confirm' || r.t === 'confirm-error')
+      const hit = readLog(outPath).find((r) => ['confirm', 'confirm-error', 'custom', 'select'].includes(r.t) && r.t !== 'custom')
       if (hit) result = hit
       else await sleep(100)
     }
@@ -209,6 +221,12 @@ async function main() {
     console.log('  终端的 extension_ui_request:', a.terminalRequests.map((r) => ({ id: r.id, method: r.method, title: r.title })))
   }
   check(a.result?.answer === true, 'A:confirm 的返回值来自手机(true)', a.result)
+
+  // ---------- C:custom → 回退到 select(ask_user_question 那条路) ----------
+  const c = await scenario('C', { answerOnPhone: true, mode: 'custom-then-select', expectKind: 'select' })
+  check(c.ask?.kind === 'select', 'C:custom 返回 undefined 后,回退的 select 到了手机', c.ask?.kind)
+  check(c.ask?.options?.length === 2, 'C:选项一起过去了', c.ask?.options)
+  check(c.result?.answer === '乙', 'C:手机选的选项成了 select 的返回值', c.result)
 
   // ---------- B:手机不答,终端答 ----------
   const b = await scenario('B', { answerOnPhone: false })

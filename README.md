@@ -622,6 +622,10 @@ npm run test:mcp:http
     (允许·拒绝 / 选项按钮 / 输入框);卡片出现时终端里那个框**同时还在**,谁先答用谁 ——
     手机先答,终端那个框会被程序化关掉(`opts.signal`),不用再跑回电脑;
     卡片右上角「×」只是本地收起,答还是得在电脑上;
+  - **自定义组件(`ctx.ui.custom`)在 bow 里改走标准对话框**:那种浮层是任意 TUI 组件,搬不到手机上。
+    `ask_user_question` 自带一条 RPC 回退(它发现 `custom()` 返回 `undefined` 就用 `select`/`input`
+    逐个问),所以 bow 里默认让 `custom()` 返回 `undefined` —— 于是手机能答。
+    代价:终端里不再渲染这种自定义浮层;想保留浮层就在终端环境里设 `BOW_PI_CUSTOM_UI=native`。
   - 已知边界:历史只回最近 60 条;`hasPendingMessages()` 只有布尔值,所以只显示「有排队」不显条数;
     自定义组件弹框(`ctx.ui.custom`)不接管,只能在电脑上点。
 - **AI 代理状态联动**:终端里的 **pi** 会把「在跑 / 等你确认 / 跑完了」写成一条自定义 OSC
