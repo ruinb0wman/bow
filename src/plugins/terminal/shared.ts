@@ -768,7 +768,7 @@ export interface TerminalSessionClosedMessage {
 /**
  * 终端里的 pi 把状态写成 OSC(`@shared/agentState`),而**这条 OSC 得由 pi 进程里的一个扩展发出** ——
  * 所以「让 pi 认识 bow 的终端」这件事需要往 pi 的扩展目录里放一个文件。
- * 设置页 → 终端 → 「Pi 状态联动」的安装/卸载按钮就是在做这件事。
+ * 设置页 → 终端 → 「Pi 联动」的安装/卸载按钮就是在做这件事。
  *
  * 契约放 shared 而不放 `./piBridge` 的原因:`./piBridge` 是主进程侧模块(用 node:path + 注入的 fs),
  * 渲染层不该 import 它;设置页要的只是下面这几个类型。

@@ -17,7 +17,7 @@ pi install <bow 仓库>/packages/pi-bow     # 本机:`pi install ~/Workspace/bow
 
 本地路径 = **不复制**、从仓库直接加载,改了 `/reload` 即生效。pi 不支持 git 源的子目录,所以没有「一行从 GitHub 装」的形态;要发布就 `npm publish` 这个目录。
 
-不想整包装:`bow 设置页 → 终端 → Pi 状态联动 → 安装` 会把 `extensions/bow-agent-state.ts` 单独复制进 pi 的扩展目录(离线可用)。**两种方式二选一** —— 同时用会让同一个 pi 进程里有两个扩展都发 OSC,状态变化会重复上报一遍(bow 侧幂等,只是噪音)。
+不想整包装:`bow 设置页 → 终端 → Pi 联动 → 安装` 会把 `extensions/bow-agent-state.ts` 单独复制进 pi 的扩展目录(离线可用)。**两种方式二选一** —— 同时用会让同一个 pi 进程里有两个扩展都发 OSC,状态变化会重复上报一遍(bow 侧幂等,只是噪音)。
 
 ## 配置(bow MCP 注册)
 

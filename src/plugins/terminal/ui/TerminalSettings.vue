@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 终端设置分区(设置页 → 终端):外观(字体族 / 字号 / 滚动缓冲)+ shell 配置列表 + Pi 状态联动。
+ * 终端设置分区(设置页 → 终端):外观(字体族 / 字号 / 滚动缓冲)+ shell 配置列表 + Pi 联动。
  * 全部即时保存,没有保存按钮 —— 与其它插件分区一致。
  *
  * `data-bridge-state` / `data-bridge-action` 是给 E2E(`scripts/e2e-agent-status.mjs`)用的钩子:
@@ -105,7 +105,7 @@ onMounted(async () => {
   await refreshBridge()
 })
 
-// ---------- Pi 状态联动(把状态桥扩展装进 pi)----------
+// ---------- Pi 联动(把扩展装进 pi:状态角标 / 通知 / 手机对话)----------
 
 const bridge = ref<PiBridgeStatus | null>(null)
 const bridgeBusy = ref(false)
@@ -293,13 +293,11 @@ async function copyWslCommand(): Promise<void> {
     </div>
 
     <div class="set-row set-col">
-      <span class="set-label">Pi 状态联动</span>
+      <span class="set-label">Pi 联动</span>
       <div class="term-bridge">
         <div class="pbm-tools hint">
-          终端里的 <strong>pi</strong> 会把「正在执行 / 等待你确认 / 已完成」显示成标签角标与<strong>系统通知</strong>
-          (点系统通知直接进入对应标签)。为此需要把 bow 的状态桥扩展装进 pi 的扩展目录 ——
-          点下面这个按钮就行,装完在 pi 里重开或 <code>/reload</code> 生效。
-          不装也有一半:pi 自己在设置里打开 <code>terminal.showTerminalProgress</code> 就只有「正在执行」角标。
+          装一个 pi 扩展,拿到两样东西:终端标签上的<strong>状态角标 + 系统通知</strong>
+          (正在执行 / 等你确认 / 已完成),以及手机上那个<strong>对话页</strong>。
         </div>
         <div class="term-bridge-row">
           <span
@@ -313,7 +311,7 @@ async function copyWslCommand(): Promise<void> {
             class="btn"
             data-bridge-action="install"
             :disabled="bridgeBusy || !bridge?.sourceAvailable"
-            :title="bridge?.foreign ? '目标文件不是 bow 装的,点击会覆盖它' : '把状态桥扩展写进 pi 的扩展目录'"
+            :title="bridge?.foreign ? '目标文件不是 bow 装的,点击会覆盖它' : '把扩展写进 pi 的扩展目录'"
             @click="runBridge('install')"
           >
             {{ bridgeButtonText() }}
@@ -330,27 +328,32 @@ async function copyWslCommand(): Promise<void> {
           </button>
         </div>
         <div v-if="bridge" class="term-bridge-path">{{ bridge.target }}</div>
+        <div class="pbm-tools hint">
+          装完在 pi 里 <code>/reload</code> 或重开终端生效。不装也能用一半:pi 自己打开
+          <code>terminal.showTerminalProgress</code> 只有「正在执行」角标,没有通知与手机对话。
+        </div>
+
         <div v-if="bridge?.wsl && wslProfiles.length" class="term-bridge-wsl" data-bridge-wsl>
+          <div class="term-bridge-wsl-head">WSL 里的 pi 要另装一份</div>
           <div class="pbm-tools hint">
-            <strong>如果使用 WSL2,请执行以下命令将扩展安装到 WSL2 中</strong>
-            —— 上面的按钮装进的是 bow 这个系统里的家目录(<code>{{ bridge.agentDir }}</code>),
-            而跑在 WSL2 里的 pi 读的是发行版的家目录,它看不到刚装的那份
-            (检测到你的终端配置 <code>{{ wslProfiles.join(' / ') }}</code> 用的是 <code>wsl.exe</code>)。
-            复制下面这条命令,到 WSL2 的终端里执行:
+            上面的按钮写的是 <code>{{ bridge.agentDir }}</code>;跑在 WSL 里的 pi 读的是发行版的
+            <code>~/.pi/agent/extensions</code>,看不到那一份(你的 <code>{{ wslProfiles.join(' / ') }}</code> 配置就是这种情况)。
+            把下面这条命令粘到 <strong>WSL 的终端</strong>里执行:
           </div>
           <div class="term-bridge-cmd">
             <code data-bridge-wsl-command>{{ bridge.wsl.command }}</code>
             <button
               class="btn"
               data-bridge-action="copy-wsl"
-              title="复制这条命令,粘到 WSL2 终端里执行"
+              title="复制这条命令,粘到 WSL 终端里执行"
               @click="copyWslCommand()"
             >
               {{ wslCopied ? '已复制' : '复制' }}
             </button>
           </div>
-          <div class="pbm-tools hint">装完在 WSL2 里的 pi 中重开或 <code>/reload</code> 生效。</div>
+          <div class="pbm-tools hint">然后在 WSL 里的 pi 中 <code>/reload</code> 或重开终端。</div>
         </div>
+
         <div v-if="bridgeMessage || bridge?.error" class="pbm-tools hint">{{ bridgeMessage || bridge?.error }}</div>
       </div>
     </div>
@@ -468,6 +471,16 @@ async function copyWslCommand(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg2);
+}
+
+.term-bridge-wsl-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: #e2b93d;
 }
 
 /* 命令要能一眼看清并整行选中:横向可滚,不折行打断路径 */
