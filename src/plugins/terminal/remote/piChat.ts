@@ -40,7 +40,19 @@ export interface ChatSnapshot {
   pending: number
   /** 正在等回答的题(手机重连后要把卡片重新画出来) */
   asks: AskRequest[]
+  /** 手机命令补全的候选(pi 的 `getCommands()`;内置命令不在里面,旧扩展也不发 → 空数组) */
+  commands: ChatCommand[]
   status?: ChatStatus
+}
+
+/**
+ * 一条手机能挑的命令。来源是 pi 的 `getCommands()` —— 只有**扩展命令 / prompt 模板 / 技能**三类;
+ * 内置命令(`/compact` `/model` …)既不在里面也不会通过 prompt 执行,所以不列,免得点了没反应。
+ */
+export interface ChatCommand {
+  name: string
+  description?: string
+  source?: string
 }
 
 /**
@@ -69,6 +81,11 @@ export const MAX_CHAT_MESSAGES = 60
 export const MAX_CHAT_TEXT = 4000
 /** 工具参数 / 结果上限 */
 export const MAX_CHAT_TOOL = 1200
+/** 命令表上限(pi 里真装到几百条也是配置出问题了) */
+export const MAX_CHAT_COMMANDS = 200
+/** 单条命令名 / 描述上限 */
+export const MAX_COMMAND_NAME = 40
+export const MAX_COMMAND_DESC = 120
 /** viewer 的积压上限:超过就跳过这一条(见文件头) */
 export const CHAT_MAX_BUFFERED = 1024 * 1024
 
@@ -100,6 +117,7 @@ interface ChatState {
   messages: ChatMessage[]
   busy: boolean
   pending: number
+  commands?: ChatCommand[]
   status?: ChatStatus
 }
 
@@ -134,8 +152,7 @@ export function sanitizeChatMessage(raw: unknown): ChatMessage | null {
   return out
 }
 
-/** 上行状态逐字段校验:数值夹到非负整数,文本截断;没有 contextWindow 也留着(手机只显示 token 数) */
-export function sanitizeStatus(raw: unknown): ChatStatus | null {
+/** 上行状态逐字段校验:数值夹到非负整数,文本截断;没有 contextWindow 也留着(手机只显示 token 数) */export function sanitizeStatus(raw: unknown): ChatStatus | null {
   if (!raw || typeof raw !== 'object') return null
   const m = raw as Record<string, unknown>
   const num = (value: unknown): number => {
@@ -196,7 +213,13 @@ export class PiChatHub {
 
   snapshot(sessionId: number): ChatSnapshot {
     const state = this.stateOf(sessionId)
-    return { id: sessionId, live: this.pis.has(sessionId), ...state, asks: [...(this.asks.get(sessionId)?.values() ?? [])] }
+    return {
+      id: sessionId,
+      live: this.pis.has(sessionId),
+      ...state,
+      commands: state.commands ?? [],
+      asks: [...(this.asks.get(sessionId)?.values() ?? [])]
+    }
   }
 
   /**
@@ -220,6 +243,7 @@ export class PiChatHub {
         chat.messages = messages
         chat.busy = msg.busy === true
         chat.pending = count(msg.pending)
+        chat.commands = sanitizeCommands(msg.commands)
         const status = sanitizeStatus(msg.status)
         if (status) chat.status = status
         this.chats.set(sessionId, chat)
@@ -367,6 +391,31 @@ function closeQuietly(sink: ChatSink, reason: string): void {
   } catch {
     /* 已经断了 */
   }
+}
+
+/**
+ * pi 报上来的命令表:逐字段截断、按 name 去重、限条数。
+ * 来源是我们自己写的扩展,但它仍然是**跨进程 / 可被改写**的输入,不信任形状(与其它 sanitize 一致)。
+ */
+export function sanitizeCommands(raw: unknown): ChatCommand[] {
+  if (!Array.isArray(raw)) return []
+  const out: ChatCommand[] = []
+  const seen = new Set<string>()
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const m = item as Record<string, unknown>
+    const name = cap(m.name, MAX_COMMAND_NAME)?.trim()
+    if (!name || seen.has(name)) continue
+    seen.add(name)
+    const cmd: ChatCommand = { name }
+    const description = cap(m.description, MAX_COMMAND_DESC)?.trim()
+    if (description) cmd.description = description
+    const source = cap(m.source, 20)?.trim()
+    if (source) cmd.source = source
+    out.push(cmd)
+    if (out.length >= MAX_CHAT_COMMANDS) break
+  }
+  return out
 }
 
 /** 上行提问逐字段校验(跨进程输入一律不信形状) */

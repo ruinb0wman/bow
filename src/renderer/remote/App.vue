@@ -11,7 +11,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { sortSessionsByAttention, formatAgo, lastActiveAt, shortPath } from '@plugins/terminal/shared'
 import ChatView from './ChatView.vue'
 import { connectRemote, wsUrlOf } from './ws'
-import type { AskRequest, ChatMessage, ChatStatus, RemoteSocket, ServerMessage, SessionInfo } from './ws'
+import type { AskRequest, ChatCommand, ChatMessage, ChatStatus, RemoteSocket, ServerMessage, SessionInfo } from './ws'
 
 const password = ref('')
 const loginError = ref('')
@@ -31,6 +31,7 @@ const chat = reactive<{
   pending: number
   live: boolean
   asks: AskRequest[]
+  commands: ChatCommand[]
   status: ChatStatus | null
 }>({
   messages: [],
@@ -38,6 +39,7 @@ const chat = reactive<{
   pending: 0,
   live: false,
   asks: [],
+  commands: [],
   status: null
 })
 const chatError = reactive<{ text: string; at: number }>({ text: '', at: 0 })
@@ -117,6 +119,7 @@ function handle(msg: ServerMessage): void {
       chat.pending = msg.pending
       chat.live = msg.live
       chat.asks = msg.asks ?? []
+      chat.commands = msg.commands ?? []
       chat.status = msg.status ?? null
       chatError.text = ''
       break
@@ -173,6 +176,7 @@ function requestChat(id: number): void {
   chat.pending = 0
   chat.live = false
   chat.asks = []
+  chat.commands = []
   chat.status = null
   chatError.text = ''
   socket?.send({ t: 'chat', id })
@@ -294,6 +298,7 @@ const needsLogin = computed(() => !authed.value || state.value === 'refused')
         :pending="chat.pending"
         :live="chat.live"
         :asks="chat.asks"
+        :commands="chat.commands"
         :status="chat.status"
         :connected="state === 'open'"
         :has-agent="activeInfo?.agent != null"

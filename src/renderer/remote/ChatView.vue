@@ -10,7 +10,8 @@
  * 这里只读「忙 / 有排队」两个状态。
  */
 import { computed, nextTick, ref, watch } from 'vue'
-import type { AskRequest, ChatMessage, ChatStatus, RemoteSocket } from './ws'
+import { fuzzyScore } from '@shared/suggest'
+import type { AskRequest, ChatCommand, ChatMessage, ChatStatus, RemoteSocket } from './ws'
 
 const props = defineProps<{
   sessionId: number
@@ -21,7 +22,9 @@ const props = defineProps<{
   pending: number
   live: boolean
   asks: AskRequest[]
-  /** pi 的状态栏数字(模型 / 上下文 / 输入输出);旧版扩展不发就是 null,整行不显示 */
+  /** 可挑的命令(pi 的 `getCommands()`;旧版扩展不发 → 空数组) */
+  commands: ChatCommand[]
+  /** pi 的状态栏数字(模型 / 上下文 / 输入输出);旧版扩展不发就是 null,抽屉里改成一行说明 */
   status: ChatStatus | null
   /** WS 是否连着(断线时给一条横幅,别让人以为发出去了) */
   connected: boolean
@@ -129,14 +132,26 @@ function steer(): void {
   void nextTick(() => scrollToBottom(true))
 }
 
-/** 头部徽标文字(注意:不叫 `status` —— 那是状态栏 prop,别遮) */
-const statusLabel = computed(() => {
-  if (!props.live) return '没有控制通道'
-  if (props.busy) return '在跑'
-  return '空闲'
+/** 顶栏那一个状态 chip:三态 + 排队合成一句(原来「有排队」是另一个 badge) */
+const statusText = computed(() => {
+  if (!props.live) return '没通道'
+  if (!props.busy) return '空闲'
+  return props.pending > 0 ? `在跑 · 排队${props.pending}` : '在跑'
 })
 
-// ---------- 状态条:与 pi 桌面 footer 同一套数字和缩写(↑输入 ↓输出, R/W 缓存不上手机) ----------
+const statusClass = computed(() => ({
+  busy: props.busy && props.live,
+  dead: !props.live,
+  queue: props.busy && props.live && props.pending > 0
+}))
+
+/** 顶栏只放一个名字:标题优先,没有就用目录名(全路径在抽屉「目录」里,独占一行) */
+const projectName = computed(() => {
+  if (props.title.trim()) return props.title
+  return props.cwd.split(/[\\/]/).filter(Boolean).pop() ?? ''
+})
+
+// ---------- 抽屉里的数字:与 pi 桌面 footer 同一套缩写(↑输入 ↓输出;缓存读写只出现在抽屉) ----------
 
 /** 与 pi footer 的 `formatTokens` 同规则:手机上一行要放得下 */
 function fmt(count: number): string {
@@ -168,6 +183,73 @@ const ctxClass = computed(() => {
   if (percent > 70) return 'warn'
   return ''
 })
+
+/** 千分位:抽屉是「看细节」的地方,这里不缩写(顶栏那条已删,数字只剩这一个来源) */
+function raw(count: number): string {
+  return count.toLocaleString('en-US')
+}
+
+/** 模型 + provider(抽屉里给全,名字与来源都看得见) */
+const modelLine = computed(() => {
+  const s = props.status
+  if (!s?.model) return '—'
+  return s.provider ? `${s.model} · ${s.provider}` : s.model
+})
+
+const thinkingLine = computed(() => {
+  const level = props.status?.thinking
+  return level && level !== 'off' ? level : '—'
+})
+
+// ---------- 输入框右侧的抽屉:pi 的信息 + 功能入口 ----------
+
+const moreOpen = ref(false)
+const cmdOpen = ref(false)
+const cmdQuery = ref('')
+const cmdSearch = ref<HTMLInputElement | null>(null)
+const composerInput = ref<HTMLTextAreaElement | null>(null)
+
+function closePanels(): void {
+  moreOpen.value = false
+  cmdOpen.value = false
+}
+
+function toggleMore(): void {
+  cmdOpen.value = false
+  moreOpen.value = !moreOpen.value
+}
+
+function openCommands(): void {
+  moreOpen.value = false
+  cmdQuery.value = ''
+  cmdOpen.value = true
+  void nextTick(() => cmdSearch.value?.focus())
+}
+
+/** 命令的模糊匹配:名字为主,描述给半分(直接复用地址栏那套 `fuzzyScore`) */
+const commandRows = computed(() => {
+  const q = cmdQuery.value.trim()
+  if (!q) return props.commands.slice(0, 40)
+  return props.commands
+    .map((cmd) => ({ cmd, score: Math.max(fuzzyScore(q, cmd.name), fuzzyScore(q, cmd.description ?? '') / 2) }))
+    .filter((hit) => hit.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 40)
+    .map((hit) => hit.cmd)
+})
+
+/** 点选命令:只把它填进输入框(**不发**),光标留到末尾好接着写参数 */
+function insertCommand(name: string): void {
+  const head = draft.value.trimEnd()
+  draft.value = `${head ? `${head} ` : ''}/${name} `
+  closePanels()
+  void nextTick(() => {
+    const el = composerInput.value
+    if (!el) return
+    el.focus()
+    el.setSelectionRange(el.value.length, el.value.length)
+  })
+}
 
 /**
  * 为什么没有控制通道 —— 两种原因能分开,就不用让人猜:
@@ -220,21 +302,10 @@ const visibleAsks = computed(() => props.asks.filter((ask) => !hiddenAsks.value.
   <div class="chat">
     <header class="head">
       <button class="back" title="返回会话列表" @click="emit('back')">←</button>
-      <span class="name">{{ title }}</span>
-      <span v-if="cwd" class="cwd">{{ cwd }}</span>
-      <span class="badge" :class="{ busy, dead: !live }">{{ statusLabel }}</span>
-      <span v-if="pending > 0" class="badge queue">有排队</span>
+      <span class="name" data-chat-name>{{ projectName }}</span>
+      <span class="badge" :class="statusClass" data-chat-status>{{ statusText }}</span>
       <button v-if="busy && live" class="stop" title="停止当前这一轮" @click="emit('abort')">停止</button>
     </header>
-
-    <!-- pi 的状态栏:模型 · 输入输出 · 上下文(数字与桌面 footer 一致) -->
-    <div v-if="status" class="stats" data-chat-stats>
-      <span v-if="status.model" class="stat-model" data-chat-model>
-        {{ status.model }}{{ status.thinking && status.thinking !== 'off' ? ` · ${status.thinking}` : '' }}
-      </span>
-      <span class="stat" data-chat-tokens>↑{{ fmt(status.input) }} ↓{{ fmt(status.output) }}</span>
-      <span class="stat" :class="ctxClass" data-chat-ctx>{{ ctxText }}</span>
-    </div>
 
     <p v-if="!connected" class="banner" data-chat-banner>连接断了,正在重连……(没接上的话,消息不会发出去)</p>
 
@@ -315,20 +386,92 @@ const visibleAsks = computed(() => props.asks.filter((ask) => !hiddenAsks.value.
       </div>
     </div>
 
-    <div class="composer">
-      <textarea
-        v-model="draft"
-        rows="1"
-        inputmode="text"
-        placeholder="说点什么…"
-        :disabled="!live"
-        @focus="onFocus"
-        @keydown.enter.exact.prevent="send"
-      />
-      <button class="primary" :disabled="!live || !draft.trim()" @click="send">发送</button>
-      <button v-if="busy && live" class="ghost" :disabled="!draft.trim()" title="不等这一轮结束,立刻插话" @click="steer">
-        插话
-      </button>
+    <div class="compose">
+      <!-- 输入框上方升起的面板:信息 / 功能(抽屉)与命令补全(弹窗)互斥 -->
+      <div v-if="moreOpen || cmdOpen" class="backdrop" data-chat-backdrop @click="closePanels" />
+
+      <div v-if="moreOpen" class="drawer" data-chat-drawer>
+        <div class="section">信息</div>
+        <template v-if="status">
+          <div class="kv"><span class="k">模型</span><span class="stat-model" data-chat-model>{{ modelLine }}</span></div>
+          <div class="kv"><span class="k">思考</span><span class="v">{{ thinkingLine }}</span></div>
+          <div class="kv">
+            <span class="k">上下文</span>
+            <span class="v">
+              <span class="stat" :class="ctxClass" data-chat-ctx>{{ ctxText }}</span>
+              <span class="sep">·</span>{{ status.contextTokens === null ? '?' : raw(status.contextTokens) }} tokens
+            </span>
+          </div>
+          <div class="kv">
+            <span class="k">用量</span>
+            <span class="stat" data-chat-tokens>↑{{ fmt(status.input) }} ↓{{ fmt(status.output) }}</span>
+          </div>
+          <div class="kv"><span class="k">缓存</span><span class="v">读 {{ raw(status.cacheRead) }} · 写 {{ raw(status.cacheWrite) }}</span></div>
+        </template>
+        <p v-else class="drawer-empty">这个 pi 没上报状态(旧版扩展,或还没跑过一轮)</p>
+
+        <div class="kv"><span class="k">会话</span><span class="v">#{{ sessionId }}{{ title ? `  ${title}` : '' }}</span></div>
+        <!-- 目录独占一行:完整路径不缩写、不省略号,长了就换行 -->
+        <div class="dir" data-chat-cwd>
+          <span class="k">目录</span>
+          <span class="path">{{ cwd || '—' }}</span>
+        </div>
+        <div class="kv">
+          <span class="k">通道</span>
+          <span class="v">{{ live ? '已连上' : '没连上' }} · {{ busy ? '在跑' : '空闲' }} · {{ pending > 0 ? `排队${pending}` : '无排队' }}</span>
+        </div>
+
+        <div class="section">功能</div>
+        <button class="cmd-open" data-chat-cmd-open @click="openCommands">/ 命令</button>
+      </div>
+
+      <div v-if="cmdOpen" class="drawer cmds" data-chat-cmds>
+        <div class="section">命令</div>
+        <input
+          ref="cmdSearch"
+          v-model="cmdQuery"
+          class="cmd-search"
+          type="text"
+          placeholder="搜索命令…"
+          autocomplete="off"
+          data-chat-cmd-search
+        />
+        <div class="cmd-list">
+          <button v-for="cmd in commandRows" :key="cmd.name" class="cmd" data-chat-cmd @click="insertCommand(cmd.name)">
+            <span class="cmd-name">/{{ cmd.name }}</span>
+            <span v-if="cmd.description" class="cmd-desc">{{ cmd.description }}</span>
+          </button>
+          <p v-if="commandRows.length === 0" class="drawer-empty">
+            {{ commands.length ? '没有匹配的命令' : '这个 pi 没上报命令(升级 bow 的 pi 扩展)' }}
+          </p>
+        </div>
+      </div>
+
+      <div class="composer">
+        <textarea
+          ref="composerInput"
+          v-model="draft"
+          rows="1"
+          inputmode="text"
+          placeholder="说点什么…"
+          :disabled="!live"
+          @focus="onFocus"
+          @keydown.enter.exact.prevent="send"
+        />
+        <button class="primary" :disabled="!live || !draft.trim()" @click="send">发送</button>
+        <button v-if="busy && live" class="ghost" :disabled="!draft.trim()" title="不等这一轮结束,立刻插话" @click="steer">
+          插话
+        </button>
+        <button
+          class="more"
+          :class="{ on: moreOpen || cmdOpen }"
+          title="信息与命令"
+          data-chat-more
+          @click="toggleMore"
+        >
+          {{ moreOpen || cmdOpen ? '⌄' : '⌃' }}
+        </button>
+      </div>
     </div>
   </div>
 </template>
@@ -359,28 +502,6 @@ const visibleAsks = computed(() => props.asks.filter((ask) => !hiddenAsks.value.
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
-}
-.cwd {
-  font-size: 11px;
-  color: var(--muted);
-  font-family: var(--mono);
-  max-width: 40%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: none;
-}
-/* 贴着 header 的第二行:同一块底色,不另加分隔线 */
-.stats {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 10px 5px;
-  background: #202127;
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--muted);
-  overflow: hidden;
 }
 .stat {
   flex: none;
@@ -532,12 +653,152 @@ const visibleAsks = computed(() => props.asks.filter((ask) => !hiddenAsks.value.
 }
 
 .composer {
+  position: relative;
+  /* 比 backdrop 高:面板开着时输入框和按钮仍然可点 */
+  z-index: 10;
   display: flex;
   align-items: flex-end;
   gap: 8px;
   padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
   border-top: 1px solid #33353f;
   background: #202127;
+}
+
+/* 抽屉/弹窗挂在输入框上方,不顶走消息列表 */
+.compose {
+  position: relative;
+  flex: none;
+}
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+}
+.drawer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  z-index: 9;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 8px 12px 10px;
+  border-top: 1px solid #33353f;
+  background: #24252c;
+  font-size: 13px;
+}
+.section {
+  margin: 6px 0 4px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.kv {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-height: 26px;
+  padding: 2px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+.k {
+  flex: none;
+  width: 48px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.v {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+.sep {
+  color: var(--muted);
+  margin: 0 4px;
+}
+/* 目录独占一行:完整路径,不缩写也不省略号(长了就换行) */
+.dir {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+.path {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: #c8ccd6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+}
+.drawer-empty {
+  margin: 4px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.cmd-open {
+  width: 100%;
+  min-height: 40px;
+  justify-content: flex-start;
+  font-family: var(--mono);
+}
+
+/* 命令补全弹窗 */
+.cmds {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 60vh;
+}
+.cmd-search {
+  font: inherit;
+  /* ≥16px:否则 iOS 聚焦时会放大整个页面 */
+  font-size: 16px;
+  color: inherit;
+  background: #16171b;
+  border: 1px solid #383a44;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.cmd-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.cmd {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-height: 40px;
+  padding: 6px 10px;
+  text-align: left;
+}
+.cmd-name {
+  font-family: var(--mono);
+  font-size: 14px;
+  color: #c8ccd6;
+}
+.cmd-desc {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.more {
+  flex: none;
+  min-width: 40px;
+  color: var(--muted);
+  font-size: 16px;
+}
+.more.on {
+  color: #c8ccd6;
+  border-color: #4a8ef7;
 }
 textarea {
   flex: 1;

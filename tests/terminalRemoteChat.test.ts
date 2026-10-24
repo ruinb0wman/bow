@@ -11,10 +11,12 @@ import { describe, expect, it } from 'vitest'
 import { WebSocket } from 'ws'
 import {
   CHAT_MAX_BUFFERED,
+  MAX_CHAT_COMMANDS,
   MAX_CHAT_MESSAGES,
   MAX_CHAT_TEXT,
   PiChatHub,
   sanitizeChatMessage,
+  sanitizeCommands,
   sanitizeStatus
 } from '../src/plugins/terminal/remote/piChat'
 import type { AskRequest, ChatMessage, ChatSink } from '../src/plugins/terminal/remote/piChat'
@@ -68,7 +70,7 @@ describe('sanitizeChatMessage', () => {
 describe('PiChatHub', () => {
   it('快照缓存:没有 pi 端也能回空快照并标 live=false', () => {
     const hub = new PiChatHub()
-    expect(hub.snapshot(7)).toEqual({ id: 7, live: false, messages: [], busy: false, pending: 0, asks: [] })
+    expect(hub.snapshot(7)).toEqual({ id: 7, live: false, messages: [], busy: false, pending: 0, asks: [], commands: [] })
   })
 
   it('pi 连上/断开改 live,并广播 chat-state', () => {
@@ -237,6 +239,50 @@ describe('状态条(模型 / 上下文 / 输入输出)', () => {
       messages: [{ id: 'a', role: 'user', text: 'hi' }],
       status: { model: 'gpt-5', contextWindow: 100000, contextTokens: null }
     })
+  })
+})
+
+describe('命令补全(pi 的 getCommands → 手机)', () => {
+  it('坏输入被拒;名字去重、超长截断、条数封顶', () => {
+    expect(sanitizeCommands(null)).toEqual([])
+    expect(sanitizeCommands([{ name: '' }, { nope: 1 }, 'x', null])).toEqual([])
+    expect(
+      sanitizeCommands([
+        { name: 'bow', description: 'd'.repeat(200), source: 'extension' },
+        { name: 'bow', description: '重复的应该被丢掉' },
+        { name: ' skill:x ', description: '  ' }
+      ])
+    ).toEqual([
+      { name: 'bow', description: `${'d'.repeat(120)}…`, source: 'extension' },
+      { name: 'skill:x' }
+    ])
+    const many = Array.from({ length: MAX_CHAT_COMMANDS + 5 }, (_, i) => ({ name: `c${i}` }))
+    expect(sanitizeCommands(many)).toHaveLength(MAX_CHAT_COMMANDS)
+  })
+
+  it('命令表跟着快照走,state 事件不清它(手机切回来还在)', () => {
+    const hub = new PiChatHub()
+    const viewer = fakeSink()
+    hub.attachViewer(viewer.sink)
+    hub.attachPi(1, fakeSink().sink)
+
+    const commands = [{ name: 'bow', description: '状态', source: 'extension' }]
+    hub.fromPi(1, { type: 'snapshot', messages: [], commands })
+    expect(viewer.messages.at(-1)).toMatchObject({ t: 'chat', commands })
+    expect(hub.snapshot(1).commands).toEqual(commands)
+
+    hub.fromPi(1, { type: 'state', busy: true, pending: 1 })
+    expect(hub.snapshot(1).commands).toEqual(commands)
+  })
+
+  it('旧版扩展不发命令表 → 空数组(手机就不显示 / 入口)', () => {
+    const hub = new PiChatHub()
+    hub.attachPi(1, fakeSink().sink)
+    hub.fromPi(1, { type: 'snapshot', messages: [] })
+    expect(hub.snapshot(1).commands).toEqual([])
+    // 坏形状也不炸
+    hub.fromPi(1, { type: 'snapshot', messages: [], commands: 'nope' })
+    expect(hub.snapshot(1).commands).toEqual([])
   })
 })
 

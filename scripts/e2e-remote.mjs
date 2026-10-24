@@ -525,6 +525,43 @@ try {
   )
   check(composerDisabled === true, '没有控制通道时输入框是禁用的(不假装能发)')
 
+  // ---------- 顶栏:返回 / 项目名称 / 状态 / 停止(只有一行;cwd 与状态条都在抽屉里) ----------
+  const head = await evalOn(
+    pageWs,
+    `(() => {
+       const head = document.querySelector('.head')
+       return {
+         hasCwd: !!head.querySelector('.cwd'),
+         stats: !!document.querySelector('[data-chat-stats]'),
+         name: head.querySelector('[data-chat-name]')?.innerText ?? '',
+         status: head.querySelector('[data-chat-status]')?.innerText ?? ''
+       }
+     })()`
+  )
+  check(head.hasCwd === false && head.stats === false, '顶栏只留四项:cwd 与状态条都不在了', head)
+  check(head.name.length > 0, '顶栏里有项目名称', head.name)
+  check(head.status === '没通道', '没有控制通道时状态 chip 说「没通道」', head.status)
+
+  // 三态 + 排队合成一个 chip(原来「有排队」是另一个 badge)
+  const chip = async (patches) => {
+    await evalOn(
+      pageWs,
+      `(() => { window.__bowRemote.handle(${JSON.stringify({
+        t: 'chat',
+        id: pageSessionId,
+        live: true,
+        messages: [],
+        asks: [],
+        ...patches
+      })}) ; return true })()`
+    )
+    return await evalOn(pageWs, `document.querySelector('[data-chat-status]')?.innerText ?? ''`)
+  }
+  const chipBusy = await chip({ busy: true, pending: 2 })
+  check(chipBusy === '在跑 · 排队2', '忙 + 排队时 chip 合成一句「在跑 · 排队2」', chipBusy)
+  const chipIdle = await chip({ busy: false, pending: 0 })
+  check(chipIdle === '空闲', '不忙时 chip 说「空闲」', chipIdle)
+
   // ---------- 提问卡片(pi 的弹框 → 手机上的按钮) ----------
   // 真 pi 那半由 `npm run test:pi:ask` 覆盖(扩展 + 令牌 + 谁先答)。
   // 这里验的是**页面**:服务端消息进来能不能画出卡片、点下去发出去的帧对不对。
@@ -567,10 +604,45 @@ try {
   )
   check(askGone === true, '答完卡片消失')
 
-  // ---------- 状态条:模型 / 输入输出 / 上下文百分比 ----------
-  // 真 pi 那半由 `npm run test:pi:chat` 覆盖(扩展真的发 status);这里验页面怎么画、怎么变色。
-  const statsHidden = await evalOn(pageWs, `document.querySelector('[data-chat-stats]') === null`)
-  check(statsHidden === true, '没有 status 时状态条不占位(旧版扩展也能用)')
+  // ---------- 抽屉:pi 的信息(全在这里)+ 功能入口 ----------
+  const sessionCwd =
+    (
+      await evalOn(chromeWs, `window.browserAPI.plugins.invoke('terminal','listSessions')`)
+    )?.find((s) => s.id === pageSessionId)?.cwd ?? ''
+  const openDrawer = `(() => { document.querySelector('[data-chat-more]').click(); return true })()`
+  const closeDrawer = `(() => { document.querySelector('[data-chat-backdrop]')?.click(); return true })()`
+
+  // 旧版扩展没有 status:抽屉里该有一句说明,而不是空着
+  await evalOn(
+    pageWs,
+    `(() => { window.__bowRemote.handle(${JSON.stringify({
+      t: 'chat',
+      id: pageSessionId,
+      live: true,
+      messages: [],
+      busy: false,
+      pending: 0,
+      asks: [],
+      commands: [
+        { name: 'bow', description: 'bow 集成:MCP 注册状态 / on / off / reload', source: 'extension' },
+        { name: 'skill:ponytail', description: '懒但完整的实现风格', source: 'skill' }
+      ]
+    })}) ; return true })()`
+  )
+  await evalOn(pageWs, openDrawer)
+  const drawerOpened = await waitFor(
+    async () => (await evalOn(pageWs, `!!document.querySelector('[data-chat-drawer]')`)) === true,
+    5000
+  )
+  check(drawerOpened === true, '点输入框右边的 ⌃ 展开抽屉')
+  const noStatus = await evalOn(pageWs, `document.querySelector('[data-chat-drawer]')?.innerText ?? ''`)
+  check(String(noStatus).includes('没上报状态'), '旧版扩展没有 status → 抽屉里说明一句(不空着)', noStatus)
+  await evalOn(pageWs, closeDrawer)
+  const drawerClosed = await waitFor(
+    async () => (await evalOn(pageWs, `!!document.querySelector('[data-chat-drawer]')`)) === false,
+    5000
+  )
+  check(drawerClosed === true, '点空白处收起抽屉')
 
   await evalOn(
     pageWs,
@@ -579,6 +651,8 @@ try {
       id: pageSessionId,
       status: {
         model: 'claude-sonnet-4',
+        provider: 'anthropic',
+        thinking: 'high',
         input: 12000,
         output: 3400,
         cacheRead: 0,
@@ -588,16 +662,23 @@ try {
       }
     })}) ; return true })()`
   )
-  const statsShown = await waitFor(
+  await evalOn(pageWs, openDrawer)
+  const drawerShown = await waitFor(
     async () => (await evalOn(pageWs, `document.querySelector('[data-chat-model]')?.innerText ?? ''`)).length > 0,
-    10000
+    5000
   )
-  const statsText = await evalOn(pageWs, `document.querySelector('[data-chat-stats]')?.innerText ?? ''`)
-  check(statsShown === true, '状态条显示模型与 token', statsText)
-  check(String(statsText).includes('claude-sonnet-4'), '状态条上有模型名', statsText)
-  check(String(statsText).includes('12k') && String(statsText).includes('3.4k'), '输入输出按 k 缩写', statsText)
+  const drawerText = await evalOn(pageWs, `document.querySelector('[data-chat-drawer]')?.innerText ?? ''`)
+  check(drawerShown === true, '抽屉里显示模型 / token / 上下文', drawerText)
+  check(String(drawerText).includes('claude-sonnet-4'), '抽屉里有模型名', drawerText)
+  check(String(drawerText).includes('12k') && String(drawerText).includes('3.4k'), '输入输出按 k 缩写', drawerText)
   const ctxText = await evalOn(pageWs, `document.querySelector('[data-chat-ctx]')?.innerText ?? ''`)
   check(String(ctxText).includes('38.2%') && String(ctxText).includes('200k'), '上下文显示「百分比/窗口」', ctxText)
+  const drawerCwd = await evalOn(pageWs, `document.querySelector('[data-chat-cwd]')?.innerText ?? ''`)
+  check(
+    sessionCwd !== '' && String(drawerCwd).includes(sessionCwd),
+    '抽屉里「目录」是完整路径(单独一行,不缩写)',
+    drawerCwd
+  )
 
   // 快到顶(95%)→ 变红;未知 token(compact 刚做完)→ 显示「?」而不是 0%
   await evalOn(
@@ -628,6 +709,51 @@ try {
     5000
   )
   check(ctxUnknown === true, 'compact 后 token 未知 → 显示 ?/窗口(不是 0%)')
+
+  // ---------- 命令补全:抽屉里的 / → 模糊搜索 → 点选只补全(不发送) ----------
+  await evalOn(pageWs, `(() => { document.querySelector('[data-chat-cmd-open]').click(); return true })()`)
+  const cmdsOpen = await waitFor(
+    async () => (await evalOn(pageWs, `!!document.querySelector('[data-chat-cmds]')`)) === true,
+    5000
+  )
+  check(cmdsOpen === true, '点「/ 命令」弹出补全面板')
+  const searchFocused = await evalOn(pageWs, `document.activeElement?.matches('[data-chat-cmd-search]') === true`)
+  check(searchFocused === true, '搜索框自动聚焦(不用再点一下)')
+  const allCmds = await evalOn(pageWs, `document.querySelectorAll('[data-chat-cmd]').length`)
+  check(allCmds === 2, '没输关键词时列出全部命令', allCmds)
+
+  // 模糊匹配:子序列 bw 命中 bow(与地址栏 suggestion 同一套 fuzzyScore)
+  await evalOn(
+    pageWs,
+    `(() => {
+       const el = document.querySelector('[data-chat-cmd-search]')
+       const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+       setValue.call(el, 'bw')
+       el.dispatchEvent(new Event('input', { bubbles: true }))
+       return true
+     })()`
+  )
+  const fuzzy = await waitFor(async () => {
+    const n = await evalOn(pageWs, `document.querySelectorAll('[data-chat-cmd]').length`)
+    return n === 1 ? n : null
+  }, 5000)
+  const hitName = await evalOn(pageWs, `document.querySelector('[data-chat-cmd]')?.innerText ?? ''`)
+  check(fuzzy === 1 && String(hitName).includes('/bow'), '模糊匹配:子序列 bw → /bow', hitName)
+
+  await evalOn(pageWs, `(() => { document.querySelector('[data-chat-cmd]').click(); return true })()`)
+  const inserted = await waitFor(async () => {
+    const value = await evalOn(pageWs, `document.querySelector('.composer textarea')?.value ?? ''`)
+    return value === '/bow ' ? value : null
+  }, 5000)
+  check(inserted === '/bow ', '点选只把命令填进输入框(光标在末尾,可接着写参数)', inserted)
+  const stillOpen = await evalOn(pageWs, `!!document.querySelector('[data-chat-cmds]')`)
+  check(stillOpen === false, '选完面板自动收起')
+  const noPrompt = await evalOn(
+    pageWs,
+    `window.__bowRemote.sent.some((f) => f.t === 'prompt') === false`
+  )
+  check(noPrompt === true, '点选**没有**发送(还等用户按发送)', noPrompt)
+
 
   const backToList = await evalOn(
     pageWs,

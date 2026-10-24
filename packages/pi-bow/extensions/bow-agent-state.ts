@@ -259,6 +259,13 @@ interface AskRequest {
   timeout?: number
 }
 
+/** 手机能挑的一条命令(与 bow 侧 `remote/piChat.ts` 的 `ChatCommand` 同形;同样是自包含定义) */
+interface CmdInfo {
+  name: string
+  description?: string
+  source?: string
+}
+
 function textOf(content: string | PiPart[] | undefined): string {
   if (typeof content === 'string') return content.trim()
   if (!Array.isArray(content)) return ''
@@ -502,6 +509,31 @@ function startChatBridge(pi: ExtensionAPI): void {
     return value.length > max ? `${value.slice(0, max)}…` : value
   }
 
+  /** 一条本地提示(发送失败 / 命令反馈 / 命令名写错):走 notice,手机上就显示成一行灰红小字 */
+  const notice = (text: string): void => {
+    send({
+      type: 'message',
+      message: { id: `notice-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, role: 'notice', text }
+    })
+  }
+
+  /**
+   * 手机命令补全的候选表:**只有 pi 认的那三类**(扩展命令 / prompt 模板 / 技能)。
+   * 内置命令(`/compact` `/model` …)不在里面,也不会通过 prompt 执行 —— 所以不列,免得点了没反应。
+   */
+  const commandsOf = (): CmdInfo[] => {
+    try {
+      const list = typeof pi.getCommands === 'function' ? pi.getCommands() : []
+      return list.slice(0, 200).map((cmd) => ({
+        name: cmd.name,
+        ...(cmd.description ? { description: cmd.description } : {}),
+        ...(cmd.source ? { source: cmd.source } : {})
+      }))
+    } catch {
+      return []
+    }
+  }
+
   /**
    * 接管 pi 的对话框。关键:**原始方法照旧调** —— 终端里那条路一点不变;
    * 同时把题面发到手机,谁先答要谁。手机先答就用 `opts.signal` 把终端的框程序化关掉
@@ -581,6 +613,23 @@ function startChatBridge(pi: ExtensionAPI): void {
       ;(wrapped as unknown as Record<symbol, unknown>)[wrappedMark] = true
       ui[kind] = wrapped
     }
+
+    // `notify` 是命令反馈的唯一出口(`/bow` 的报告、「已重载」都是它):不转发的话手机上一片安静。
+    // 与对话框同一条原则:终端里那道照旧调,手机这边只多一条 notice。
+    if (typeof ui.notify === 'function' && !(ui.notify as unknown as Record<symbol, unknown>)[wrappedMark]) {
+      const original = ui.notify as unknown as Record<symbol, unknown> & ((message: unknown, type?: unknown) => void)
+      const wrapped = (message: unknown, type?: unknown): void => {
+        const text = limit(message, 2000)
+        if (text) notice(text)
+        try {
+          original.call(ui, message, type)
+        } catch {
+          /* 终端那边画不出来不影响手机 */
+        }
+      }
+      ;(wrapped as unknown as Record<symbol, unknown>)[wrappedMark] = true
+      ui.notify = wrapped
+    }
   }
 
   const snapshot = (): void => {
@@ -601,6 +650,7 @@ function startChatBridge(pi: ExtensionAPI): void {
       messages: messages.slice(-60),
       busy,
       pending: pending(),
+      commands: commandsOf(),
       ...(status ? { status } : {})
     })
   }
@@ -633,21 +683,23 @@ function startChatBridge(pi: ExtensionAPI): void {
       return
     }
     if (msg.type === 'prompt' && typeof msg.text === 'string' && msg.text.trim()) {
+      const text = msg.text
       const deliverAs = msg.deliverAs === 'steer' || msg.deliverAs === 'followUp' ? msg.deliverAs : undefined
+      // `/xxx` 只有命令表里的才会被执行,其余会**原样**喂给模型 —— 手机上还看不出哪儿写错了,所以先拦一次
+      const name = text.startsWith('/') ? text.slice(1).split(/\s/, 1)[0] : ''
+      if (name && !commandsOf().some((cmd) => cmd.name === name)) {
+        notice(`没有 /${name} 这个命令(输入框右边的 ⌃ → / 看有哪些)`)
+        return
+      }
       try {
-        // streaming 中不带 deliverAs 会抛错 —— 所以忙的时候一律当「排队」
-        if (deliverAs) pi.sendUserMessage(msg.text, { deliverAs })
-        else if (busy) pi.sendUserMessage(msg.text, { deliverAs: 'followUp' })
-        else pi.sendUserMessage(msg.text)
-      } catch (err) {
-        send({
-          type: 'message',
-          message: {
-            id: `err-${Date.now()}`,
-            role: 'notice',
-            text: `发送失败:${err instanceof Error ? err.message : String(err)}`
-          }
+        // expandPromptTemplates 是**命令能跑起来**的唯一开关(sendUserMessage 默认关着):
+        // 扩展命令立刻执行、技能与模板按桌面规则展开。streaming 中不带 deliverAs 会抛错 ⇒ 忙的时候一律排队。
+        pi.sendUserMessage(text, {
+          expandPromptTemplates: true,
+          ...(deliverAs ? { deliverAs } : busy ? { deliverAs: 'followUp' as const } : {})
         })
+      } catch (err) {
+        notice(`发送失败:${err instanceof Error ? err.message : String(err)}`)
       }
       stateSoon()
     }

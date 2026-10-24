@@ -17,12 +17,33 @@
  */
 
 import { spawn } from 'node:child_process'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { WebSocketServer } from 'ws'
 
 const EXTENSION = new URL('../packages/pi-bow/extensions/bow-agent-state.ts', import.meta.url).pathname
 const SESSION_ID = '1'
 const TOKEN = 'smoke-token'
 const PROMPT = '只回复 PONG 这四个字母,不要别的'
+
+/**
+ * 探针扩展:注册一条 `/smoke` 命令,只说一句话。
+ * 为什么需要它:手机命令补全验的是「`/xxx` 真的被 pi 当命令执行」—— 这条只有**真命令**能证明,
+ * 而 bow 自己的 `/bow` 命令不在这个冒烟加载的扩展里(只加了状态桥)。
+ */
+const PROBE_SOURCE = `
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+
+export default function (pi: ExtensionAPI) {
+  pi.registerCommand('smoke', {
+    description: '探针命令(冒烟用)',
+    handler: async (_args, ctx) => {
+      ctx.ui.notify('PROBE-OK')
+    }
+  })
+}
+`
 
 const checks = []
 function check(ok, label, detail) {
@@ -93,7 +114,15 @@ async function main() {
     ws.send(JSON.stringify({ type: 'history' }))
   })
 
-  const child = spawn('pi', ['--mode', 'rpc', '--no-session', '--extension', EXTENSION], {
+  // 探针放进临时目录。
+  // ⚠️ 用 `-ne`(--no-extensions)关掉**发现**而不是隔离 `PI_CODING_AGENT_DIR`:后者会让 pi 读不到
+  // 模型配置(model=unknown、无凭据),真跑模型那几步整段失败;而隔离关不掉 `~/.pi/agent/extensions/`
+  // 里那份已装的对话桥 —— 它可能抢在 `-e` 的那份之后连上来,把 `/smoke` 当普通文本发出去(实测)。
+  const probeDir = mkdtempSync(join(tmpdir(), 'bow-chat-'))
+  const probePath = join(probeDir, 'probe.ts')
+  writeFileSync(probePath, PROBE_SOURCE)
+
+  const child = spawn('pi', ['--mode', 'rpc', '--no-session', '-ne', '--extension', EXTENSION, '--extension', probePath], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
@@ -147,6 +176,35 @@ async function main() {
       '快照里带着上下文窗口(百分比的分母)',
       snapshot.status
     )
+
+    // ②b 命令表随快照下发(手机的命令补全靠它;内置命令不在里面是 pi 的规则)
+    check(
+      Array.isArray(snapshot.commands) && snapshot.commands.some((c) => c?.name === 'smoke'),
+      '快照里带着命令表(含扩展注册的 /smoke)',
+      snapshot.commands
+    )
+
+    // ②c 手机发 `/smoke` → pi 当命令执行(ctx.ui.notify 转发成一条 notice),不喂给模型
+    piSocket.send(JSON.stringify({ type: 'prompt', text: '/smoke' }))
+    const ran = await waitFor(
+      (r) => r.type === 'message' && r.message?.role === 'notice' && String(r.message.text ?? '').includes('PROBE-OK'),
+      20_000,
+      '等命令执行'
+    )
+    check(ran.message.role === 'notice', '`/smoke` 被当成命令执行(notify 回到手机)')
+    check(
+      received.every((r) => !(r.type === 'message' && r.message?.role === 'user' && String(r.message.text ?? '').includes('/smoke'))),
+      '命令没有被当成一句 prompt 喂给模型'
+    )
+
+    // ②d 写错的命令名当场拦下(否则它会变成一句 LLM prompt,手机上看不出哪儿错了)
+    piSocket.send(JSON.stringify({ type: 'prompt', text: '/nope' }))
+    const rejected = await waitFor(
+      (r) => r.type === 'message' && r.message?.role === 'notice' && String(r.message.text ?? '').includes('没有 /nope'),
+      10_000,
+      '等未知命令提示'
+    )
+    check(rejected.message.role === 'notice', '未知命令当场回一条提示(不发给模型)')
 
     // ③ 手机发话 → pi 真的跑起来(忙状态 + 用户消息回显 + 助手回复)
     piSocket.send(JSON.stringify({ type: 'prompt', text: PROMPT }))
