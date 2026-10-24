@@ -115,6 +115,7 @@ function run(cmd, args, label) {
 
 // 预检:两个工具都是本地 devDependency。这里先查清楚,避免后面只报一句难懂的 ENOENT。
 const electronViteBin = requireBin('electron-vite', 'electron-vite', '先在仓库目录执行 `bun install`。')
+const viteBin = requireBin('vite', 'vite', '先在仓库目录执行 `bun install`。')
 const electronBuilderBin = requireBin(
   'electron-builder',
   'electron-builder',
@@ -134,6 +135,13 @@ if (process.platform !== 'win32' && buildingWin) {
 try {
   if (!noBuild) {
     await run(process.execPath, [electronViteBin, 'build'], '编译(main / preload / renderer → out/)')
+    // 手机页是**独立**构建(`out/remote/`),electron-vite 不管它。漏了这一步的后果很阴:
+    // 包里躺的是一份旧的 `out/remote/app.js`,手机上打开还是旧页面(实测过:还是 xterm)。
+    await run(
+      process.execPath,
+      [viteBin, 'build', '--config', 'vite.remote.config.ts'],
+      '编译(手机远程页 → out/remote/)'
+    )
   }
   await run(process.execPath, [electronBuilderBin, ...ebArgs], '打包')
   // 显式把本次目标平台的 app.asar 交给自检:dist/ 里可能同时躺着多平台产物,

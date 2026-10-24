@@ -172,11 +172,6 @@ function abort(): void {
   socket?.send({ t: 'abort', id: active.id })
 }
 
-/** 新终端:**不传 command** —— 主进程那边就是「开一个默认 shell」,与面板的「新终端」一致 */
-function createSession(): void {
-  socket?.send({ t: 'create' })
-}
-
 onMounted(() => {
   // 已经有 cookie(上次登录过)就直接连;握手失败会落到 refused,那时显示登录框
   connect()
@@ -244,12 +239,11 @@ const needsLogin = computed(() => !authed.value || state.value === 'refused')
         <span class="brand">bow · 会话</span>
         <span class="count">{{ sessions.length }} 个会话</span>
         <span class="conn" :class="state">{{ state === 'open' ? '已连接' : state === 'connecting' ? '连接中…' : '已断开' }}</span>
-        <button class="new" title="开一个新终端(默认 shell)" @click="createSession">＋</button>
       </header>
 
       <div v-if="sessions.length === 0" class="empty">
         <p>还没有终端会话。</p>
-        <button class="primary" @click="createSession">开一个新终端</button>
+        <p>在电脑上开一个终端并在里面跑 <code>pi</code>,它就会出现在这里。</p>
       </div>
 
       <ul v-else class="rows">
@@ -389,11 +383,6 @@ form {
 }
 .empty p {
   margin: 0;
-}
-.new {
-  min-width: 40px;
-  padding: 0 10px;
-  font-size: 16px;
 }
 .rows {
   list-style: none;

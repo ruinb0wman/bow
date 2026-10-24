@@ -31,7 +31,11 @@ const root = fileURLToPath(new URL('..', import.meta.url))
 const dir = process.env.BOW_E2E_DIR ?? join(tmpdir(), 'bow-e2e')
 const run = process.pid
 const userdata = join(dir, `remote-userdata-${run}`)
-const debugPort = 9200 + (run % 200)
+/**
+ * 调试端口必须**真的空着**:固定公式(9200 + pid%200)会撞上一轮没退干净的 Electron,
+ * 那时 `targets()` 连到的是**旧实例** —— 表现是「create 之后等不到 created」这种莫名超时。
+ */
+const debugPort = await freePort()
 /** 跨平台:从 WSL 用 Windows 的 node 跑时,ELECTRON_BIN 指向 electron.exe;headless 只在 Linux 有 */
 const isWin = process.platform === 'win32' || /\.exe$/i.test(process.env.ELECTRON_BIN ?? '')
 const electron =

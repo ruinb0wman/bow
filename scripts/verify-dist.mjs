@@ -113,8 +113,27 @@ const entrySet = new Set(entries)
 const failures = []
 
 // 1) 应用自身文件必须齐全
-for (const required of ['out/main/index.js', 'out/preload/index.js', 'out/renderer/index.html']) {
+for (const required of [
+  'out/main/index.js',
+  'out/preload/index.js',
+  'out/renderer/index.html',
+  // 手机远程页是独立构建:dist 漏了它的话包里会躺一份**旧页面**(实测过:手机上还是 xterm)
+  'out/remote/index.html',
+  'out/remote/app.js'
+]) {
   if (!entrySet.has(required)) failures.push(`缺少应用文件:${required}`)
+}
+
+// 1b) 手机页必须是**当前这版**:光有文件不够 —— 旧构建也在。用一个只存在于对话页的字面量当指纹
+const remoteMarker = '还没有对话'
+if (entrySet.has('out/remote/app.js')) {
+  // asar 是「头部 JSON + 原文件内容」拼接,没压缩,直接搜字节就够了(63MB 搜一次几十毫秒)
+  const found = readFileSync(asarPath).includes(remoteMarker)
+  if (!found) {
+    failures.push(
+      'out/remote/app.js 不是当前这版(缺对话页标记)—— 打包前要跑 `npm run build:remote`(dist 已自动串上了)'
+    )
+  }
 }
 
 // 2) bundle 里外部化的运行时依赖必须在 asar 里
