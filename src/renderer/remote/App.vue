@@ -11,7 +11,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { sortSessionsByAttention, formatAgo, lastActiveAt, shortPath } from '@plugins/terminal/shared'
 import ChatView from './ChatView.vue'
 import { connectRemote, wsUrlOf } from './ws'
-import type { AskRequest, ChatMessage, RemoteSocket, ServerMessage, SessionInfo } from './ws'
+import type { AskRequest, ChatMessage, ChatStatus, RemoteSocket, ServerMessage, SessionInfo } from './ws'
 
 const password = ref('')
 const loginError = ref('')
@@ -25,12 +25,20 @@ const state = ref<'connecting' | 'open' | 'closed' | 'refused'>('connecting')
 const active = reactive<{ id: number | null; title: string; cwd: string }>({ id: null, title: '', cwd: '' })
 
 /** 对话快照(服务端缓存的那份镜像;手机不存历史) */
-const chat = reactive<{ messages: ChatMessage[]; busy: boolean; pending: number; live: boolean; asks: AskRequest[] }>({
+const chat = reactive<{
+  messages: ChatMessage[]
+  busy: boolean
+  pending: number
+  live: boolean
+  asks: AskRequest[]
+  status: ChatStatus | null
+}>({
   messages: [],
   busy: false,
   pending: 0,
   live: false,
-  asks: []
+  asks: [],
+  status: null
 })
 const chatError = reactive<{ text: string; at: number }>({ text: '', at: 0 })
 
@@ -109,7 +117,12 @@ function handle(msg: ServerMessage): void {
       chat.pending = msg.pending
       chat.live = msg.live
       chat.asks = msg.asks ?? []
+      chat.status = msg.status ?? null
       chatError.text = ''
+      break
+    case 'chat-status':
+      if (msg.id !== active.id) break
+      chat.status = msg.status
       break
     case 'ask':
       if (msg.id !== active.id) break
@@ -160,6 +173,7 @@ function requestChat(id: number): void {
   chat.pending = 0
   chat.live = false
   chat.asks = []
+  chat.status = null
   chatError.text = ''
   socket?.send({ t: 'chat', id })
 }
@@ -280,6 +294,7 @@ const needsLogin = computed(() => !authed.value || state.value === 'refused')
         :pending="chat.pending"
         :live="chat.live"
         :asks="chat.asks"
+        :status="chat.status"
         :connected="state === 'open'"
         :has-agent="activeInfo?.agent != null"
         :last-error="chatError.text"

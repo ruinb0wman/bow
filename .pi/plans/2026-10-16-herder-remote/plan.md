@@ -790,3 +790,41 @@ iOS Safari 布局视口根本不动,只能自己量。
 所以要用提问卡片里的输入框(或一个有 pi 的会话)来验。
 数学部分抽成 `keyboardInsetOf()` 纯函数,`tests/terminalRemoteChat.test.ts` 里 5 个用例
 (没开 / resizes-content / iOS 偏移 / 工具栏收起 / 怪异输入)。
+
+### 21.8 对话页状态栏:模型 / 上下文 / 输入输出(2026-10-16)
+
+缺口盘点的第 10 条(当时没列):手机上能看对话,但看不到「用的哪个模型、还剩多少上下文」。
+
+数据全在 pi 的扩展 API 里,不用新端点、不用新连接、更不解析 TUI 屏幕:
+
+| 要显示 | 来源 |
+| --- | --- |
+| 模型 / 思考等级 | `ctx.model.id`、`ctx.thinkingLevel`;切换时 `model_select` / `thinking_level_select` 事件 |
+| 上下文数量与百分比 | `ctx.getContextUsage()` → `{ tokens, contextWindow }`(compact 后 `tokens` 为 `null`) |
+| 输入输出 token | 遍历 `ctx.sessionManager.getEntries()` 累加 `usage`(assistant + toolResult + `usage` 条目 + compaction/分支摘要)—— 与 pi 桌面 footer 同一套口径 |
+
+协议只加两种帧,走现有那条 WS:
+
+```
+扩展 ──{type:'snapshot', …, status?} / {type:'status', status}──▶ PiChatHub(校验+缓存)
+      ──{t:'chat', …, status?} / {t:'chat-status', id, status}──▶ 手机状态条
+```
+
+- **百分比不在线上传**:两端拿同一对 `(contextTokens, contextWindow)` 各算一次,少一个要校验的字段;
+- **缓存在服务端**(进 `ChatState`):手机切走再切回、重连都不用等 pi 再喊一次;
+- 扩展侧按 `JSON.stringify` 去重,数字没变就不发;
+- 触发点:`onopen`(随快照)、`session_start`、`agent_settled`、`message_end`(仅 assistant —— 工具结果也去遍历整会话没必要)、
+  `model_select`、`thinking_level_select`;`session_compact` / `session_tree` 由既有的大快照覆盖;
+- 手机上:`模型 · ↑12k ↓3.4k · 38.2%/200k`,11px mono 一行贴在 header 下面,超长模型名省略号;
+  `?` 表示 token 未知,>70% 黄、>90% 红(与桌面同一组阈值)。
+
+**踩到的坑**:`ChatView` 里早有一个 `const status = computed(...)`(头部徽标文字),
+新加的 `status` prop 在模板里被它遮住了 —— 表现是状态条**永远显示**,而且 `↑NaN ↓NaN`。
+徽标那个 computed 改名 `statusLabel`,模板里两个名字各归各位。
+
+**明确不做**(与 §21.2 一致):手机上切模型 / 切思考档 / 手动 compact;成本 `$0.042`;
+缓存读写 `R`/`W`(那一行在手机上放不下,输入输出保留的是与桌面同口径的数字)。
+
+验证:`test:pi:chat` 11 项(真 pi:快照带模型名与窗口、跑完一轮后收到带 `input>0 && output>0` 的 status);
+`test:e2e:remote` 49 项(无 status 时不占位、模型名+`12k`/`3.4k`、`38.2%/200k`、95% 变红、`?/200k`);
+vitest 1528(新增 `sanitizeStatus` 夹取/拒绝、status 广播+进快照、snapshot 带 status 三例)。

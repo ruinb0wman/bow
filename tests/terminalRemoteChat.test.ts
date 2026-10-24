@@ -14,7 +14,8 @@ import {
   MAX_CHAT_MESSAGES,
   MAX_CHAT_TEXT,
   PiChatHub,
-  sanitizeChatMessage
+  sanitizeChatMessage,
+  sanitizeStatus
 } from '../src/plugins/terminal/remote/piChat'
 import type { AskRequest, ChatMessage, ChatSink } from '../src/plugins/terminal/remote/piChat'
 import { SessionHub } from '../src/plugins/terminal/remote/hub'
@@ -177,6 +178,65 @@ describe('PiChatHub', () => {
     expect(hub.viewerCount).toBe(0)
     expect(pi.drops).toHaveLength(1)
     expect(hub.snapshot(1).messages).toHaveLength(1)
+  })
+})
+
+describe('状态条(模型 / 上下文 / 输入输出)', () => {
+  it('坏输入被拒;数字夹到非负整数,文本截断', () => {
+    expect(sanitizeStatus(null)).toBeNull()
+    expect(sanitizeStatus('x')).toBeNull()
+    expect(
+      sanitizeStatus({ model: 'm'.repeat(80), input: -5, output: 12.6, contextTokens: null, contextWindow: 200000 })
+    ).toEqual({
+      model: `${'m'.repeat(60)}…`,
+      input: 0,
+      output: 13,
+      cacheRead: 0,
+      cacheWrite: 0,
+      contextTokens: null,
+      contextWindow: 200000
+    })
+    // 没有 contextWindow 也留着:手机只显示 token 数,不显示百分比
+    expect(sanitizeStatus({ input: 7 })).toMatchObject({ input: 7, contextWindow: 0, contextTokens: null })
+  })
+
+  it('status 广播给手机,并进快照(手机重连后立刻有数)', () => {
+    const hub = new PiChatHub()
+    const viewer = fakeSink()
+    hub.attachViewer(viewer.sink)
+    hub.attachPi(1, fakeSink().sink)
+
+    const status = {
+      model: 'claude-sonnet-4',
+      input: 12000,
+      output: 3400,
+      cacheRead: 0,
+      cacheWrite: 0,
+      contextTokens: 76400,
+      contextWindow: 200000
+    }
+    hub.fromPi(1, { type: 'status', status })
+    expect(viewer.messages.at(-1)).toEqual({ t: 'chat-status', id: 1, status })
+    expect(hub.snapshot(1).status).toEqual(status)
+
+    // 坏帧不发,也不覆盖上一份好数据
+    hub.fromPi(1, { type: 'status', status: 'nope' })
+    expect(viewer.messages.at(-1)).toEqual({ t: 'chat-status', id: 1, status })
+    expect(hub.snapshot(1).status).toEqual(status)
+  })
+
+  it('snapshot 帧里的 status 一起落进缓存(连同消息)', () => {
+    const hub = new PiChatHub()
+    hub.attachPi(1, fakeSink().sink)
+    hub.fromPi(1, {
+      type: 'snapshot',
+      messages: [msg('a', 'user', { text: 'hi' })],
+      status: { model: 'gpt-5', input: 1, output: 2, contextTokens: null, contextWindow: 100000 }
+    })
+    expect(hub.snapshot(1)).toMatchObject({
+      messages: [{ id: 'a', role: 'user', text: 'hi' }],
+      status: { model: 'gpt-5', contextWindow: 100000, contextTokens: null }
+    })
   })
 })
 

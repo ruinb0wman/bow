@@ -35,9 +35,10 @@ export type ServerMessage =
   | { t: 'closed'; id: number; reason: string }
   | { t: 'read'; id: number; text: string }
   | { t: 'created'; id: number; state: 'starting' | 'running' }
-  | { t: 'chat'; id: number; live: boolean; messages: ChatMessage[]; busy: boolean; pending: number; asks: AskRequest[] }
+  | { t: 'chat'; id: number; live: boolean; messages: ChatMessage[]; busy: boolean; pending: number; asks: AskRequest[]; status?: ChatStatus }
   | { t: 'chat-message'; id: number; message: ChatMessage }
   | { t: 'chat-state'; id: number; live: boolean; busy: boolean; pending: number }
+  | { t: 'chat-status'; id: number; status: ChatStatus }
   | { t: 'ask'; id: number; ask: AskRequest }
   | { t: 'ask-done'; id: number; requestId: string }
   | { t: 'error'; message: string }
@@ -51,6 +52,19 @@ export interface ChatMessage {
   toolArgs?: string
   toolResult?: string
   toolError?: boolean
+}
+
+/** pi 的状态栏数字(与主进程 `remote/piChat.ts` 的 `ChatStatus` 同形;百分比两端各算一次) */
+export interface ChatStatus {
+  model?: string
+  provider?: string
+  thinking?: string
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  contextTokens: number | null
+  contextWindow: number
 }
 
 /** pi 的一个提问(与主进程的 `AskRequest` 同形) */

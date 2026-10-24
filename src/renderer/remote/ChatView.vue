@@ -10,7 +10,7 @@
  * 这里只读「忙 / 有排队」两个状态。
  */
 import { computed, nextTick, ref, watch } from 'vue'
-import type { AskRequest, ChatMessage, RemoteSocket } from './ws'
+import type { AskRequest, ChatMessage, ChatStatus, RemoteSocket } from './ws'
 
 const props = defineProps<{
   sessionId: number
@@ -21,6 +21,8 @@ const props = defineProps<{
   pending: number
   live: boolean
   asks: AskRequest[]
+  /** pi 的状态栏数字(模型 / 上下文 / 输入输出);旧版扩展不发就是 null,整行不显示 */
+  status: ChatStatus | null
   /** WS 是否连着(断线时给一条横幅,别让人以为发出去了) */
   connected: boolean
   /** 台账里这个会话有没有代理状态(有 = 终端里确有 pi,只是控制通道没连上) */
@@ -127,10 +129,44 @@ function steer(): void {
   void nextTick(() => scrollToBottom(true))
 }
 
-const status = computed(() => {
+/** 头部徽标文字(注意:不叫 `status` —— 那是状态栏 prop,别遮) */
+const statusLabel = computed(() => {
   if (!props.live) return '没有控制通道'
   if (props.busy) return '在跑'
   return '空闲'
+})
+
+// ---------- 状态条:与 pi 桌面 footer 同一套数字和缩写(↑输入 ↓输出, R/W 缓存不上手机) ----------
+
+/** 与 pi footer 的 `formatTokens` 同规则:手机上一行要放得下 */
+function fmt(count: number): string {
+  if (count < 1000) return String(count)
+  if (count < 10000) return `${(count / 1000).toFixed(1)}k`
+  if (count < 1000000) return `${Math.round(count / 1000)}k`
+  if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`
+  return `${Math.round(count / 1000000)}M`
+}
+
+/** 上下文百分比;compact 刚做完时 pi 自己也不知道 token 数 → null(显示「?」而不是 0%) */
+const ctxPercent = computed(() => {
+  const s = props.status
+  if (!s || !s.contextWindow || s.contextTokens === null) return null
+  return Math.round((s.contextTokens / s.contextWindow) * 1000) / 10
+})
+
+const ctxText = computed(() => {
+  const s = props.status
+  if (!s) return ''
+  const window = s.contextWindow ? `/${fmt(s.contextWindow)}` : ''
+  return ctxPercent.value === null ? `?${window}` : `${ctxPercent.value.toFixed(1)}%${window}`
+})
+
+const ctxClass = computed(() => {
+  const percent = ctxPercent.value
+  if (percent === null) return ''
+  if (percent > 90) return 'error'
+  if (percent > 70) return 'warn'
+  return ''
 })
 
 /**
@@ -186,10 +222,19 @@ const visibleAsks = computed(() => props.asks.filter((ask) => !hiddenAsks.value.
       <button class="back" title="返回会话列表" @click="emit('back')">←</button>
       <span class="name">{{ title }}</span>
       <span v-if="cwd" class="cwd">{{ cwd }}</span>
-      <span class="badge" :class="{ busy, dead: !live }">{{ status }}</span>
+      <span class="badge" :class="{ busy, dead: !live }">{{ statusLabel }}</span>
       <span v-if="pending > 0" class="badge queue">有排队</span>
       <button v-if="busy && live" class="stop" title="停止当前这一轮" @click="emit('abort')">停止</button>
     </header>
+
+    <!-- pi 的状态栏:模型 · 输入输出 · 上下文(数字与桌面 footer 一致) -->
+    <div v-if="status" class="stats" data-chat-stats>
+      <span v-if="status.model" class="stat-model" data-chat-model>
+        {{ status.model }}{{ status.thinking && status.thinking !== 'off' ? ` · ${status.thinking}` : '' }}
+      </span>
+      <span class="stat" data-chat-tokens>↑{{ fmt(status.input) }} ↓{{ fmt(status.output) }}</span>
+      <span class="stat" :class="ctxClass" data-chat-ctx>{{ ctxText }}</span>
+    </div>
 
     <p v-if="!connected" class="banner" data-chat-banner>连接断了,正在重连……(没接上的话,消息不会发出去)</p>
 
@@ -324,6 +369,35 @@ const visibleAsks = computed(() => props.asks.filter((ask) => !hiddenAsks.value.
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: none;
+}
+/* 贴着 header 的第二行:同一块底色,不另加分隔线 */
+.stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 5px;
+  background: #202127;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+}
+.stat {
+  flex: none;
+}
+.stat-model {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #c8ccd6;
+}
+.stat.warn {
+  color: #e5c07b;
+}
+.stat.error {
+  color: var(--danger);
 }
 .banner {
   margin: 0;

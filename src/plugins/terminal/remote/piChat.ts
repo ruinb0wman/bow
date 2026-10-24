@@ -40,6 +40,27 @@ export interface ChatSnapshot {
   pending: number
   /** 正在等回答的题(手机重连后要把卡片重新画出来) */
   asks: AskRequest[]
+  status?: ChatStatus
+}
+
+/**
+ * pi 的状态栏数字:模型 / 上下文 / 输入输出 token。
+ *
+ * 口径与 pi 桌面 footer 一致(`input`/`output` 是**整会话累计**,不含缓存读写;
+ * `contextTokens` 是估算值,compact 刚做完时 pi 自己也不知道 → null)。
+ * 百分比不在这里算:两端拿同一对 (tokens, contextWindow) 各算一次,省一个要校验的字段。
+ */
+export interface ChatStatus {
+  model?: string
+  provider?: string
+  /** 思考等级(只在这轮模型支持 reasoning 时才有) */
+  thinking?: string
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  contextTokens: number | null
+  contextWindow: number
 }
 
 /** 每个会话保留的消息条数(手机只显示最近的;再往前的去电脑上看) */
@@ -79,6 +100,7 @@ interface ChatState {
   messages: ChatMessage[]
   busy: boolean
   pending: number
+  status?: ChatStatus
 }
 
 function cap(value: unknown, max: number): string | undefined {
@@ -109,6 +131,31 @@ export function sanitizeChatMessage(raw: unknown): ChatMessage | null {
   const toolResult = cap(m.toolResult, MAX_CHAT_TOOL)
   if (toolResult) out.toolResult = toolResult
   if (m.toolError === true) out.toolError = true
+  return out
+}
+
+/** 上行状态逐字段校验:数值夹到非负整数,文本截断;没有 contextWindow 也留着(手机只显示 token 数) */
+export function sanitizeStatus(raw: unknown): ChatStatus | null {
+  if (!raw || typeof raw !== 'object') return null
+  const m = raw as Record<string, unknown>
+  const num = (value: unknown): number => {
+    const n = typeof value === 'number' ? value : Number(value)
+    return Number.isFinite(n) && n > 0 ? Math.min(Math.round(n), 1_000_000_000) : 0
+  }
+  const out: ChatStatus = {
+    input: num(m.input),
+    output: num(m.output),
+    cacheRead: num(m.cacheRead),
+    cacheWrite: num(m.cacheWrite),
+    contextTokens: m.contextTokens === null || m.contextTokens === undefined ? null : num(m.contextTokens),
+    contextWindow: num(m.contextWindow)
+  }
+  const model = cap(m.model, 60)
+  if (model) out.model = model.trim()
+  const provider = cap(m.provider, 40)
+  if (provider) out.provider = provider.trim()
+  const thinking = cap(m.thinking, 20)
+  if (thinking) out.thinking = thinking.trim()
   return out
 }
 
@@ -173,8 +220,18 @@ export class PiChatHub {
         chat.messages = messages
         chat.busy = msg.busy === true
         chat.pending = count(msg.pending)
+        const status = sanitizeStatus(msg.status)
+        if (status) chat.status = status
         this.chats.set(sessionId, chat)
         this.broadcast({ t: 'chat', id: sessionId, live: true, ...chat })
+        return
+      }
+      case 'status': {
+        const status = sanitizeStatus(msg.status)
+        if (!status) return
+        chat.status = status
+        this.chats.set(sessionId, chat)
+        this.broadcast({ t: 'chat-status', id: sessionId, status })
         return
       }
       case 'message': {

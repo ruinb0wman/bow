@@ -622,6 +622,10 @@ npm run test:mcp:http
     (允许·拒绝 / 选项按钮 / 输入框);卡片出现时终端里那个框**同时还在**,谁先答用谁 ——
     手机先答,终端那个框会被程序化关掉(`opts.signal`),不用再跑回电脑;
     卡片右上角「×」只是本地收起,答还是得在电脑上;
+  - **对话页顶部带一行 pi 的状态**:`模型 · ↑输入 ↓输出 · 上下文百分比/窗口` ——
+    数字与桌面 footer 同一口径(整会话累计、不含缓存读写;`contextTokens` 是估算值)。
+    compact 刚做完 pi 自己也不知道 token 数,那时显示 `?/200k` 而不是 0%;超过 70% 变黄、90% 变红。
+    数据来自扩展的 `ctx.model` / `ctx.getContextUsage()` / `sessionManager.getEntries()`,旧版扩展不发就整行不显示(不影响其它功能);
   - **自定义组件(`ctx.ui.custom`)在 bow 里改走标准对话框**:那种浮层是任意 TUI 组件,搬不到手机上。
     `ask_user_question` 自带一条 RPC 回退(它发现 `custom()` 返回 `undefined` 就用 `select`/`input`
     逐个问),所以 bow 里默认让 `custom()` 返回 `undefined` —— 于是手机能答。

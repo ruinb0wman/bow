@@ -77,6 +77,22 @@ interface PiMessage {
   toolName?: string
   isError?: boolean
   timestamp?: number
+  usage?: PiUsage
+}
+
+/** pi 的一次调用账(与 `@earendil-works/pi-ai` 的 `Usage` 同形的子集) */
+interface PiUsage {
+  input?: number
+  output?: number
+  cacheRead?: number
+  cacheWrite?: number
+}
+
+/** 会话条目(只关心带 usage 的那几种;与 pi 的 `SessionEntry` 同形的子集) */
+interface SessionEntryLike {
+  type?: string
+  message?: PiMessage
+  usage?: PiUsage
 }
 
 type State = 'working' | 'blocked' | 'idle'
@@ -217,7 +233,16 @@ type WsCtor = new (url: string) => WsLike
 interface ChatCtx {
   abort?: () => void
   hasPendingMessages?: () => boolean
-  sessionManager?: { buildContextEntries?: () => Array<{ type?: string; message?: PiMessage }> }
+  sessionManager?: {
+    buildContextEntries?: () => Array<{ type?: string; message?: PiMessage }>
+    /** 整会话的条目(累计 token 用;与 pi 桌面 footer 同一套口径) */
+    getEntries?: () => SessionEntryLike[]
+  }
+  /** 当前模型(id / provider / 上下文窗口 / 是否支持思考等级) */
+  model?: { id?: string; provider?: string; contextWindow?: number; reasoning?: boolean }
+  thinkingLevel?: string
+  /** pi 算好的上下文用量;compact 后 `tokens` 为 null */
+  getContextUsage?: () => { tokens?: number | null; contextWindow?: number } | undefined
   /** pi 的对话框接口(`select` / `confirm` / `input` / `editor`);下面会包一层 */
   ui?: Record<string, unknown>
 }
@@ -383,6 +408,83 @@ function startChatBridge(pi: ExtensionAPI): void {
     t.unref?.()
   }
 
+  /**
+   * 状态栏数字:模型 / 上下文 / 输入输出(与 pi 桌面 footer 同一套口径)。
+   * `input`/`output` 是**整会话累计**、不含缓存读写 —— 跟桌面一致比「看起来更多」重要。
+   */
+  const positive = (value: unknown): number => {
+    const n = typeof value === 'number' ? value : Number(value)
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : 0
+  }
+
+  const statusOf = (): Record<string, unknown> | null => {
+    if (!ctx) return null
+    let input = 0
+    let output = 0
+    let cacheRead = 0
+    let cacheWrite = 0
+    try {
+      // shortcut: 每次都遍历整会话(与 pi footer 一样),轮次多了才需要按 entry 数缓存
+      for (const entry of ctx.sessionManager?.getEntries?.() ?? []) {
+        const usage =
+          entry?.type === 'message'
+            ? entry.message?.role === 'assistant' || entry.message?.role === 'toolResult'
+              ? entry.message.usage
+              : undefined
+            : entry?.type === 'usage' || entry?.type === 'compaction' || entry?.type === 'branch_summary'
+              ? entry.usage
+              : undefined
+        if (!usage) continue
+        input += positive(usage.input)
+        output += positive(usage.output)
+        cacheRead += positive(usage.cacheRead)
+        cacheWrite += positive(usage.cacheWrite)
+      }
+    } catch {
+      /* 读不到历史就只发模型与上下文 */
+    }
+
+    let tokens: number | null = null
+    let contextWindow = 0
+    try {
+      const usage = ctx.getContextUsage?.()
+      if (usage) {
+        tokens = typeof usage.tokens === 'number' ? usage.tokens : null
+        contextWindow = positive(usage.contextWindow)
+      }
+    } catch {
+      /* 老版本 pi 没有这个接口 */
+    }
+    if (!contextWindow) contextWindow = positive(ctx.model?.contextWindow)
+
+    const model = typeof ctx.model?.id === 'string' ? ctx.model.id : ''
+    const provider = typeof ctx.model?.provider === 'string' ? ctx.model.provider : ''
+    const thinking = ctx.model?.reasoning && ctx.thinkingLevel ? ctx.thinkingLevel : ''
+    if (!model && !contextWindow && !input && !output) return null
+    return {
+      input,
+      output,
+      cacheRead,
+      cacheWrite,
+      contextTokens: tokens,
+      contextWindow,
+      ...(model ? { model } : {}),
+      ...(provider ? { provider } : {}),
+      ...(thinking ? { thinking } : {})
+    }
+  }
+
+  /** 上一次发出去的状态(序列化后的):数字没变就不发,别拿心跳刷手机 */
+  let lastStatus = ''
+  const pushStatus = (): void => {
+    const status = statusOf()
+    if (!status) return
+    const key = JSON.stringify(status)
+    if (key === lastStatus) return
+    lastStatus = key
+    send({ type: 'status', status })
+  }
+
   /** 手机正在等回答的题:requestId → resolve(手机返回的值) */
   const pendingAsks = new Map<string, (value: unknown) => void>()
   /**
@@ -491,7 +593,16 @@ function startChatBridge(pi: ExtensionAPI): void {
     } catch {
       /* 拿不到历史就只发状态 */
     }
-    send({ type: 'snapshot', messages: messages.slice(-60), busy, pending: pending() })
+    const status = statusOf()
+    // 快照里已经带了状态:记下来,免得紧接着的 pushStatus 再发一条一模一样的
+    if (status) lastStatus = JSON.stringify(status)
+    send({
+      type: 'snapshot',
+      messages: messages.slice(-60),
+      busy,
+      pending: pending(),
+      ...(status ? { status } : {})
+    })
   }
 
   const onDown = (raw: string): void => {
@@ -583,6 +694,7 @@ function startChatBridge(pi: ExtensionAPI): void {
     ctx = eventCtx as unknown as ChatCtx
     wrapDialogs(ctx)
     stateSoon()
+    pushStatus()
   })
   pi.on('agent_start', (_event, eventCtx) => {
     ctx = eventCtx as unknown as ChatCtx
@@ -595,12 +707,24 @@ function startChatBridge(pi: ExtensionAPI): void {
     wrapDialogs(ctx)
     busy = false
     state()
+    // 一轮跑完:上下文和累计 token 都变了
+    pushStatus()
+  })
+  pi.on('model_select', (_event, eventCtx) => {
+    ctx = eventCtx as unknown as ChatCtx
+    pushStatus()
+  })
+  pi.on('thinking_level_select', (_event, eventCtx) => {
+    ctx = eventCtx as unknown as ChatCtx
+    pushStatus()
   })
   pi.on('message_end', (event, eventCtx) => {
     // 顺手把可能新出现的 ui 对象也包上(pi 每次给的 ctx 可能是新对象)
     if (eventCtx) wrapDialogs(eventCtx as unknown as ChatCtx)
-    const messages = chatMessages((event as { message?: PiMessage }).message)
-    for (const message of messages) send({ type: 'message', message })
+    const message = (event as { message?: PiMessage }).message
+    for (const msg of chatMessages(message)) send({ type: 'message', message: msg })
+    // 只有助手消息带模型用量:每条工具结果都去遍历整会话没必要
+    if (message?.role === 'assistant') pushStatus()
   })
   pi.on('session_shutdown', () => {
     stopped = true

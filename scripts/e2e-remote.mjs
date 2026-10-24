@@ -567,6 +567,68 @@ try {
   )
   check(askGone === true, '答完卡片消失')
 
+  // ---------- 状态条:模型 / 输入输出 / 上下文百分比 ----------
+  // 真 pi 那半由 `npm run test:pi:chat` 覆盖(扩展真的发 status);这里验页面怎么画、怎么变色。
+  const statsHidden = await evalOn(pageWs, `document.querySelector('[data-chat-stats]') === null`)
+  check(statsHidden === true, '没有 status 时状态条不占位(旧版扩展也能用)')
+
+  await evalOn(
+    pageWs,
+    `(() => { window.__bowRemote.handle(${JSON.stringify({
+      t: 'chat-status',
+      id: pageSessionId,
+      status: {
+        model: 'claude-sonnet-4',
+        input: 12000,
+        output: 3400,
+        cacheRead: 0,
+        cacheWrite: 0,
+        contextTokens: 76400,
+        contextWindow: 200000
+      }
+    })}) ; return true })()`
+  )
+  const statsShown = await waitFor(
+    async () => (await evalOn(pageWs, `document.querySelector('[data-chat-model]')?.innerText ?? ''`)).length > 0,
+    10000
+  )
+  const statsText = await evalOn(pageWs, `document.querySelector('[data-chat-stats]')?.innerText ?? ''`)
+  check(statsShown === true, '状态条显示模型与 token', statsText)
+  check(String(statsText).includes('claude-sonnet-4'), '状态条上有模型名', statsText)
+  check(String(statsText).includes('12k') && String(statsText).includes('3.4k'), '输入输出按 k 缩写', statsText)
+  const ctxText = await evalOn(pageWs, `document.querySelector('[data-chat-ctx]')?.innerText ?? ''`)
+  check(String(ctxText).includes('38.2%') && String(ctxText).includes('200k'), '上下文显示「百分比/窗口」', ctxText)
+
+  // 快到顶(95%)→ 变红;未知 token(compact 刚做完)→ 显示「?」而不是 0%
+  await evalOn(
+    pageWs,
+    `(() => { window.__bowRemote.handle(${JSON.stringify({
+      t: 'chat-status',
+      id: pageSessionId,
+      status: { model: 'gpt-5', input: 0, output: 0, cacheRead: 0, cacheWrite: 0, contextTokens: 190000, contextWindow: 200000 }
+    })}) ; return true })()`
+  )
+  const ctxHot = await waitFor(
+    async () =>
+      (await evalOn(pageWs, `document.querySelector('[data-chat-ctx]')?.className ?? ''`)) === 'stat error',
+    5000
+  )
+  check(ctxHot === true, '上下文 >90% 变红(提醒该 compact 了)')
+
+  await evalOn(
+    pageWs,
+    `(() => { window.__bowRemote.handle(${JSON.stringify({
+      t: 'chat-status',
+      id: pageSessionId,
+      status: { model: 'gpt-5', input: 0, output: 0, cacheRead: 0, cacheWrite: 0, contextTokens: null, contextWindow: 200000 }
+    })}) ; return true })()`
+  )
+  const ctxUnknown = await waitFor(
+    async () => (await evalOn(pageWs, `document.querySelector('[data-chat-ctx]')?.innerText ?? ''`)) === '?/200k',
+    5000
+  )
+  check(ctxUnknown === true, 'compact 后 token 未知 → 显示 ?/窗口(不是 0%)')
+
   const backToList = await evalOn(
     pageWs,
     `(() => { document.querySelector('.head .back').click(); return true })()`

@@ -9,7 +9,7 @@
  */
 
 import type { SessionInfo } from '../shared'
-import type { ChatMessage, AskRequest } from './piChat'
+import type { ChatMessage, AskRequest, ChatStatus } from './piChat'
 
 /** 输入文本的单条上限:按键流很小,超过这个数一定是搞错了 */
 export const MAX_INPUT_CHARS = 64 * 1024
@@ -48,9 +48,11 @@ export type ServerMessage =
   | { t: 'closed'; id: number; reason: string }
   | { t: 'read'; id: number; text: string }
   | { t: 'created'; id: number; state: 'starting' | 'running' }
-  | { t: 'chat'; id: number; live: boolean; messages: ChatMessage[]; busy: boolean; pending: number; asks: AskRequest[] }
+  | { t: 'chat'; id: number; live: boolean; messages: ChatMessage[]; busy: boolean; pending: number; asks: AskRequest[]; status?: ChatStatus }
   | { t: 'chat-message'; id: number; message: ChatMessage }
   | { t: 'chat-state'; id: number; live: boolean; busy: boolean; pending: number }
+  /** pi 的状态栏:模型 / 上下文 / 输入输出(手机重连后由 `chat` 快照里的 status 补上) */
+  | { t: 'chat-status'; id: number; status: ChatStatus }
   | { t: 'ask'; id: number; ask: AskRequest }
   | { t: 'ask-done'; id: number; requestId: string }
   | { t: 'error'; message: string }

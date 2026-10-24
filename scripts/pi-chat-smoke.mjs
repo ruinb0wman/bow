@@ -137,6 +137,16 @@ async function main() {
     // ② 收到 history 后回一份快照(空会话也要回,手机靠它判断 live)
     const snapshot = await waitFor((r) => r.type === 'snapshot', 20_000, '等 snapshot')
     check(Array.isArray(snapshot.messages), '收到 snapshot(带 messages 数组)', snapshot)
+    check(
+      typeof snapshot.status?.model === 'string' && snapshot.status.model.length > 0,
+      '快照里带着模型名(手机状态条)',
+      snapshot.status
+    )
+    check(
+      Number(snapshot.status?.contextWindow) > 0,
+      '快照里带着上下文窗口(百分比的分母)',
+      snapshot.status
+    )
 
     // ③ 手机发话 → pi 真的跑起来(忙状态 + 用户消息回显 + 助手回复)
     piSocket.send(JSON.stringify({ type: 'prompt', text: PROMPT }))
@@ -159,6 +169,19 @@ async function main() {
 
     const idle = await waitFor((r) => r.type === 'state' && r.busy === false, 60_000, '等 settle')
     check(idle.busy === false, '这一轮结束后回到 idle')
+
+    // ④ 状态帧:跑完一轮后输入输出与上下文都该有数(手机状态条靠它)
+    const stats = await waitFor(
+      (r) => r.type === 'status' && Number(r.status?.input) > 0 && Number(r.status?.output) > 0,
+      60_000,
+      '等带 token 的 status'
+    )
+    check(stats.status.input > 0 && stats.status.output > 0, '状态帧带着累计输入输出 token', stats.status)
+    check(
+      Number(stats.status.contextWindow) > 0 && (stats.status.contextTokens === null || stats.status.contextTokens > 0),
+      '状态帧带着上下文用量(或 compact 后的 null)',
+      stats.status
+    )
   } finally {
     try {
       child.kill('SIGTERM')
