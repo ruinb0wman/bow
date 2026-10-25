@@ -19,7 +19,7 @@
 import { app } from 'electron'
 import { randomBytes } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { z } from 'zod'
@@ -139,6 +139,15 @@ function killTree(pid: number): void {
     child.unref()
   } catch {
     /* taskkill 不可用也不影响 pty.kill() 的主路径 */
+  }
+}
+
+/** 目录不合法时返回人话,能用就返回 null(spawn 前先验,否则失败只会落在那个终端标签里) */
+function dirProblem(dir: string): string | null {
+  try {
+    return statSync(dir).isDirectory() ? null : `不是目录:${dir}`
+  } catch {
+    return `目录不存在:${dir}`
   }
 }
 
@@ -403,11 +412,16 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
     if (raw.args !== undefined && args.length !== (raw.args as unknown[]).length) {
       return { ok: false, error: 'args 必须是字符串数组' }
     }
+    // 目录先验一遍(**先于开标签**):spawn 时才失败的话错误只会落在那个终端标签里,手机端只看得到「没通道」
+    const cwd = typeof raw.cwd === 'string' && raw.cwd.trim() ? raw.cwd.trim() : ''
+    const name = typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : ''
+    if (command && cwd) {
+      const problem = dirProblem(cwd)
+      if (problem) return { ok: false, error: problem }
+    }
     const tabId = context?.tabs.openInternal('terminal')
     if (tabId == null) return { ok: false, error: '无法新建终端标签(没有可用窗口)' }
     if (command) {
-      const cwd = typeof raw.cwd === 'string' && raw.cwd.trim() ? raw.cwd.trim() : ''
-      const name = typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : ''
       // 时序不变式(见 @shared/terminalRun):openInternal → emit → 页面异步加载 → attach,
       // 所以 emit 一定早于 attach,不需要握手。
       context?.events.emit(TERMINAL_RUN_EVENT, {

@@ -199,6 +199,21 @@ async function realClick(wsUrl, selector) {
   await cdpCall(wsUrl, 'Input.dispatchMouseEvent', { type: 'mouseReleased', ...base })
 }
 
+/** 给 input/textarea 赋值:Vue 的 v-model 只认 native setter + input 事件 */
+async function setInput(wsUrl, selector, value) {
+  return evalOn(
+    wsUrl,
+    `(() => {
+       const el = document.querySelector(${JSON.stringify(selector)})
+       if (!el) return null
+       const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+       Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, ${JSON.stringify(value)})
+       el.dispatchEvent(new Event('input', { bubbles: true }))
+       return el.value
+     })()`
+  )
+}
+
 /** 连远程 WS,收集消息(与 tests/terminalRemoteProtocol.test.ts 同一个套路,但走真网络) */
 async function connectWs(url, headers = {}) {
   const ws = new WebSocket(url, { headers })
@@ -798,6 +813,60 @@ try {
     reclaimed && { cols: reclaimed.cols, want: pcSize.cols }
   )
   taker.close()
+
+  // ---------- 新建面板:目录收藏 + 新建 pi 到某个目录 ----------
+  const plusShown = await waitFor(
+    async () => (await evalOn(pageWs, `!!document.querySelector('[data-new-open]')`)) === true,
+    10000
+  )
+  check(plusShown === true, '列表头有 ＋')
+
+  await evalOn(pageWs, `document.querySelector('[data-new-open]').click()`)
+  const sheetShown = await waitFor(
+    async () => (await evalOn(pageWs, `!!document.querySelector('[data-new-sheet]')`)) === true,
+    5000
+  )
+  check(sheetShown === true, '点 ＋ 打开新建面板')
+
+  // 收藏:填路径 → ☆ → 立刻出现收藏 chip,并写进手机 localStorage
+  await setInput(pageWs, '[data-new-path]', '/tmp/e2e-proj')
+  await evalOn(pageWs, `document.querySelector('[data-new-fav]').click()`)
+  const favState = await waitFor(
+    async () =>
+      await evalOn(
+        pageWs,
+        `(() => {
+           const chips = [...document.querySelectorAll('[data-new-chip]')].map((el) => el.innerText.replace('×', '').trim())
+           return chips.length ? { chips, stored: localStorage.getItem('bow.remote.favs') } : null
+         })()`
+      ),
+    5000
+  )
+  check(
+    favState !== null && String(favState.stored).includes('/tmp/e2e-proj'),
+    '收藏立刻变成 chip 并写进手机本地(下次不用再输路径)',
+    favState
+  )
+
+  // 新建:目录不存在时错要回到面板里(帧里必须带 command=pi + cwd)
+  await setInput(pageWs, '[data-new-path]', '/nope/definitely-not-here')
+  await evalOn(pageWs, `document.querySelector('[data-new-pi]').click()`)
+  const errShown = await waitFor(
+    async () => await evalOn(pageWs, `document.querySelector('[data-new-error]')?.innerText ?? ''`),
+    10000
+  )
+  check(String(errShown).includes('目录不存在'), '目录不存在时原因显示在新建面板里', errShown)
+  const frame = await evalOn(pageWs, `window.__bowRemote.sent.filter((f) => f.t === 'create').pop() ?? null`)
+  check(
+    frame?.command === 'pi' && frame?.cwd === '/nope/definitely-not-here',
+    '手机发出的帧是 create + command=pi + cwd',
+    frame
+  )
+  const stillList = await evalOn(
+    pageWs,
+    `!!document.querySelector('.rows, .empty') && !document.querySelector('.chat')`
+  )
+  check(stillList === true, '新建失败后仍停在列表页(不把人甩进对话页)')
 
   // 收尾:关掉这个页标签
   await evalOn(chromeWs, `window.browserAPI.closeTab(${JSON.stringify(pageTab?.id ?? 0)})`).catch(() => {})

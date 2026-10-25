@@ -24,6 +24,45 @@ const state = ref<'connecting' | 'open' | 'closed' | 'refused'>('connecting')
 /** 当前打开的会话(空 = 显示列表) */
 const active = reactive<{ id: number | null; title: string; cwd: string }>({ id: null, title: '', cwd: '' })
 
+// ---------- 新建:开一个 pi 到某个目录 ----------
+// 收藏的目录存在**手机浏览器**的 localStorage 里(不占服务端):它就是「记几个常用项目路径」。
+// shortcut: 只在这台手机的浏览器里,换端口/清站点数据会丢;要跳设备同步再挑到服务端设置。
+const FAVS_KEY = 'bow.remote.favs'
+const LAST_DIR_KEY = 'bow.remote.lastDir'
+const MAX_FAVS = 20
+
+function readStore(key: string): string {
+  try {
+    return localStorage.getItem(key) ?? ''
+  } catch {
+    return ''
+  }
+}
+function writeStore(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    /* 隐私模式 / 配额满:收藏只是便利,存不上不能挡住新建 */
+  }
+}
+function loadFavs(): string[] {
+  try {
+    const raw: unknown = JSON.parse(readStore(FAVS_KEY) || '[]')
+    return Array.isArray(raw)
+      ? raw.filter((x): x is string => typeof x === 'string' && !!x.trim()).slice(0, MAX_FAVS)
+      : []
+  } catch {
+    return []
+  }
+}
+
+const newOpen = ref(false)
+const newPath = ref('')
+const newError = ref('')
+/** 这次 `created` 是手机自己发起的(才自动进对话页,别抢电脑上开出来的会话) */
+let pendingCreate = false
+const favs = ref<string[]>(loadFavs())
+
 /** 对话快照(服务端缓存的那份镜像;手机不存历史) */
 const chat = reactive<{
   messages: ChatMessage[]
@@ -150,6 +189,14 @@ function handle(msg: ServerMessage): void {
       chat.pending = msg.pending
       chat.live = msg.live
       break
+    case 'created':
+      // 只接管手机自己开的那个:电脑上开出来的会话不该把手机顶进对话页
+      if (!pendingCreate) break
+      pendingCreate = false
+      writeStore(LAST_DIR_KEY, newPath.value.trim())
+      newOpen.value = false
+      attach(msg.id, newPath.value.trim())
+      break
     case 'exit':
       if (msg.id === active.id) chat.live = false
       break
@@ -158,7 +205,11 @@ function handle(msg: ServerMessage): void {
       break
     case 'error':
       if (!authed.value) loginError.value = msg.message
-      else {
+      else if (pendingCreate) {
+        // 目录不存在这类错要停在新建面板里说,别甩到对话页(那里根本没有会话)
+        pendingCreate = false
+        newError.value = msg.message
+      } else {
         // `at` 每次变:同一条错误重复出现时,页面那侧的 watch 仍然会触发(草稿要还回去)
         chatError.text = msg.message
         chatError.at = Date.now()
@@ -167,6 +218,54 @@ function handle(msg: ServerMessage): void {
     default:
       break
   }
+}
+
+// ---------- 新建面板 ----------
+
+/** 现有会话的工作目录去重 = 「最近」,不用另存一份历史 */
+const recentDirs = computed(() => {
+  const seen = new Set(favs.value)
+  const out: string[] = []
+  for (const info of sessions.value) {
+    const dir = info.cwd?.trim()
+    if (!dir || seen.has(dir)) continue
+    seen.add(dir)
+    out.push(dir)
+  }
+  return out.slice(0, 6)
+})
+const isFav = computed(() => favs.value.includes(newPath.value.trim()))
+
+function openNew(): void {
+  newPath.value =
+    readStore(LAST_DIR_KEY) || sessions.value.find((info) => info.cwd?.trim())?.cwd || ''
+  newError.value = ''
+  pendingCreate = false
+  newOpen.value = true
+}
+
+function toggleFav(): void {
+  const dir = newPath.value.trim()
+  if (!dir) return
+  favs.value = favs.value.includes(dir)
+    ? favs.value.filter((f) => f !== dir)
+    : [...favs.value, dir].slice(-MAX_FAVS)
+  writeStore(FAVS_KEY, JSON.stringify(favs.value))
+}
+
+function removeFav(dir: string): void {
+  favs.value = favs.value.filter((f) => f !== dir)
+  writeStore(FAVS_KEY, JSON.stringify(favs.value))
+}
+
+/** 开一个 pi 在指定目录(留空 = 主目录)。**不带 `command` 的 create 主进程会忽略 cwd**,所以这里只有这一种 */
+function createPi(): void {
+  const cwd = newPath.value.trim()
+  const frame = { t: 'create', command: 'pi', ...(cwd ? { cwd } : {}) }
+  note(frame)
+  socket?.send(frame as never)
+  pendingCreate = true
+  newError.value = ''
 }
 
 /** 拉一次对话快照(打开的会话 / 重连后 / 刚切过来) */
@@ -182,11 +281,11 @@ function requestChat(id: number): void {
   socket?.send({ t: 'chat', id })
 }
 
-function attach(id: number): void {
+function attach(id: number, fallbackCwd = ''): void {
   const info = sessions.value.find((s) => s.id === id)
   active.id = id
   active.title = info?.title ?? ''
-  active.cwd = info?.cwd ?? ''
+  active.cwd = info?.cwd ?? fallbackCwd
   requestChat(id)
 }
 
@@ -317,11 +416,13 @@ const needsLogin = computed(() => !authed.value || state.value === 'refused')
         <span class="brand">bow · 会话</span>
         <span class="count">{{ sessions.length }} 个会话</span>
         <span class="conn" :class="state">{{ state === 'open' ? '已连接' : state === 'connecting' ? '连接中…' : '已断开' }}</span>
+        <button class="new" data-new-open title="新建 pi" @click="openNew">＋</button>
       </header>
 
       <div v-if="sessions.length === 0" class="empty">
         <p>还没有终端会话。</p>
         <p>在电脑上开一个终端并在里面跑 <code>pi</code>,它就会出现在这里。</p>
+        <button class="primary" data-new-empty @click="openNew">新建 pi</button>
       </div>
 
       <ul v-else class="rows">
@@ -343,6 +444,45 @@ const needsLogin = computed(() => !authed.value || state.value === 'refused')
           <span class="ago">{{ ago(info) }}</span>
         </li>
       </ul>
+
+      <!-- 新建:只选目录 + 选命令。目录来源是收藏(手机本地)与现有会话的 cwd -->
+      <div v-if="newOpen" class="backdrop" data-new-backdrop @click="newOpen = false" />
+      <div v-if="newOpen" class="new-sheet" data-new-sheet>
+        <div class="section">新建到目录</div>
+        <div class="path-row">
+          <input
+            v-model="newPath"
+            class="new-path"
+            data-new-path
+            type="text"
+            inputmode="text"
+            autocomplete="off"
+            placeholder="留空 = 主目录"
+          />
+          <button class="star" :class="{ on: isFav }" data-new-fav :disabled="!newPath.trim()" @click="toggleFav">
+            {{ isFav ? '★' : '☆' }}
+          </button>
+        </div>
+
+        <div v-if="favs.length" class="chips">
+          <span class="chips-label">收藏</span>
+          <button v-for="dir in favs" :key="dir" class="chip" data-new-chip @click="newPath = dir">
+            {{ shortPath(dir, 24) }}
+            <span class="chip-x" data-new-unfav @click.stop="removeFav(dir)">×</span>
+          </button>
+        </div>
+        <div v-if="recentDirs.length" class="chips">
+          <span class="chips-label">最近</span>
+          <button v-for="dir in recentDirs" :key="dir" class="chip" @click="newPath = dir">
+            {{ shortPath(dir, 24) }}
+          </button>
+        </div>
+
+        <div class="acts">
+          <button class="primary" data-new-pi :disabled="state !== 'open'" @click="createPi">新建 pi</button>
+        </div>
+        <p v-if="newError" class="err" data-new-error>{{ newError }}</p>
+      </div>
     </div>
   </div>
 </template>
@@ -462,6 +602,90 @@ form {
 }
 .empty p {
   margin: 0;
+}
+.new {
+  min-width: 40px;
+  padding: 0 10px;
+  font-size: 16px;
+}
+
+/* 新建面板:固定在底部,不顶走列表 */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9;
+}
+.new-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+  border-top: 1px solid #33353f;
+  background: #24252c;
+  font-size: 13px;
+}
+.section {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.path-row {
+  display: flex;
+  gap: 8px;
+}
+.new-path {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 16px;
+}
+.star {
+  flex: none;
+  min-width: 44px;
+  padding: 0 10px;
+  font-size: 16px;
+  color: var(--muted);
+}
+.star.on {
+  color: #e8c14a;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.chips-label {
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 4px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.chip-x {
+  color: var(--muted);
+  padding: 0 2px;
+}
+.acts {
+  display: flex;
+  gap: 8px;
+}
+.acts button {
+  flex: 1;
 }
 .rows {
   list-style: none;

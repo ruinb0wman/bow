@@ -413,10 +413,21 @@ describe('会话操作(本地面板 / 远程 / MCP 共用的那一批)', () => {
 
   it('createSession 带命令:发 terminal:run,并带上 cwd / name', async () => {
     const h = await harness()
-    await h.invoke('createSession', { command: 'pi', args: ['--print'], cwd: '/tmp/p', name: 'pi(print)' })
-    expect(h.runRequests).toEqual([
-      { tabId: 101, file: 'pi', args: ['--print'], cwd: '/tmp/p', name: 'pi(print)' }
-    ])
+    // cwd 会先校验(不存在就不开标签),所以这里用真目录
+    await h.invoke('createSession', { command: 'pi', args: ['--print'], cwd: '/tmp', name: 'pi(print)' })
+    expect(h.runRequests).toEqual([{ tabId: 101, file: 'pi', args: ['--print'], cwd: '/tmp', name: 'pi(print)' }])
+  })
+
+  it('createSession 的 cwd 不存在 / 不是目录 → 直接拒(不开标签、不发 terminal:run)', async () => {
+    const h = await harness()
+    const missing = await h.invoke<{ ok: boolean; error?: string }>('createSession', {
+      command: 'pi',
+      cwd: '/definitely/not/here'
+    })
+    expect(missing.ok).toBe(false)
+    expect(String(missing.error)).toContain('目录不存在')
+    expect(h.opened).toEqual([])
+    expect(h.runRequests).toEqual([])
   })
 
   it('createSession 的非法 args 被拒,且不产生 terminal:run', async () => {
@@ -486,10 +497,10 @@ describe('MCP 工具(一个 pi 管它的同类)', () => {
     vi.useRealTimers() // waitForRun 靠 setTimeout 推进,假时钟会把它冻死
     const h = await harness()
     const body = payloadOf(
-      await h.tools.get('terminal_run')!({ command: 'pi', args: ['--print'], cwd: '/tmp/p', name: 'pi' })
+      await h.tools.get('terminal_run')!({ command: 'pi', args: ['--print'], cwd: '/tmp', name: 'pi' })
     )
     expect(body).toMatchObject({ ok: true, id: 101, state: 'starting' })
-    expect(h.runRequests).toEqual([{ tabId: 101, file: 'pi', args: ['--print'], cwd: '/tmp/p', name: 'pi' }])
+    expect(h.runRequests).toEqual([{ tabId: 101, file: 'pi', args: ['--print'], cwd: '/tmp', name: 'pi' }])
     expect(String(body.note)).toContain('仍在启动')
   })
 

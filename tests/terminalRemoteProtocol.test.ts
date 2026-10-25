@@ -133,6 +133,11 @@ describe('parseClientMessage', () => {
     })
     expect(parseClientMessage({ t: 'create', command: '   ' }).ok).toBe(false) // 空串是错,省略才是默认
     expect(parseClientMessage({ t: 'create', command: 'pi', args: [1] }).ok).toBe(false)
+    // 手机新建 pi 到某个目录:这是那条路径唯一的载体,cwd 必须原样过去(只去两端空白)
+    expect(parseClientMessage({ t: 'create', command: 'pi', cwd: ' /home/u/proj ' })).toEqual({
+      ok: true,
+      message: { t: 'create', command: 'pi', args: [], cwd: '/home/u/proj' }
+    })
   })
 
   it('非法输入一律 {ok:false} 且带原因(客户端据此回 error,不猜)', () => {
