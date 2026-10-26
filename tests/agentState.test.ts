@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { AGENT_DONE_BADGE_MS, BOW_OSC_PREFIX, OscSignalParser, badgeOfSignal, notificationCopy } from '../src/shared/agentState'
+import { AGENT_DONE_BADGE_MS, BOW_OSC_PREFIX, MAX_AGENT_CWD, OscSignalParser, badgeOfSignal, notificationCopy } from '../src/shared/agentState'
 
 const BEL = '\x07'
 const ST = '\x1b\\'
@@ -86,6 +86,19 @@ describe('OscSignalParser:文本与信号的分离', () => {
     const p = new OscSignalParser()
     const r = p.feed(sig({ v: 1, state: 'working', done: true }))
     expect(r.signals).toEqual([{ v: 1, state: 'working' }])
+  })
+
+  it('cwd 原样带回(两端去空白、超长截断、空白丢弃)', () => {
+    const p = new OscSignalParser()
+    expect(p.feed(sig({ v: 1, state: 'working', cwd: ' /home/u/proj ' })).signals[0]).toEqual({
+      v: 1,
+      state: 'working',
+      cwd: '/home/u/proj'
+    })
+    expect(p.feed(sig({ v: 1, state: 'working', cwd: `/${'x'.repeat(2000)}` })).signals[0]?.cwd).toHaveLength(
+      MAX_AGENT_CWD
+    )
+    expect(p.feed(sig({ v: 1, state: 'idle', cwd: '   ' })).signals[0]).toEqual({ v: 1, state: 'idle' })
   })
 
   it('永不结束的序列最终当普通文本放行(坏流不能把内存吃掉)', () => {

@@ -28,15 +28,20 @@ interface SpawnCall {
 }
 
 class FakePty {
+  written: string[] = []
   onData(): void {}
   onExit(): void {}
-  write(): void {}
+  write(data: string): void {
+    this.written.push(data)
+  }
   resize(): void {}
   kill(): void {}
 }
 
 interface Harness {
   spawns: SpawnCall[]
+  /** 第 0 个假 pty(spawn 之后可以看写进去了什么) */
+  pty: FakePty
   /** 让第 n 次 spawn 抛错(从 1 开始) */
   failNextSpawn: () => void
   run: (payload: unknown) => void
@@ -46,6 +51,7 @@ interface Harness {
 
 async function harness(platform = 'win32'): Promise<Harness> {
   const spawns: SpawnCall[] = []
+  const ptys: FakePty[] = []
   const errors: string[] = []
   let failOnce = false
   const handlers = new Map<string, (...args: never[]) => unknown>()
@@ -70,6 +76,7 @@ async function harness(platform = 'win32'): Promise<Harness> {
   } as unknown as PluginContext
 
   const plugin = createTerminalPlugin({
+    platform: platform as NodeJS.Platform,
     loadPty: async () =>
       ({
         spawn: (file: string, args: string[], opts: { cwd: string }) => {
@@ -78,7 +85,9 @@ async function harness(platform = 'win32'): Promise<Harness> {
             throw new Error('spawn 失败(测试)')
           }
           spawns.push({ file, args, cwd: opts.cwd })
-          return new FakePty()
+          const pty = new FakePty()
+          ptys.push(pty)
+          return pty
         }
       }) as unknown as Awaited<ReturnType<NonNullable<Parameters<typeof createTerminalPlugin>[0]>['loadPty']>>
   })
@@ -86,6 +95,9 @@ async function harness(platform = 'win32'): Promise<Harness> {
 
   return {
     spawns,
+    get pty() {
+      return ptys[0]!
+    },
     failNextSpawn: () => {
       failOnce = true
     },
@@ -131,6 +143,24 @@ describe('终端插件:terminal:run', () => {
     h.run({ tabId: 7, file: 'wsl.exe', args: ['-e', 'nvim'] })
     await h.attach(7)
     expect(h.spawns[0]?.cwd).toBe(homedir())
+  })
+
+  it('Windows + WSL 路径:spawn wsl.exe --cd,命令打进它的交互 shell', async () => {
+    // 为什么要打进 shell 而不是 `wsl.exe -e pi`:pi 的 PATH 只配在 ~/.zshrc 里,
+    // 非交互 shell 读不到 → `wsl.exe -- pi` 是 command not found(实测)
+    const h = await harness('win32')
+    h.run({ tabId: 7, file: 'pi', args: [], cwd: '/home/u/proj' })
+    expect((await h.attach(7)).profileName).toBe('pi')
+    expect(h.spawns).toEqual([{ file: 'wsl.exe', args: ['--cd', '/home/u/proj'], cwd: homedir() }])
+    expect(h.pty.written).toEqual(['pi\r'])
+  })
+
+  it('非 Windows 平台照旧直接 spawn(不包 wsl.exe)', async () => {
+    const h = await harness('linux')
+    h.run({ tabId: 7, file: 'pi', args: [], cwd: '/home/u/proj' })
+    await h.attach(7)
+    expect(h.spawns).toEqual([{ file: 'pi', args: [], cwd: '/home/u/proj' }])
+    expect(h.pty.written).toEqual([])
   })
 
   it('命令用掉即删:第二次 attach 复用会话,不重复 spawn', async () => {

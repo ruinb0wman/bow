@@ -412,7 +412,7 @@ export interface SessionInfo {
   /** 标签标题的来源:profileName,或 `terminal:run` 带来的命令名 */
   title: string
   profileId: string
-  /** 实际 spawn 的工作目录(`profile.cwd` 为空时是用户主目录) */
+  /** 工作目录:spawn 时的目录(`profile.cwd` 为空时是用户主目录);终端里的代理会报自己的真目录覆盖它 */
   cwd: string
   pid: number
   cols: number
@@ -486,6 +486,42 @@ export function withWindowsExeSuffix(file: string, platform: string = process.pl
   const name = file.trim()
   if (!name || name.includes('\\') || name.includes('/') || /\.[A-Za-z0-9]{1,8}$/.test(name)) return name
   return `${name}.exe`
+}
+
+/**
+ * Windows 上这条 cwd 是不是**发行版里**的路径(`/home/u/proj`)。
+ *
+ * 判据只看平台与前缀:这类路径在 Windows 侧 `statSync` 会被解析成 `C:\home\u\proj`(必然不存在),
+ * spawn 出来的进程也进不去 —— 只有 `wsl.exe` 认它。
+ */
+export function isWslPath(cwd: string, platform: string = process.platform): boolean {
+  return platform === 'win32' && cwd.trim().startsWith('/')
+}
+
+/** 把一条命令改成「在发行版的交互 shell 里敲」的结果(见 `wslWrap`) */
+export interface WslWrap {
+  /** 给 `wsl.exe` 的参数(目录在前,命令从 stdin 打进去) */
+  args: string[]
+  /** spawn 之后要打进 pty 的那一行(含换行) */
+  type: string
+}
+
+/**
+ * Windows + WSL 路径 → `wsl.exe --cd <dir>`,命令**打进交互 shell**而不是 `wsl.exe -e <cmd>`。
+ *
+ * 为什么不用 `-e`(编辑器插件那条路):pi 装在 `~/.bun/bin`,而 PATH 只在 `~/.zshrc` 里 ——
+ * 实测 `wsl.exe -- pi` / `wsl.exe -- zsh -lc pi` / `wsl.exe -- bash -lc pi` 全是
+ * `command not found`,只有交互 shell(`zsh -ic`)才找得到。
+ * 打进交互 shell 还有一个好处:用户自己的 rc 里怎么配环境都算数,和桌面上手敲一模一样。
+ *
+ * 非 Windows / 非 POSIX 路径返回 null(调用方走原来的路)。
+ */
+export function wslWrap(command: string, args: readonly string[], cwd: string, platform: string = process.platform): WslWrap | null {
+  if (!isWslPath(cwd, platform)) return null
+  // shortcut: 参数按空格拼(不转义),手机只会发 `pi`;要传带空格的参数时改成 shell 引号
+  const line = [command.trim(), ...args].join(' ').trim()
+  if (!line) return null
+  return { args: ['--cd', cwd.trim()], type: `${line}\r` }
 }
 
 /**

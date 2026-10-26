@@ -18,7 +18,7 @@
 
 import { app } from 'electron'
 import { randomBytes } from 'node:crypto'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
@@ -51,6 +51,7 @@ import {
   defaultRemoteSettings,
   emptyReplay,
   findInPath,
+  isWslPath,
   normalizeSettings,
   platformProfiles,
   pushReplay,
@@ -58,7 +59,8 @@ import {
   replayText,
   sessionSignature,
   withBowTerminalEnv,
-  withWindowsExeSuffix
+  withWindowsExeSuffix,
+  wslWrap
 } from './shared'
 import type {
   ReplayBuffer,
@@ -87,6 +89,8 @@ export interface TerminalPluginDeps {
    * pty 是在终端页 attach 时才 spawn 的,不等一下就只能拿「标签开好了」当成功。
    */
   runWaitMs?: number
+  /** 平台(默认 `process.platform`;单测要在 Linux 上验 Windows 的 WSL 包裹果) */
+  platform?: NodeJS.Platform
 }
 
 interface Session {
@@ -106,7 +110,7 @@ interface Session {
   agentKey: string | null
   /** 见过桥接信号(`1337;bow`)之后,pi 内建的 `9;4` 降级信号就不再采信 */
   sawBridge: boolean
-  /** 实际 spawn 的工作目录(台账要看;`profile.cwd` 为空时是用户主目录) */
+  /** 工作目录:`profile.cwd` / `terminal_run` 给的路径;跑了代理之后以代理报的为准(见 reportAgent) */
   cwd: string
   createdAt: number
   /** 最后一次收到 pty 输出的时刻;null = 还没产出过 */
@@ -144,6 +148,12 @@ function killTree(pid: number): void {
 
 /** 目录不合法时返回人话,能用就返回 null(spawn 前先验,否则失败只会落在那个终端标签里) */
 function dirProblem(dir: string): string | null {
+  // Windows 上的 POSIX 路径(手机新建 pi 到 WSL 目录):Windows 的 statSync 会把它解析成
+  // `C:\home\…` 然后 ENOENT,只能进发行版问一声(实测 ~180ms,按钮点一次可以接受)
+  if (isWslPath(dir)) {
+    const probe = spawnSync('wsl.exe', ['-e', 'test', '-d', dir.trim()], { timeout: 5000 })
+    return probe.status === 0 ? null : `目录不存在(不在这台机器的 WSL 里):${dir}`
+  }
   try {
     return statSync(dir).isDirectory() ? null : `不是目录:${dir}`
   } catch {
@@ -198,6 +208,7 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
   const runFailures = new Map<number, string>()
   /** `terminal_run` 最多等多久 spawn 结论(见 TerminalPluginDeps.runWaitMs) */
   const runWaitMs = deps.runWaitMs ?? 3000
+  const platform = deps.platform ?? process.platform
   /** 远程订阅扇出:pty 输出与台账的第二个出口(第一个是渲染层 IPC) */
   const hub = new SessionHub()
   /** 对话桥:pi 的结构化对话 → 手机(见 remote/piChat 的注释,为什么不渲 xterm) */
@@ -281,6 +292,8 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
       ...(signal.text ? { text: signal.text } : {}),
       at: Date.now()
     }
+    // 代理报的 cwd 才是真目录(WSL 里是 `/home/…`,而启动 pty 的是 `C:\Users\…` 那个壳)
+    if (signal.cwd) session.cwd = signal.cwd
     context?.service.agent.report({ ...signal, tabId: session.tabId })
     notifySessions()
   }
@@ -635,16 +648,21 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
     const profile = defaultProfile(settings)
     // 内核事件 `terminal:run` 指定的命令优先(编辑器插件用这条路开 nvim);没有就用默认 shell profile,即今天的行为。
     const run = pendingRuns.get(tabId)
-    const spec = run
-      ? buildCommandSpawn(
-          // Windows 上裸命令要补 `.exe`,否则 node-pty 直接报 File not found(见 withWindowsExeSuffix)
-          { ...run, file: withWindowsExeSuffix(run.file) },
-          { homedir: homedir() }
-        )
-      : buildSpawnSpec(profile, { homedir: homedir() })
+    // Windows + WSL 路径:目录交给 `wsl.exe --cd`,命令打进它的交互 shell(见 wslWrap:
+    // `wsl.exe -e pi` 找不到 pi,PATH 只配在不被非交互 shell 读的 rc 里)
+    const wrap = run ? wslWrap(run.file, run.args, run.cwd ?? '', platform) : null
+    const spec = wrap
+      ? { file: 'wsl.exe', args: wrap.args, cwd: homedir() }
+      : run
+        ? buildCommandSpawn(
+            // Windows 上裸命令要补 `.exe`,否则 node-pty 直接报 File not found(见 withWindowsExeSuffix)
+            { ...run, file: withWindowsExeSuffix(run.file, platform) },
+            { homedir: homedir() }
+          )
+        : buildSpawnSpec(profile, { homedir: homedir() })
     // 标签标题用命令名(`nvim(a.txt)`):终端页拿 `profileName` 当标题,前端不用改一行
     const profileId = run ? 'command' : profile.id
-    const profileName = run ? (run.name ?? spec.file) : profile.name
+    const profileName = run ? (run.name ?? run.file) : profile.name
 
     let mod: PtyModule
     try {
@@ -690,6 +708,8 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
       }
       sessions.set(tabId, session)
       runFailures.delete(tabId)
+      // 包裹时命令要自己敲进交互 shell(tty 的行缓冲会先存着,和手敲一样)
+      if (wrap) proc.write(wrap.type)
       notifySessions()
       proc.onData((data) => {
         // "活跃"看的是 pty 有没有产出 —— 带着 OSC 信号的 chunk 也算(代理在跑 = 肯定活跃)

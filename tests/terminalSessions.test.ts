@@ -37,7 +37,9 @@ const {
   sessionSignature,
   shortPath,
   sortSessionsByAttention,
-  withWindowsExeSuffix
+  withWindowsExeSuffix,
+  isWslPath,
+  wslWrap
 } = await import('../src/plugins/terminal/shared')
 const { TERMINAL_RUN_EVENT } = await import('../src/shared/terminalRun')
 type PluginContext = import('../src/main/plugins/types').PluginContext
@@ -342,6 +344,17 @@ describe('终端会话台账', () => {
     expect(h.emitted(TERMINAL_EVENTS.data)).toEqual([])
   })
 
+  it('代理报的 cwd 盖掉启动目录(手机看到的是 pi 的真目录,不是 wsl.exe 那个壳)', async () => {
+    const h = await harness()
+    await h.attach(7)
+    const atSpawn = (await h.invoke<SessionInfo[]>('listSessions'))[0]!.cwd
+    const osc = `\x1b]1337;bow;${JSON.stringify({ v: 1, state: 'working', cwd: '/home/u/proj' })}\x07`
+    h.ptys[0]!.onDataCb?.(osc)
+    settle()
+    expect((await h.invoke<SessionInfo[]>('listSessions'))[0]!.cwd).toBe('/home/u/proj')
+    expect(atSpawn).not.toBe('/home/u/proj')
+  })
+
   it('shell 退出后从台账里消失', async () => {
     const h = await harness()
     await h.attach(7)
@@ -537,6 +550,32 @@ describe('MCP 工具(一个 pi 管它的同类)', () => {
 })
 
 // ---------- Windows 裸命令补全 ----------
+
+describe('isWslPath / wslWrap(WSL 路径交给 wsl.exe)', () => {
+  it('只有 Windows 上的 POSIX 路径算 WSL 路径', () => {
+    expect(isWslPath('/home/u/proj', 'win32')).toBe(true)
+    expect(isWslPath('  /home/u/proj  ', 'win32')).toBe(true)
+    expect(isWslPath('C:\\tmp', 'win32')).toBe(false)
+    expect(isWslPath('/home/u/proj', 'linux')).toBe(false)
+  })
+
+  it('包成 wsl.exe --cd,命令连换行一起打进交互 shell', () => {
+    expect(wslWrap('pi', [], '/home/u/proj', 'win32')).toEqual({
+      args: ['--cd', '/home/u/proj'],
+      type: 'pi\r'
+    })
+    expect(wslWrap('  pi  ', ['--x'], ' /home/u/p ', 'win32')).toEqual({
+      args: ['--cd', '/home/u/p'],
+      type: 'pi --x\r'
+    })
+  })
+
+  it('Windows 路径 / 非 Windows / 空命令一律不包(走原来的路)', () => {
+    expect(wslWrap('pi', [], 'C:\\tmp', 'win32')).toBeNull()
+    expect(wslWrap('pi', [], '/home/u/p', 'linux')).toBeNull()
+    expect(wslWrap('   ', [], '/home/u/p', 'win32')).toBeNull()
+  })
+})
 
 describe('withWindowsExeSuffix', () => {
   it('Windows:裸名补 .exe,带路径或已带扩展名的一律不动', () => {

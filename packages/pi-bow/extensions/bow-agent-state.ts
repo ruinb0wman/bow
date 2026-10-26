@@ -104,6 +104,8 @@ interface Payload {
   agent?: string
   title?: string
   text?: string
+  /** 自己的目录:bow 那边的 cwd 是 pty 的启动目录(WSL 里是 Windows 侧的壳),手机要的是这个 */
+  cwd?: string
 }
 
 export default function (pi: ExtensionAPI) {
@@ -141,6 +143,8 @@ export default function (pi: ExtensionAPI) {
     if (done) payload.done = true
     if (title) payload.title = title
     if (text) payload.text = text
+    // pi 的真实工作目录(WSL 里是 /home/…):bow 台账只看得到 pty 的启动目录
+    if (process.cwd()) payload.cwd = process.cwd()
     // 只写一条零宽 OSC:与 pi 自己的 TUI 渲染同线程串行,不会撕裂在某一帧中间
     // (pi 自己的 `9;4` 进度序列就是这么写的)。JSON.stringify 保证串里不会出现裸 BEL / ESC。
     process.stdout.write(`${OSC_PREFIX}${JSON.stringify(payload)}${BEL}`)

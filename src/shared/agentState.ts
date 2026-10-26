@@ -74,7 +74,15 @@ export interface AgentSignal {
   title?: string
   /** 副标题(如 `π - bow - /path/to/cwd`) */
   text?: string
+  /**
+   * 代理自己的目录(`process.cwd()`)。**不是** pty 的启动目录:wsl.exe 那个壳的 cwd 是
+   * `C:\Users\…`,而 pi 实际在 `/home/…` —— 手机要显示后者。
+   */
+  cwd?: string
 }
+
+/** `cwd` 的长度上限(路径再长也没信息量,防一条坏负载把台账撑坏) */
+export const MAX_AGENT_CWD = 400
 
 /** 降级进度信号(pi 内建 OSC 9;4) */
 export type OscProgressHint = 'active' | 'clear'
@@ -116,6 +124,7 @@ export function normalizeAgentSignal(input: unknown): AgentSignal | null {
   if (typeof raw.agent === 'string' && raw.agent.trim()) signal.agent = raw.agent.trim()
   if (typeof raw.title === 'string' && raw.title) signal.title = raw.title
   if (typeof raw.text === 'string' && raw.text) signal.text = raw.text
+  if (typeof raw.cwd === 'string' && raw.cwd.trim()) signal.cwd = raw.cwd.trim().slice(0, MAX_AGENT_CWD)
   return signal
 }
 
