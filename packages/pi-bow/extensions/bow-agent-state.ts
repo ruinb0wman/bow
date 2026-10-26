@@ -796,5 +796,38 @@ function startChatBridge(pi: ExtensionAPI): void {
     socket = null
   })
 
+  // ---- 手机上的「新会话 / 重载」----
+  // pi 把 `newSession()` / `reload()` 只挂在**命令** ctx 上(事件回调拿到的 ctx 没有),
+  // 而内置的 `/new` `/reload` 既不进 `getCommands()` 也不走 prompt 展开 ⇒ 想在手机上用,
+  // 唯一的路是自己注册命令,让手机那句 `/xxx` 走 `sendUserMessage(expandPromptTemplates)`。
+  // 名字不能叫 `new` / `reload`:pi 会报「与内置交互命令冲突」并跳过补全,且终端里走内置、
+  // 手机里走这里,两条路优先级相反 —— 同一个名字会变成两种行为。
+  pi.registerCommand('bow-new', {
+    description: '新会话(清空上下文,工作目录不变)',
+    handler: async (_args, cmdCtx) => {
+      // `newSession()` 自己不做忙闲检查:中途新建会把正在跑的一轮丢进废会话
+      if (cmdCtx.isIdle() !== true) {
+        notice('正在跑,等这一轮结束再新建会话')
+        return
+      }
+      // 必须在 newSession 之前发:它会拆掉本扩展实例,socket 随即关闭
+      notice('正在新建会话…')
+      await cmdCtx.newSession()
+    }
+  })
+
+  pi.registerCommand('bow-reload', {
+    description: '重载扩展 / 技能 / 提示模板 / 主题',
+    handler: async (_args, cmdCtx) => {
+      // `reload()` 内部也会拒(streaming / 压缩中),但它只在**终端**打 warning,手机收不到
+      if (cmdCtx.isIdle() !== true) {
+        notice('正在跑或正在压缩,等结束再重载')
+        return
+      }
+      notice('正在重载,手机通道会断开几秒…')
+      await cmdCtx.reload()
+    }
+  })
+
   connect()
 }

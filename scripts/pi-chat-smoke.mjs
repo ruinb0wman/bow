@@ -206,6 +206,36 @@ async function main() {
     )
     check(rejected.message.role === 'notice', '未知命令当场回一条提示(不发给模型)')
 
+    // ②e 手机上的「新会话」:扩展命令 → pi 真换一个会话 → 桥重连并回一份空快照。
+    // 这条是承重断言:newSession/reload 只挂在命令 ctx 上,走的就是这条路。
+    check(
+      snapshot.commands.some((c) => c?.name === 'bow-new') && snapshot.commands.some((c) => c?.name === 'bow-reload'),
+      '快照里带着 bow 自己的 /bow-new 与 /bow-reload',
+      snapshot.commands
+    )
+    piSocket.send(JSON.stringify({ type: 'prompt', text: '/bow-new' }))
+    const newNotice = await waitFor(
+      (r) =>
+        r.type === 'message' &&
+        r.message?.role === 'notice' &&
+        String(r.message.text ?? '').includes('正在新建会话'),
+      20_000,
+      '等 /bow-new 的提示'
+    )
+    check(newNotice.message.role === 'notice', '`/bow-new` 被当成命令执行(先回一条提示)')
+    const fromIndex = received.indexOf(newNotice)
+    const fresh = await waitFor(
+      (r) => r.type === 'snapshot' && received.indexOf(r) > fromIndex,
+      30_000,
+      '等新会话的快照'
+    )
+    check(
+      Array.isArray(fresh.messages) && fresh.messages.length === 0,
+      '新会话后桥重连并回了空快照(手机据此清空对话页)',
+      fresh.messages?.length
+    )
+    check(fresh.commands?.some((c) => c?.name === 'bow-new'), '重连后的新实例仍注册着 /bow-new', fresh.commands)
+
     // ③ 手机发话 → pi 真的跑起来(忙状态 + 用户消息回显 + 助手回复)
     piSocket.send(JSON.stringify({ type: 'prompt', text: PROMPT }))
     const busy = await waitFor((r) => r.type === 'state' && r.busy === true, 20_000, '等 busy')

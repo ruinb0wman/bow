@@ -93,9 +93,9 @@ describe('三态机', () => {
     s.fire('agent_settled', {}, tuiCtx(() => true))
 
     expect(payloads()).toEqual([
-      { v: 1, state: 'idle', agent: 'pi', text: 'π - 会话名 - bow' },
-      { v: 1, state: 'working', agent: 'pi', text: 'π - 会话名 - bow' },
-      { v: 1, state: 'idle', agent: 'pi', done: true, text: 'π - 会话名 - bow' }
+      { v: 1, state: 'idle', agent: 'pi', text: 'π - 会话名 - bow', cwd: process.cwd() },
+      { v: 1, state: 'working', agent: 'pi', text: 'π - 会话名 - bow', cwd: process.cwd() },
+      { v: 1, state: 'idle', agent: 'pi', done: true, text: 'π - 会话名 - bow', cwd: process.cwd() }
     ])
   })
 
@@ -160,5 +160,143 @@ describe('三态机', () => {
     s.fire('session_shutdown')
     expect(payloads().at(-1)).toMatchObject({ state: 'idle' })
     expect(payloads().at(-1)?.done).toBeUndefined()
+  })
+})
+
+/**
+ * 手机上的「新会话 / 重载」两条命令。
+ *
+ * 要验的只有两件事:**名字没顶 pi 的内置命令**、**忙的时候拒而不是硬调** ——
+ * `newSession()` 自己不做忙闲检查(内置 `/new` 直接调),`reload()` 拒的时候只在终端打 warning,
+ * 手机端什么都收不到。真跑一遍 newSession 属于 `scripts/pi-chat-smoke.mjs` 的活。
+ */
+class FakeSocket {
+  static instances: FakeSocket[] = []
+  readyState = 1
+  sent: Record<string, unknown>[] = []
+  onopen: (() => void) | null = null
+  onmessage: ((event: { data: unknown }) => void) | null = null
+  onclose: (() => void) | null = null
+  onerror: (() => void) | null = null
+  constructor(readonly url: string) {
+    FakeSocket.instances.push(this)
+  }
+  send(data: string): void {
+    this.sent.push(JSON.parse(data) as Record<string, unknown>)
+  }
+  close(): void {
+    this.readyState = 3
+  }
+}
+
+interface CommandOptions {
+  description?: string
+  handler: (args: string, ctx: unknown) => Promise<void>
+}
+
+async function bootBridge(): Promise<Map<string, CommandOptions>> {
+  vi.resetModules()
+  process.env.BOW_TERMINAL = '1'
+  process.env.BOW_SESSION_ID = '7'
+  process.env.BOW_REMOTE_URL = 'ws://127.0.0.1:1/ws'
+  process.env.BOW_CONTROL_TOKEN = 'tk'
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'WebSocket')
+  FakeSocket.instances = []
+  Object.defineProperty(globalThis, 'WebSocket', { value: FakeSocket, configurable: true, writable: true })
+
+  const commands = new Map<string, CommandOptions>()
+  const api = {
+    on: () => () => {},
+    getSessionName: () => undefined,
+    getCommands: () => [],
+    registerCommand: (name: string, options: CommandOptions) => {
+      commands.set(name, options)
+    }
+  }
+  const mod = (await import('../extensions/bow-agent-state')) as { default: (pi: unknown) => void }
+  mod.default(api)
+
+  afterEachRestore.push(() => {
+    if (previous) Object.defineProperty(globalThis, 'WebSocket', previous)
+    else Reflect.deleteProperty(globalThis, 'WebSocket')
+  })
+  return commands
+}
+
+/** FakeSocket 的全局还原(每条用例独立 push,afterEach 里依次执行) */
+const afterEachRestore: Array<() => void> = []
+
+afterEach(() => {
+  while (afterEachRestore.length > 0) afterEachRestore.pop()?.()
+  delete process.env.BOW_SESSION_ID
+  delete process.env.BOW_REMOTE_URL
+  delete process.env.BOW_CONTROL_TOKEN
+})
+
+interface FakeCommandCtx {
+  isIdle: () => boolean
+  newSession: () => Promise<{ cancelled: boolean }>
+  reload: () => Promise<void>
+}
+
+/** `newSession` 调用那一刻已经发出去的帧数(用来钉「先 notice 再动手」) */
+function makeCommandCtx(idle: boolean) {
+  const calls: Array<{ call: string; framesBefore: number }> = []
+  const frames = (): number => FakeSocket.instances.at(-1)?.sent.length ?? 0
+  const ctx: FakeCommandCtx = {
+    isIdle: () => idle,
+    newSession: async () => {
+      calls.push({ call: 'newSession', framesBefore: frames() })
+      return { cancelled: false }
+    },
+    reload: async () => {
+      calls.push({ call: 'reload', framesBefore: frames() })
+    }
+  }
+  return { ctx, calls }
+}
+
+function notices(): string[] {
+  return (FakeSocket.instances.at(-1)?.sent ?? [])
+    .filter((frame) => frame.type === 'message')
+    .map((frame) => String((frame.message as { text?: string }).text ?? ''))
+}
+
+describe('手机上的 /bow-new 与 /bow-reload', () => {
+  it('两条命令都注册了,而且没顶 pi 的内置名', async () => {
+    const commands = await bootBridge()
+    expect([...commands.keys()]).toEqual(['bow-new', 'bow-reload'])
+    // 顶了内置名 pi 会报冲突 warning,且终端/手机两条路的优先级相反
+    expect(commands.has('new')).toBe(false)
+    expect(commands.has('reload')).toBe(false)
+  })
+
+  it('/bow-new:先给一条提示,再 newSession', async () => {
+    const commands = await bootBridge()
+    const { ctx, calls } = makeCommandCtx(true)
+    await commands.get('bow-new')!.handler('', ctx)
+    expect(calls).toEqual([{ call: 'newSession', framesBefore: 1 }])
+    expect(notices().at(-1)).toContain('正在新建会话')
+  })
+
+  it('/bow-new:忙的时候拒,而且把理由说到手机上', async () => {
+    const commands = await bootBridge()
+    const { ctx, calls } = makeCommandCtx(false)
+    await commands.get('bow-new')!.handler('', ctx)
+    expect(calls).toEqual([])
+    expect(notices().at(-1)).toContain('等这一轮结束')
+  })
+
+  it('/bow-reload:闲时重载,忙时拒(理由也要到手机上)', async () => {
+    const commands = await bootBridge()
+    const idle = makeCommandCtx(true)
+    await commands.get('bow-reload')!.handler('', idle.ctx)
+    expect(idle.calls).toEqual([{ call: 'reload', framesBefore: 1 }])
+    expect(notices().at(-1)).toContain('正在重载')
+
+    const busy = makeCommandCtx(false)
+    await commands.get('bow-reload')!.handler('', busy.ctx)
+    expect(busy.calls).toEqual([])
+    expect(notices().at(-1)).toContain('等结束再重载')
   })
 })
