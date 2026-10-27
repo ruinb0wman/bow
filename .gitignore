@@ -9,3 +9,6 @@ dist/
 
 # CodeGraph 本地索引(每台机器各不相同)
 .codegraph/
+
+# wsync 增量同步缓存(内含 target 绝对路径与哈希,每台机器各不相同)
+.wsync/
