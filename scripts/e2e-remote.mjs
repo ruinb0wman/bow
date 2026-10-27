@@ -1001,20 +1001,37 @@ try {
   )
   check(closeBtn === true, '抽屉「功能」里有「关闭这个 pi」')
 
-  await evalOn(
-    pageWs,
-    `(() => { window.confirm = () => false; document.querySelector('[data-chat-close]').click(); return true })()`
+  // 确认框是库的 RConfirmDialog(不是 window.confirm):按按钮文字点
+  const clickConfirmBtn = (label) => `(() => {
+    const hit = [...document.querySelectorAll('.r-confirm-actions button')].find((b) => b.textContent.trim() === ${JSON.stringify(label)})
+    if (!hit) return false
+    hit.click()
+    return true
+  })()`
+
+  await evalOn(pageWs, `(() => { document.querySelector('[data-chat-close]').click(); return true })()`)
+  const asked = await waitFor(
+    async () => (await evalOn(pageWs, `!!document.querySelector('.r-confirm')`)) === true,
+    5000
   )
+  check(asked === true, '关标签先弹确认框(库的 RConfirmDialog)')
+  const cancelled = await evalOn(pageWs, clickConfirmBtn('取消'))
+  check(cancelled === true, '确认框有「取消」')
   const noClose = await evalOn(
     pageWs,
     `JSON.stringify(window.__bowRemote.sent.filter((f) => f.t === 'close'))`
   )
   check(noClose === '[]', '确认框点取消时一个帧都不发', noClose)
-
-  await evalOn(
-    pageWs,
-    `(() => { window.confirm = () => true; document.querySelector('[data-chat-close]').click(); return true })()`
+  const gone = await waitFor(
+    async () => (await evalOn(pageWs, `!document.querySelector('.r-confirm')`)) === true,
+    5000
   )
+  check(gone === true, '取消后确认框收起')
+
+  await evalOn(pageWs, `(() => { document.querySelector('[data-chat-close]').click(); return true })()`)
+  await waitFor(async () => (await evalOn(pageWs, `!!document.querySelector('.r-confirm')`)) === true, 5000)
+  const confirmed = await evalOn(pageWs, clickConfirmBtn('关闭'))
+  check(confirmed === true, '确认框有「关闭」')
   const closedFrame = await evalOn(
     pageWs,
     `JSON.stringify(window.__bowRemote.sent.filter((f) => f.t === 'close'))`

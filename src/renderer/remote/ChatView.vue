@@ -10,7 +10,7 @@
  * 这里只读「忙 / 有排队」两个状态。
  */
 import { computed, nextTick, ref, watch } from 'vue'
-import { RButton } from '@ruinb0w/ui'
+import { RButton, RConfirmDialog } from '@ruinb0w/ui'
 import { fuzzyScore } from '@shared/suggest'
 import type { AskRequest, ChatCommand, ChatMessage, ChatStatus, RemoteSocket } from './ws'
 
@@ -217,6 +217,8 @@ const thinkingLine = computed(() => {
 
 const moreOpen = ref(false)
 const cmdOpen = ref(false)
+/** 「关闭这个 pi」的确认框(库的 RConfirmDialog) */
+const closeAsk = ref(false)
 const cmdQuery = ref('')
 const cmdSearch = ref<HTMLInputElement | null>(null)
 const composerInput = ref<HTMLTextAreaElement | null>(null)
@@ -228,11 +230,15 @@ function closePanels(): void {
 
 /**
  * 关闭这个 pi:帧与桌面标签上的 × 同义 —— pty 进程树一起收、正在跑的那轮会被杀。
- * 手机上误触就找不回来了,所以必须问一句(浏览器原生 confirm 就够,不为一句话造一个面板)。
+ * 手机上误触就找不回来了,所以必须问一句(用库的 RConfirmDialog,遮罩/ESC/层号都是白送的)。
  */
 function confirmClose(): void {
-  const running = props.busy ? '它正在跑,会被中断。\n' : ''
-  if (!window.confirm(`关闭后这个终端标签和里面的 pi 都会没。\n${running}确定关闭?`)) return
+  closeAsk.value = true
+}
+
+/** 确认过了:收起确认框再交给上层收标签 */
+function doClose(): void {
+  closeAsk.value = false
   emit('close')
 }
 
@@ -444,8 +450,11 @@ const visibleAsks = computed(() => props.asks.filter((ask) => !hiddenAsks.value.
         </div>
 
         <div class="section">功能</div>
-        <button class="cmd-open" data-chat-cmd-open @click="openCommands">/ 命令</button>
-        <button class="cmd-open danger" data-chat-close @click="confirmClose">关闭这个 pi</button>
+        <!-- 横排:两颗等宽,窄屏折成两行(min-width 兜底,不把文字挤成两行) -->
+        <div class="acts">
+          <RButton data-chat-cmd-open @click="openCommands">/ 命令</RButton>
+          <RButton type="danger" plain data-chat-close @click="confirmClose">关闭这个 pi</RButton>
+        </div>
       </div>
 
       <div v-if="cmdOpen" class="drawer cmds" data-chat-cmds>
@@ -503,6 +512,18 @@ const visibleAsks = computed(() => props.asks.filter((ask) => !hiddenAsks.value.
         </RButton>
       </div>
     </div>
+
+    <!-- 关标签的确认:交给库的 RConfirmDialog(内部是 RModal + useOverlayLayer,遮罩/滚动锁/ESC 白送) -->
+    <RConfirmDialog
+      :visible="closeAsk"
+      variant="danger"
+      title="关闭这个 pi"
+      :message="`关闭后这个终端标签和里面的 pi 都会没。${busy ? '它正在跑,会被中断。' : ''}`"
+      confirm-label="关闭"
+      cancel-label="取消"
+      @confirm="doClose"
+      @cancel="closeAsk = false"
+    />
   </div>
 </template>
 
@@ -767,11 +788,16 @@ const visibleAsks = computed(() => props.asks.filter((ask) => !hiddenAsks.value.
   font-size: 12px;
   color: var(--muted);
 }
-.cmd-open {
-  width: 100%;
-  min-height: 40px;
-  justify-content: flex-start;
-  font-family: var(--mono);
+.acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+/* 44px 触控下限:远程页自己的 `button{min-height:40px}` 是元素选择器,压不过库的类,但也没给够高 */
+.acts > * {
+  flex: 1 1 0;
+  min-width: 120px;
+  min-height: 44px;
 }
 
 /* 命令补全弹窗 */
