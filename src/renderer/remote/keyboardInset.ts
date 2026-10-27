@@ -23,6 +23,16 @@ export function keyboardInsetOf(innerHeight: number, viewportHeight: number, vie
 /** 超过这个高度才认定「键盘开着了」(浏览器工具栏收起也会让高度变化几十像素) */
 export const KEYBOARD_OPEN_MIN_PX = 80
 
+/**
+ * 真的要从页高里扣掉多少。
+ *
+ * 键盘没开时的差额只是工具栏伸缩/横向滚动带来的几十像素抖动,而 `--kb-inset` 是**永久**扣掉的
+ * (还叠加在 `resizes-content` 已经缩过的布局视口上),扣多少就白留多少 —— 所以不到键盘门槛一律算 0。
+ */
+export function keyboardInsetToDeduct(inset: number): number {
+  return inset > KEYBOARD_OPEN_MIN_PX ? inset : 0
+}
+
 export function trackKeyboardInset(): void {
   const viewport = window.visualViewport
   const root = document.documentElement
@@ -38,13 +48,19 @@ export function trackKeyboardInset(): void {
         viewport?.height ?? window.innerHeight,
         viewport?.offsetTop ?? 0
       )
-      root.style.setProperty('--kb-inset', `${inset}px`)
-      root.classList.toggle('kb-open', inset > KEYBOARD_OPEN_MIN_PX)
+      const deduct = keyboardInsetToDeduct(inset)
+      root.style.setProperty('--kb-inset', `${deduct}px`)
+      root.classList.toggle('kb-open', deduct > 0)
     })
   }
 
   viewport?.addEventListener('resize', sync)
   viewport?.addEventListener('scroll', sync)
   window.addEventListener('orientationchange', sync)
+  // 切后台/窗口被遮挡时 rAF 会暂停,挂着的娜一帧可能永远不跑 —— 不放开 latch 就再也不更新了
+  document.addEventListener('visibilitychange', () => {
+    frame = 0
+    sync()
+  })
   sync()
 }

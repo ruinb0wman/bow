@@ -802,6 +802,8 @@ const visibleAsks = computed(() => props.asks.filter((ask) => !hiddenAsks.value.
 }
 textarea {
   flex: 1;
+  /* 不加就被 cols=20 的固有宽度顶住,执行态多一个「插话」按钮整行就超宽 */
+  min-width: 0;
   font: inherit;
   /* ≥16px:否则 iOS 聚焦时会放大整个页面 */
   font-size: 16px;

@@ -26,7 +26,7 @@ import { startRemoteServer } from '../src/plugins/terminal/remote/server'
 import { parseClientMessage } from '../src/plugins/terminal/remote/protocol'
 import type { RemoteSessionApi } from '../src/plugins/terminal/remote/protocol'
 import type { SessionInfo } from '../src/plugins/terminal/shared'
-import { KEYBOARD_OPEN_MIN_PX, keyboardInsetOf } from '../src/renderer/remote/keyboardInset'
+import { KEYBOARD_OPEN_MIN_PX, keyboardInsetOf, keyboardInsetToDeduct } from '../src/renderer/remote/keyboardInset'
 import { localRequest } from './localHttp'
 
 const PASSWORD = 'test-password-123'
@@ -569,5 +569,16 @@ describe('软键盘:高度差算得对', () => {
   })
   it('怪异输入被夹到 0(可见区比布局还高)', () => {
     expect(keyboardInsetOf(500, 700, 0)).toBe(0)
+  })
+})
+
+describe('软键盘:只有键盘真的开着才从页高里扣', () => {
+  it('工具栏伸缩那几十像素 → 不扣(扣了就永久白留一截)', () => {
+    expect(keyboardInsetToDeduct(keyboardInsetOf(844, 780, 0))).toBe(0)
+    expect(keyboardInsetToDeduct(KEYBOARD_OPEN_MIN_PX)).toBe(0)
+  })
+  it('键盘真的开着 → 原样扣', () => {
+    expect(keyboardInsetToDeduct(336)).toBe(336)
+    expect(keyboardInsetToDeduct(KEYBOARD_OPEN_MIN_PX + 1)).toBe(KEYBOARD_OPEN_MIN_PX + 1)
   })
 })

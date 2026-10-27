@@ -577,6 +577,60 @@ try {
   const chipIdle = await chip({ busy: false, pending: 0 })
   check(chipIdle === '空闲', '不忙时 chip 说「空闲」', chipIdle)
 
+  // ---------- 手机宽度下的执行态 + 页高(用户报的两个 bug:右侧超宽 / 底部留白) ----------
+  // 真页面量:执行态多出「插话」按钮,输入框那一行不能因此把整页顶宽;
+  // 页高只能扣**真的键盘**,工具栏伸缩那几十像素扣了就是永久白留。
+  await cdpCall(pageWs, 'Emulation.setDeviceMetricsOverride', {
+    width: 393,
+    height: 851,
+    deviceScaleFactor: 2,
+    mobile: true
+  })
+  await chip({ busy: true, pending: 0 })
+  const fit = await evalOn(
+    pageWs,
+    `(async () => {
+       // headless 窗口里 rAF 可能一直被挂起(量到的会是「还没重排」的旧布局),换成 setTimeout
+       window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 0)
+       const settle = () => new Promise((r) => setTimeout(r, 120))
+       const composer = document.querySelector('.composer')
+       const app = document.querySelector('.app')
+       const gap = () => Math.round(window.innerHeight - app.getBoundingClientRect().height)
+       const measured = {
+         steer: !!composer.querySelector('.ghost'),
+         pageOverflow: document.documentElement.scrollWidth - window.innerWidth,
+         rowOverflow: composer.scrollWidth - composer.clientWidth,
+         noKeyboardGap: gap()
+       }
+       // 把视觉视口伪装成「键盘弹出/收起」——trackKeyboardInset 就是靠这个差额算的
+       const vv = window.visualViewport
+       const fake = (delta) => {
+         Object.defineProperty(vv, 'height', { configurable: true, get: () => window.innerHeight - delta })
+         vv.dispatchEvent(new Event('resize'))
+         // 切回前台也会放开 latch(帧被挂起时靠它恢复)
+         document.dispatchEvent(new Event('visibilitychange'))
+       }
+       fake(40); await settle(); measured.toolbarGap = gap()
+       fake(300); await settle(); measured.keyboardGap = gap()
+       measured.diag = {
+         vvH: Math.round(vv.height),
+         inner: window.innerHeight,
+         inset: getComputedStyle(document.documentElement).getPropertyValue('--kb-inset'),
+         appH: Math.round(app.getBoundingClientRect().height),
+         sameRaf: window.requestAnimationFrame.toString().includes('setTimeout')
+       }
+       delete vv.height; vv.dispatchEvent(new Event('resize')); await settle()
+       return measured
+     })()`
+  )
+  check(fit.steer === true, '执行态下输入框这一行多出「插话」按钮', fit)
+  check(fit.pageOverflow <= 0, '393px 宽下整页不横滑(右侧不再超宽)', fit)
+  check(fit.rowOverflow <= 0, '输入框那一行自己也塞得下(不是靠页面裁掉)', fit)
+  check(fit.noKeyboardGap === 0, '键盘没开时页高铺满(底部不留白)', fit)
+  check(fit.toolbarGap === 0, '工具栏伸缩那几十像素不从页高里扣', fit)
+  check(fit.keyboardGap > 200, '真键盘照样扣掉(输入框不被遮)', fit)
+  await cdpCall(pageWs, 'Emulation.clearDeviceMetricsOverride')
+
   // ---------- 提问卡片(pi 的弹框 → 手机上的按钮) ----------
   // 真 pi 那半由 `npm run test:pi:ask` 覆盖(扩展 + 令牌 + 谁先答)。
   // 这里验的是**页面**:服务端消息进来能不能画出卡片、点下去发出去的帧对不对。
