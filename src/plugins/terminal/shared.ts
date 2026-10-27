@@ -54,6 +54,30 @@ export interface TerminalRemoteStatus {
   error: string | null
 }
 
+/**
+ * 「异地访问(Tailscale)」自检结果(设置页 → 终端 → 远程)。由主进程 spawn CLI 得到,
+ * **只走本地 IPC** —— 不进 `/healthz`、不进远程页:那里是给还没登录的人看的。
+ */
+export interface TerminalTailscaleStatus {
+  /** 找到 tailscale 二进制了吗 */
+  found: boolean
+  /** 实际用的那个二进制(路径或裸名字) */
+  bin: string | null
+  state: 'running' | 'needs-login' | 'stopped' | 'missing' | 'unknown'
+  /** MagicDNS 名字(`albedo.tail36b860.ts.net`),没登录时为 null */
+  host: string | null
+  /** tailnet IPv4(100.64/10) */
+  ip4: string | null
+  /** tailnet 里其它设备数 */
+  peers: number
+  /** 其中手机(android / ios)几台 —— 判断「手机到底在不在网里」 */
+  phones: number
+  /** 已把 **本端口** 代理出去的那条 serve 地址;没配或配到别的端口时为 null */
+  serve: { url: string; port: number } | null
+  error: string | null
+  checkedAt: number
+}
+
 /** 发给终端页的渲染参数(设置页改动后经 `settings-changed` 广播的就是这个形状) */
 export interface TerminalRenderSettings {
   fontFamily: string
