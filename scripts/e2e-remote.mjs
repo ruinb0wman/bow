@@ -577,6 +577,50 @@ try {
   const chipIdle = await chip({ busy: false, pending: 0 })
   check(chipIdle === '空闲', '不忙时 chip 说「空闲」', chipIdle)
 
+  // ---------- 未发送草稿:换会话、甚至被杀页面后回来都还在 ----------
+  // 草稿的真住处是 App.vue(按会话 + localStorage);这里验的是「回来后输入框里还是那句话」。
+  await setInput(pageWs, '.composer textarea', '别丢的草稿')
+  const draftTyped = await evalOn(pageWs, `document.querySelector('.composer textarea').value`)
+  check(draftTyped === '别丢的草稿', '输入框收下了未发送的草稿', draftTyped)
+
+  await evalOn(pageWs, `document.querySelector('.head .back').click()`)
+  const backToList = await waitFor(
+    async () => (await evalOn(pageWs, `!!document.querySelector('.rows')`)) === true,
+    5000
+  )
+  check(backToList === true, '返回后回到会话列表')
+
+  await evalOn(pageWs, `document.querySelector('.rows .row').click()`)
+  const draftBack = await waitFor(async () => {
+    const value = await evalOn(pageWs, `document.querySelector('.composer textarea')?.value ?? ''`)
+    return value ? value : null
+  }, 8000)
+  check(draftBack === '别丢的草稿', '切回这个会话,草稿还在', draftBack)
+
+  // 杀掉页面再回来:手机上更常见的场景(切出去被系统回收)。
+  // 靠的是 pagehide / visibilitychange 时的 flush —— 300ms 节流没跑完也不会丢。
+  // 用 `location.reload()` 而不是 CDP 的 Page.reload:那个要先 Page.enable,否则静默不做事。
+  await evalOn(pageWs, `(() => { setTimeout(() => location.reload(), 0); return true })()`)
+  const reloaded = await waitFor(
+    async () => (await evalOn(pageWs, `document.querySelectorAll('.rows .row').length`)) === 1,
+    25000
+  )
+  check(reloaded === true, '刷新后重新连上并列出会话')
+  await evalOn(pageWs, `document.querySelector('.rows .row').click()`)
+  const draftAfterReload = await waitFor(async () => {
+    const value = await evalOn(pageWs, `document.querySelector('.composer textarea')?.value ?? ''`)
+    return value ? value : null
+  }, 10000)
+  check(draftAfterReload === '别丢的草稿', '页面被杀过再回来,草稿从本地恢复', draftAfterReload)
+
+  // 清空(后面几段检查假设输入框是空的),顺带验草稿不会白留在手机上
+  await setInput(pageWs, '.composer textarea', '')
+  const draftCleared = await waitFor(async () => {
+    const stored = await evalOn(pageWs, `localStorage.getItem('bow.remote.drafts') ?? ''`)
+    return String(stored).includes('别丢的草稿') ? null : true
+  }, 5000)
+  check(draftCleared === true, '清空输入框后本地那条草稿也删了', draftCleared)
+
   // ---------- 手机宽度下的执行态 + 页高(用户报的两个 bug:右侧超宽 / 底部留白) ----------
   // 真页面量:执行态多出「插话」按钮,输入框那一行不能因此把整页顶宽;
   // 页高只能扣**真的键盘**,工具栏伸缩那几十像素扣了就是永久白留。
@@ -597,7 +641,8 @@ try {
        const app = document.querySelector('.app')
        const gap = () => Math.round(window.innerHeight - app.getBoundingClientRect().height)
        const measured = {
-         steer: !!composer.querySelector('.ghost'),
+         steer: !!composer.querySelector('[data-chat-steer]'),
+         btnHeights: [...composer.querySelectorAll('button')].map((b) => Math.round(b.getBoundingClientRect().height)),
          pageOverflow: document.documentElement.scrollWidth - window.innerWidth,
          rowOverflow: composer.scrollWidth - composer.clientWidth,
          noKeyboardGap: gap()
@@ -624,6 +669,11 @@ try {
      })()`
   )
   check(fit.steer === true, '执行态下输入框这一行多出「插话」按钮', fit)
+  check(
+    Array.isArray(fit.btnHeights) && fit.btnHeights.length === 3 && fit.btnHeights.every((h) => h >= 40),
+    '输入框那一行的按钮高度 ≥ 40px(可点下限,换库组件后钉住)',
+    fit.btnHeights
+  )
   check(fit.pageOverflow <= 0, '393px 宽下整页不横滑(右侧不再超宽)', fit)
   check(fit.rowOverflow <= 0, '输入框那一行自己也塞得下(不是靠页面裁掉)', fit)
   check(fit.noKeyboardGap === 0, '键盘没开时页高铺满(底部不留白)', fit)
@@ -824,7 +874,7 @@ try {
   check(noPrompt === true, '点选**没有**发送(还等用户按发送)', noPrompt)
 
 
-  const backToList = await evalOn(
+  const backClicked = await evalOn(
     pageWs,
     `(() => { document.querySelector('.head .back').click(); return true })()`
   )
@@ -832,7 +882,7 @@ try {
     async () => (await evalOn(pageWs, `document.querySelectorAll('.row').length >= 1`)) === true,
     10000
   )
-  check(backToList === true && listBack === true, '「←」能回到会话列表')
+  check(backClicked === true && listBack === true, '「←」能回到会话列表')
 
   // ---------- ⑥ 「谁刚碰过,尺寸归谁」:手机抢走宽度 → 电脑上点一下抢回来 ----------
   // 用户的原始抱怨:手机点进会话后,电脑那个终端一直是手机宽度,只能拖窗口才恢复。
@@ -902,6 +952,23 @@ try {
     favState
   )
 
+  // 收藏的排布:一条一行、宽度占满面板(用户报的「一行塞好几个 chip」)
+  const favLayout = await evalOn(
+    pageWs,
+    `(() => {
+       const rows = [...document.querySelectorAll('[data-new-chip]')]
+       const sheet = document.querySelector('[data-new-sheet]')
+       if (!rows.length || !sheet) return null
+       const inner = Math.round(sheet.getBoundingClientRect().width)
+       return { inner, widths: rows.map((el) => Math.round(el.getBoundingClientRect().width)) }
+     })()`
+  )
+  check(
+    favLayout !== null && favLayout.widths.every((w) => Math.abs(w - favLayout.inner) <= 1),
+    '每条收藏自己占一行、宽度充满面板',
+    favLayout
+  )
+
   // 新建:目录不存在时错要回到面板里(帧里必须带 command=pi + cwd)
   await setInput(pageWs, '[data-new-path]', '/nope/definitely-not-here')
   await evalOn(pageWs, `document.querySelector('[data-new-pi]').click()`)
@@ -921,6 +988,43 @@ try {
     `!!document.querySelector('.rows, .empty') && !document.querySelector('.chat')`
   )
   check(stillList === true, '新建失败后仍停在列表页(不把人甩进对话页)')
+
+  // ---------- 关闭 pi:确认框拦住误触,确认后才发 close 帧(服务端回收会话,页面自己回列表) ----------
+  await evalOn(pageWs, `(() => { document.querySelector('.base-modal-close')?.click(); return true })()`)
+  await waitFor(async () => (await evalOn(pageWs, `!!document.querySelector('.rows .row')`)) === true, 5000)
+  await evalOn(pageWs, `document.querySelector('.rows .row').click()`)
+  await waitFor(async () => (await evalOn(pageWs, `!!document.querySelector('.composer')`)) === true, 8000)
+  await evalOn(pageWs, `(() => { document.querySelector('[data-chat-more]').click(); return true })()`)
+  const closeBtn = await waitFor(
+    async () => (await evalOn(pageWs, `!!document.querySelector('[data-chat-close]')`)) === true,
+    5000
+  )
+  check(closeBtn === true, '抽屉「功能」里有「关闭这个 pi」')
+
+  await evalOn(
+    pageWs,
+    `(() => { window.confirm = () => false; document.querySelector('[data-chat-close]').click(); return true })()`
+  )
+  const noClose = await evalOn(
+    pageWs,
+    `JSON.stringify(window.__bowRemote.sent.filter((f) => f.t === 'close'))`
+  )
+  check(noClose === '[]', '确认框点取消时一个帧都不发', noClose)
+
+  await evalOn(
+    pageWs,
+    `(() => { window.confirm = () => true; document.querySelector('[data-chat-close]').click(); return true })()`
+  )
+  const closedFrame = await evalOn(
+    pageWs,
+    `JSON.stringify(window.__bowRemote.sent.filter((f) => f.t === 'close'))`
+  )
+  check(String(closedFrame).includes('"t":"close"'), '确认后发出 close 帧', closedFrame)
+  const leftChat = await waitFor(
+    async () => (await evalOn(pageWs, `!document.querySelector('.chat')`)) === true,
+    15000
+  )
+  check(leftChat === true, '会话被服务端收掉,页面自己回到列表', leftChat)
 
   // 收尾:关掉这个页标签
   await evalOn(chromeWs, `window.browserAPI.closeTab(${JSON.stringify(pageTab?.id ?? 0)})`).catch(() => {})

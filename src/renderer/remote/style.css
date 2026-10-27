@@ -4,13 +4,15 @@
  */
 
 :root {
-  --bg: #1e1f24;
-  --panel: #26272e;
-  --fg: #e8e8ee;
-  --muted: #9aa0ad;
-  --accent: #4a8ef7;
-  --danger: #e5534b;
-  --ok: #7ec96a;
+  /* 色板不在这里定义:`@ruinb0w/ui/style.css` 的 `data-theme="bow-dark"` 已经就是这套颜色,
+   * 这里只把短名映射到库 token —— 两套变量同名不同源时,组件与手写 CSS 会分裂成两种主题。 */
+  --bg: var(--bg-page);
+  --panel: var(--bg-card);
+  --fg: var(--text-primary);
+  --muted: var(--text-secondary);
+  --accent: var(--color-primary);
+  --danger: var(--color-danger);
+  --ok: var(--color-success);
   --mono: Consolas, 'Cascadia Mono', 'Menlo', 'DejaVu Sans Mono', monospace;
 }
 
@@ -37,15 +39,17 @@ button {
   font: inherit;
   color: inherit;
   background: var(--panel);
-  border: 1px solid #383a44;
+  border: 1px solid var(--border-default);
   border-radius: 8px;
   padding: 8px 12px;
+  /* 手写件的可点下限:40px。库组件不受这条管 —— 它们走 `data-density="touch"` 的
+   * --control-h(44px)/ --control-h-sm(36px),类选择器的优先级本来就盖过元素选择器。 */
   min-height: 40px;
   cursor: pointer;
 }
 
 button:active {
-  background: #32343d;
+  background: var(--bg-elevated);
 }
 
 input {
@@ -54,7 +58,7 @@ input {
   font-size: 16px;
   color: inherit;
   background: #16171b;
-  border: 1px solid #383a44;
+  border: 1px solid var(--border-default);
   border-radius: 8px;
   padding: 10px 12px;
   width: 100%;

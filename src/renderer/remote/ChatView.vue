@@ -10,6 +10,7 @@
  * 这里只读「忙 / 有排队」两个状态。
  */
 import { computed, nextTick, ref, watch } from 'vue'
+import { RButton } from '@ruinb0w/ui'
 import { fuzzyScore } from '@shared/suggest'
 import type { AskRequest, ChatCommand, ChatMessage, ChatStatus, RemoteSocket } from './ws'
 
@@ -34,6 +35,8 @@ const props = defineProps<{
   lastError: string
   /** 失败的时刻:同一个原因重复出现时也要触发 watch */
   errorAt: number
+  /** 这个会话的未发送草稿(存在 App.vue:切会话/切项目回来要还在) */
+  draft: string
 }>()
 
 const emit = defineEmits<{
@@ -41,9 +44,18 @@ const emit = defineEmits<{
   (e: 'send', payload: { text: string; deliverAs?: 'steer' | 'followUp' }): void
   (e: 'abort'): void
   (e: 'answer', payload: { requestId: string; value: boolean | string }): void
+  (e: 'update:draft', text: string): void
+  (e: 'close'): void
 }>()
 
-const draft = ref('')
+/**
+ * 草稿的真实住处是 App.vue(按会话 + 本地持久化),这里只是个别名:
+ * 下面所有 `draft.value = …`(发送/插话/插命令/失败还原)都不用改。
+ */
+const draft = computed({
+  get: () => props.draft,
+  set: (text: string) => emit('update:draft', text)
+})
 const expanded = ref<Set<string>>(new Set())
 const scroller = ref<HTMLElement | null>(null)
 const nearBottom = ref(true)
@@ -212,6 +224,16 @@ const composerInput = ref<HTMLTextAreaElement | null>(null)
 function closePanels(): void {
   moreOpen.value = false
   cmdOpen.value = false
+}
+
+/**
+ * 关闭这个 pi:帧与桌面标签上的 × 同义 —— pty 进程树一起收、正在跑的那轮会被杀。
+ * 手机上误触就找不回来了,所以必须问一句(浏览器原生 confirm 就够,不为一句话造一个面板)。
+ */
+function confirmClose(): void {
+  const running = props.busy ? '它正在跑,会被中断。\n' : ''
+  if (!window.confirm(`关闭后这个终端标签和里面的 pi 都会没。\n${running}确定关闭?`)) return
+  emit('close')
 }
 
 function toggleMore(): void {
@@ -423,6 +445,7 @@ const visibleAsks = computed(() => props.asks.filter((ask) => !hiddenAsks.value.
 
         <div class="section">功能</div>
         <button class="cmd-open" data-chat-cmd-open @click="openCommands">/ 命令</button>
+        <button class="cmd-open danger" data-chat-close @click="confirmClose">关闭这个 pi</button>
       </div>
 
       <div v-if="cmdOpen" class="drawer cmds" data-chat-cmds>
@@ -458,11 +481,18 @@ const visibleAsks = computed(() => props.asks.filter((ask) => !hiddenAsks.value.
           @focus="onFocus"
           @keydown.enter.exact.prevent="send"
         />
-        <button class="primary" :disabled="!live || !draft.trim()" @click="send">发送</button>
-        <button v-if="busy && live" class="ghost" :disabled="!draft.trim()" title="不等这一轮结束,立刻插话" @click="steer">
+        <RButton type="primary" :disabled="!live || !draft.trim()" @click="send">发送</RButton>
+        <RButton
+          v-if="busy && live"
+          plain
+          data-chat-steer
+          :disabled="!draft.trim()"
+          title="不等这一轮结束,立刻插话"
+          @click="steer"
+        >
           插话
-        </button>
-        <button
+        </RButton>
+        <RButton
           class="more"
           :class="{ on: moreOpen || cmdOpen }"
           title="信息与命令"
@@ -470,7 +500,7 @@ const visibleAsks = computed(() => props.asks.filter((ask) => !hiddenAsks.value.
           @click="toggleMore"
         >
           {{ moreOpen || cmdOpen ? '⌄' : '⌃' }}
-        </button>
+        </RButton>
       </div>
     </div>
   </div>
@@ -792,13 +822,10 @@ const visibleAsks = computed(() => props.asks.filter((ask) => !hiddenAsks.value.
 }
 .more {
   flex: none;
-  min-width: 40px;
-  color: var(--muted);
-  font-size: 16px;
 }
+/* 抽屉/命令面板开着时给个边色:不然只有箭头翻个面,看不出是「开了」 */
 .more.on {
-  color: #c8ccd6;
-  border-color: #4a8ef7;
+  border-color: var(--accent);
 }
 textarea {
   flex: 1;
@@ -825,11 +852,6 @@ textarea {
 }
 .primary:disabled {
   opacity: 0.5;
-}
-.ghost {
-  flex: none;
-  color: #9dc0ff;
-  border-color: rgba(74, 142, 247, 0.45);
 }
 
 /* pi 的提问卡片:贴在输入框上方,一眼能看见 */

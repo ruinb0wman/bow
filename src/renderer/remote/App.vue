@@ -8,8 +8,11 @@
  * 会话排序复用主进程那套「注意力等级」(`sortSessionsByAttention`)—— 与牧群面板同一份逻辑。
  */
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { RModal } from '@ruinb0w/ui'
 import { sortSessionsByAttention, formatAgo, lastActiveAt, shortPath } from '@plugins/terminal/shared'
 import ChatView from './ChatView.vue'
+import { DRAFTS_KEY, draftFor, parseDrafts, withDraft, withoutDraft } from './drafts'
+import type { DraftStore } from './drafts'
 import { connectRemote, wsUrlOf } from './ws'
 import type { AskRequest, ChatCommand, ChatMessage, ChatStatus, RemoteSocket, ServerMessage, SessionInfo } from './ws'
 
@@ -63,6 +66,42 @@ const newError = ref('')
 let pendingCreate = false
 const favs = ref<string[]>(loadFavs())
 
+// ---------- 每个会话的未发送草稿 ----------
+// 存在手机本地(`drafts.ts` 里有 cwd 守卫与上限):于是「切项目再回来字还在」与「切出去被杀页面也不丢」一并解决。
+const drafts = ref<DraftStore>(loadDrafts())
+
+function loadDrafts(): DraftStore {
+  try {
+    return parseDrafts(localStorage.getItem(DRAFTS_KEY))
+  } catch {
+    return {}
+  }
+}
+
+let draftTimer: number | undefined
+
+function flushDrafts(): void {
+  if (draftTimer !== undefined) {
+    window.clearTimeout(draftTimer)
+    draftTimer = undefined
+  }
+  try {
+    localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts.value))
+  } catch {
+    /* 隐私模式 / 配额满:草稿只是便利,存不上不能挡住打字 */
+  }
+}
+
+/** 打字时别每键都序列化:攒 300ms 再写(切后台/关页面由 `flushDrafts` 兜住) */
+function saveDrafts(): void {
+  if (draftTimer !== undefined) return
+  draftTimer = window.setTimeout(flushDrafts, 300)
+}
+
+function flushOnHide(): void {
+  if (document.visibilityState === 'hidden') flushDrafts()
+}
+
 /** 对话快照(服务端缓存的那份镜像;手机不存历史) */
 const chat = reactive<{
   messages: ChatMessage[]
@@ -91,6 +130,17 @@ const rows = computed(() => sortSessionsByAttention(sessions.value))
 /** 当前会话在台账里的样子(cwd / 有没有代理状态):列表刷新时跟着更新 */
 const activeInfo = computed(() => sessions.value.find((s) => s.id === active.id) ?? null)
 const activeSession = computed(() => sessions.value.find((s) => s.id === active.id) ?? null)
+
+/** 当前会话的草稿:cwd 变了就当没有(bow 重启后 tabId 会复用,不认这一条就会串项目) */
+const chatDraft = computed(() =>
+  active.id === null ? '' : (draftFor(drafts.value, active.id, activeInfo.value?.cwd ?? active.cwd)?.text ?? '')
+)
+
+function updateDraft(text: string): void {
+  if (active.id === null) return
+  drafts.value = withDraft(drafts.value, active.id, activeInfo.value?.cwd ?? active.cwd, text)
+  saveDrafts()
+}
 
 const STATE_LABEL: Record<string, string> = { working: '在跑', blocked: '等你', idle: '空闲' }
 function stateLabel(info: SessionInfo): string {
@@ -144,13 +194,21 @@ function connect(): void {
 function handle(msg: ServerMessage): void {
   switch (msg.t) {
     case 'hello':
-    case 'sessions':
+    case 'sessions': {
+      // 收得到 hello 就说明 cookie 还有效(服务端会拒掉没登录的握手)—— 刷新页面不该再问一次口令
+      authed.value = true
       sessions.value = msg.sessions
       // 当前会话被别人关掉了:退回列表
       if (active.id != null && !msg.sessions.some((s) => s.id === active.id)) {
         active.id = null
       }
+      // 会话没了 = 它的草稿也没人要了(否则本地越攒越多,上限也就白设了)
+      const live = new Set(msg.sessions.map((s) => s.id))
+      for (const key of Object.keys(drafts.value)) {
+        if (!live.has(Number(key))) drafts.value = withoutDraft(drafts.value, Number(key))
+      }
       break
+    }
     case 'chat':
       if (msg.id !== active.id) break
       chat.messages = msg.messages
@@ -316,6 +374,14 @@ function abort(): void {
   socket?.send(frame as never)
 }
 
+/** 关掉这个 pi(帧是现成的:与桌面标签上的 × 同义,pty 一起收 → 服务端回 `closed` → 回列表) */
+function closePi(): void {
+  if (active.id == null) return
+  const frame = { t: 'close', id: active.id }
+  note(frame)
+  socket?.send(frame as never)
+}
+
 /** 回答 pi 的提问(终端里那个框会跟着关掉) */
 function answer(payload: { requestId: string; value: boolean | string }): void {
   if (active.id == null) return
@@ -346,10 +412,16 @@ onMounted(() => {
   ticker = window.setInterval(() => {
     now.value = Date.now()
   }, 10_000)
+  // 手机上不一定有「关页面」:切后台就可能再也回不来,所以两个时机都存一次
+  window.addEventListener('pagehide', flushDrafts)
+  document.addEventListener('visibilitychange', flushOnHide)
 })
 
 onBeforeUnmount(() => {
   if (ticker !== undefined) window.clearInterval(ticker)
+  window.removeEventListener('pagehide', flushDrafts)
+  document.removeEventListener('visibilitychange', flushOnHide)
+  flushDrafts()
   socket?.close()
 })
 
@@ -403,10 +475,13 @@ const needsLogin = computed(() => !authed.value || state.value === 'refused')
         :has-agent="activeInfo?.agent != null"
         :last-error="chatError.text"
         :error-at="chatError.at"
+        :draft="chatDraft"
         @back="back"
         @send="send"
         @abort="abort"
         @answer="answer"
+        @update:draft="updateDraft"
+        @close="closePi"
       />
     </div>
 
@@ -445,44 +520,52 @@ const needsLogin = computed(() => !authed.value || state.value === 'refused')
         </li>
       </ul>
 
-      <!-- 新建:只选目录 + 选命令。目录来源是收藏(手机本地)与现有会话的 cwd -->
-      <div v-if="newOpen" class="backdrop" data-new-backdrop @click="newOpen = false" />
-      <div v-if="newOpen" class="new-sheet" data-new-sheet>
-        <div class="section">新建到目录</div>
-        <div class="path-row">
-          <input
-            v-model="newPath"
-            class="new-path"
-            data-new-path
-            type="text"
-            inputmode="text"
-            autocomplete="off"
-            placeholder="留空 = 主目录"
-          />
-          <button class="star" :class="{ on: isFav }" data-new-fav :disabled="!newPath.trim()" @click="toggleFav">
-            {{ isFav ? '★' : '☆' }}
-          </button>
-        </div>
+      <!-- 新建:只选目录。面板壳交给库的 RModal(滚动锁 / 安全区 / 遮罩点击关闭 / 拖动条都是白送的) -->
+      <RModal :visible="newOpen" direction="bottom" title="新建到目录" max-height="70vh" @close="newOpen = false">
+        <div class="new-sheet" data-new-sheet>
+          <div class="path-row">
+            <input
+              v-model="newPath"
+              class="new-path"
+              data-new-path
+              type="text"
+              inputmode="text"
+              autocomplete="off"
+              placeholder="留空 = 主目录"
+            />
+            <button class="star" :class="{ on: isFav }" data-new-fav :disabled="!newPath.trim()" @click="toggleFav">
+              {{ isFav ? '★' : '☆' }}
+            </button>
+          </div>
 
-        <div v-if="favs.length" class="chips">
-          <span class="chips-label">收藏</span>
-          <button v-for="dir in favs" :key="dir" class="chip" data-new-chip @click="newPath = dir">
-            {{ shortPath(dir, 24) }}
-            <span class="chip-x" data-new-unfav @click.stop="removeFav(dir)">×</span>
-          </button>
-        </div>
-        <div v-if="recentDirs.length" class="chips">
-          <span class="chips-label">最近</span>
-          <button v-for="dir in recentDirs" :key="dir" class="chip" @click="newPath = dir">
-            {{ shortPath(dir, 24) }}
-          </button>
-        </div>
+          <!-- 收藏一个一行、占满整宽:路径不再缩写(一行放不下就换行) -->
+          <div v-if="favs.length" class="favs">
+            <span class="chips-label">收藏</span>
+            <button
+              v-for="dir in favs"
+              :key="dir"
+              class="fav-row"
+              :class="{ on: newPath.trim() === dir }"
+              data-new-chip
+              @click="newPath = dir"
+            >
+              <span class="fav-path">{{ dir }}</span>
+              <span class="chip-x" data-new-unfav @click.stop="removeFav(dir)">×</span>
+            </button>
+          </div>
+          <div v-if="recentDirs.length" class="chips">
+            <span class="chips-label">最近</span>
+            <button v-for="dir in recentDirs" :key="dir" class="chip" @click="newPath = dir">
+              {{ shortPath(dir, 24) }}
+            </button>
+          </div>
 
-        <div class="acts">
-          <button class="primary" data-new-pi :disabled="state !== 'open'" @click="createPi">新建 pi</button>
+          <div class="acts">
+            <button class="primary" data-new-pi :disabled="state !== 'open'" @click="createPi">新建 pi</button>
+          </div>
+          <p v-if="newError" class="err" data-new-error>{{ newError }}</p>
         </div>
-        <p v-if="newError" class="err" data-new-error>{{ newError }}</p>
-      </div>
+      </RModal>
     </div>
   </div>
 </template>
@@ -609,32 +692,12 @@ form {
   font-size: 16px;
 }
 
-/* 新建面板:固定在底部,不顶走列表 */
-.backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 9;
-}
+/* 新建面板的内容:壳(背景/圆角/padding/最大高度/滚动)已经由 RModal 提供 */
 .new-sheet {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 10;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 70vh;
-  overflow-y: auto;
-  padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
-  border-top: 1px solid #33353f;
-  background: #24252c;
   font-size: 13px;
-}
-.section {
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  color: var(--muted);
 }
 .path-row {
   display: flex;
@@ -662,6 +725,32 @@ form {
   align-items: center;
   gap: 6px;
 }
+/* 收藏:一条一行、整宽 */
+.favs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.fav-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 40px;
+  padding: 6px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: left;
+}
+.fav-row.on {
+  border-color: var(--accent);
+}
+.fav-path {
+  flex: 1;
+  min-width: 0;
+  /* 整行给够了宽度,就别再缩写:长路径换行显示 */
+  word-break: break-all;
+}
 .chips-label {
   flex: none;
   font-size: 11px;
@@ -677,8 +766,10 @@ form {
   font-size: 12px;
 }
 .chip-x {
+  flex: none;
   color: var(--muted);
-  padding: 0 2px;
+  padding: 0 6px;
+  font-size: 16px;
 }
 .acts {
   display: flex;
