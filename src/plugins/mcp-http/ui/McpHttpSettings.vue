@@ -5,8 +5,9 @@
  * 插件的启停由「插件管理」的开关负责(停用即关闭端点),这里只管监听参数与状态:
  * 端口 / 令牌改动即时保存并重启服务;环境变量强制开启的实例会明确标出「插件开关管不了它」。
  */
+import { RButton } from '@ruinb0w/ui'
 import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { RefreshCw } from 'lucide-vue-next'
+import { RefreshCw } from '@lucide/vue'
 import type { McpHttpState } from '../shared'
 
 const api = window.browserAPI
@@ -84,9 +85,9 @@ onBeforeUnmount(() => {
       @keydown.enter.prevent="savePort"
       @blur="savePort"
     />
-    <button class="btn" :disabled="busy" title="按当前端口与令牌重启服务" @click="restart">
+    <RButton size="small" :disabled="busy" title="按当前端口与令牌重启服务" @click="restart">
       <RefreshCw :size="13" /> 重启
-    </button>
+    </RButton>
   </div>
   <div class="set-row">
     <span class="set-label">Bearer 令牌</span>

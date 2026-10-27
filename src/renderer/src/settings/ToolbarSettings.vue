@@ -4,11 +4,12 @@
  * 只列当前贡献了 toolbar 按钮的插件;停用的插件仍留在列表里,免得恢复启用后位置丢了。
  * 固定按钮(后退/前进/刷新/地址栏/分屏/设置)不参与排序。
  */
+import { RButton } from '@ruinb0w/ui'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { PluginInfo } from '@shared/plugins'
 import type { Settings } from '@shared/types'
 import { mergeToolbarOrder, moveToolbarEntry } from '@shared/toolbarOrder'
-import { ArrowDown, ArrowUp, Eye, EyeOff, RotateCcw } from 'lucide-vue-next'
+import { ArrowDown, ArrowUp, Eye, EyeOff, RotateCcw } from '@lucide/vue'
 import { PLUGIN_UI, SLOT_PLUGIN_ORDER } from '../plugins/registry'
 
 const api = window.browserAPI
@@ -76,22 +77,22 @@ onBeforeUnmount(() => {
         <span v-if="!r.enabled" class="tt-tag">已停用</span>
         <span v-if="r.hidden" class="tt-tag">已隐藏</span>
         <span class="tt-gap" />
-        <button class="btn" title="上移" :disabled="i === 0" @click="move(r.id, -1)">
+        <RButton size="small" title="上移" :disabled="i === 0" @click="move(r.id, -1)">
           <ArrowUp :size="13" />
-        </button>
-        <button class="btn" title="下移" :disabled="i === rows.length - 1" @click="move(r.id, 1)">
+        </RButton>
+        <RButton size="small" title="下移" :disabled="i === rows.length - 1" @click="move(r.id, 1)">
           <ArrowDown :size="13" />
-        </button>
-        <button class="btn" :title="r.hidden ? '在工具栏显示' : '在工具栏隐藏'" @click="toggleHidden(r.id)">
+        </RButton>
+        <RButton size="small" :title="r.hidden ? '在工具栏显示' : '在工具栏隐藏'" @click="toggleHidden(r.id)">
           <EyeOff v-if="r.hidden" :size="13" />
           <Eye v-else :size="13" />
-        </button>
+        </RButton>
       </div>
     </div>
   </div>
   <div class="set-row">
     <span class="set-label">恢复</span>
-    <button class="btn" @click="reset"><RotateCcw :size="13" /> 恢复默认顺序与显示</button>
+    <RButton size="small" @click="reset"><RotateCcw :size="13" /> 恢复默认顺序与显示</RButton>
   </div>
   <div class="pbm-tools hint">
     只调整工具栏里的插件按钮。后退 / 前进 / 刷新、地址栏、分屏、设置这几个固定按钮不动;停用插件同样会收起它的按钮。
@@ -135,8 +136,5 @@ onBeforeUnmount(() => {
 }
 .tt-gap {
   flex: 1;
-}
-.btn:disabled {
-  opacity: 0.35;
 }
 </style>

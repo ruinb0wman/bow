@@ -12,8 +12,9 @@
  * 排序**不按开场顺序**,按注意力等级(`sortSessionsByAttention`):等用户的排最前 ——
  * 这是整个面板的意义所在,否则用户还得自己扫一遍。
  */
+import { RButton } from '@ruinb0w/ui'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { AlertCircle, Boxes, RefreshCw, SquareTerminal, X } from 'lucide-vue-next'
+import { AlertCircle, Boxes, RefreshCw, SquareTerminal, X } from '@lucide/vue'
 import ModalShell from '@renderer/components/ModalShell.vue'
 import { TERMINAL_EVENTS, attentionRank, formatAgo, lastActiveAt, shortPath, sortSessionsByAttention } from '../shared'
 import type { SessionAgentState, SessionInfo } from '../shared'
@@ -183,7 +184,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="herd-foot">
-        <button class="btn" @click="createSession"><SquareTerminal :size="13" /> 新终端</button>
+        <RButton size="small" @click="createSession"><SquareTerminal :size="13" /> 新终端</RButton>
         <span class="herd-hint">点一行 = 跳到那个终端</span>
       </div>
     </div>

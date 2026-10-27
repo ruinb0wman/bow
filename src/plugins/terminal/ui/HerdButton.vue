@@ -6,8 +6,9 @@
  * 按钮自己带状态 —— 有代理在等用户时亮起并显示数量(角标只在那个标签上,切到别的标签就看不见了),
  * 这正是面板存在的理由:不用逐个标签去翻。
  */
+import { RButton } from '@ruinb0w/ui'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Boxes } from 'lucide-vue-next'
+import { Boxes } from '@lucide/vue'
 import { TERMINAL_EVENTS, sortSessionsByAttention } from '../shared'
 import type { SessionInfo } from '../shared'
 
@@ -54,25 +55,15 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <button
-    class="tool-btn no-drag herd-btn"
-    :class="{ blocked: blocked > 0, working: blocked === 0 && working > 0 }"
-    :title="title"
-    @click="openPanel"
-  >
+  <RButton text size="default" class="no-drag herd-btn" :class="{ blocked: blocked > 0, working: blocked === 0 && working > 0 }" :title="title" @click="openPanel">
     <Boxes :size="16" />
     <span v-if="blocked > 0" class="herd-count">{{ blocked }}</span>
     <span v-else-if="sessions.length > 0" class="herd-count muted">{{ sessions.length }}</span>
-  </button>
+  </RButton>
 </template>
 
 <style scoped>
-.herd-btn {
-  width: auto;
-  min-width: 30px;
-  padding: 0 6px;
-  gap: 3px;
-}
+/* 内距/间距/高度由 RButton 给,这里只留语义色 */
 .herd-count {
   font-size: 11px;
   line-height: 1;

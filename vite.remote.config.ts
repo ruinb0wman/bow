@@ -18,7 +18,9 @@ export default defineConfig({
     alias: {
       '@shared': resolve('src/shared'),
       '@plugins': resolve('src/plugins')
-    }
+    },
+    // 同 electron.vite.config.ts:软链进来的 ui 仓有自己的 vue / @lucide/vue
+    dedupe: ['vue', '@lucide/vue']
   },
   build: {
     outDir: resolve('out/remote'),

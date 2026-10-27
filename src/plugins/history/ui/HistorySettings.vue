@@ -4,6 +4,7 @@
  * - 配置保留条数(默认 500,立即裁剪);
  * - 模糊搜索历史,单条 / 批量删除,清空二次确认。
  */
+import { RButton } from '@ruinb0w/ui'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { HistoryList, HistorySettings } from '@shared/types'
 import {
@@ -13,7 +14,7 @@ import {
   formatHistoryTime,
   searchHistory
 } from '@shared/history'
-import { Save, Search, Trash2, X } from 'lucide-vue-next'
+import { Save, Search, Trash2, X } from '@lucide/vue'
 
 const api = window.browserAPI
 
@@ -155,7 +156,7 @@ onBeforeUnmount(() => {
         @keyup.enter="saveCap"
       />
       <span class="hs-unit">条</span>
-      <button class="btn primary" title="保存并立即裁剪" @click="saveCap"><Save :size="13" />保存</button>
+      <RButton size="small" type="primary" title="保存并立即裁剪" @click="saveCap"><Save :size="13" />保存</RButton>
       <span class="set-hcount">共 {{ list.length }} 条记录</span>
     </div>
     <div v-if="capError" class="hs-error">{{ capError }}</div>
@@ -173,16 +174,16 @@ onBeforeUnmount(() => {
         <input type="checkbox" :checked="allSelected" :indeterminate="someSelected" @change="toggleAll" />
         全选({{ filtered.length }})
       </label>
-      <button class="btn danger" :disabled="!hasSelection" @click="removeSelected">
+      <RButton size="small" type="danger" plain :disabled="!hasSelection" @click="removeSelected">
         <Trash2 :size="13" />删除选中({{ selected.size }})
-      </button>
+      </RButton>
       <template v-if="!clearConfirm">
-        <button class="btn danger" :disabled="list.length === 0" @click="clearConfirm = true">清空历史</button>
+        <RButton size="small" type="danger" plain :disabled="list.length === 0" @click="clearConfirm = true">清空历史</RButton>
       </template>
       <template v-else>
         <span class="hs-confirm">确认清空全部 {{ list.length }} 条?</span>
-        <button class="btn danger" @click="clearAll">确认清空</button>
-        <button class="btn" @click="clearConfirm = false">取消</button>
+        <RButton size="small" type="danger" plain @click="clearAll">确认清空</RButton>
+        <RButton size="small" @click="clearConfirm = false">取消</RButton>
       </template>
       <span v-if="notice" class="hs-notice">{{ notice }}</span>
     </div>
@@ -215,7 +216,7 @@ onBeforeUnmount(() => {
           <button class="hs-del" title="删除此条" @click.stop="removeOne(h.id)"><X :size="12" /></button>
         </div>
         <div v-if="remaining > 0" class="hs-more">
-          <button class="btn" @click="loadMore">加载更多(剩余 {{ remaining }})</button>
+          <RButton size="small" @click="loadMore">加载更多(剩余 {{ remaining }})</RButton>
           <span class="hs-more-hint">已显示 {{ visible.length }} / {{ filtered.length }} 条</span>
         </div>
       </template>

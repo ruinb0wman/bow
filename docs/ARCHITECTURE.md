@@ -110,9 +110,10 @@ src/
                                         不经 preload、不依赖渲染层 IPC。页内只有登录 + 会话列表 + 对话)
     src/plugins/registry.ts             PLUGIN_UI 注册表 + SLOT_PLUGIN_ORDER(渲染层唯一登记点)
     src/plugins/slots.ts                collectSlot 纯函数(插槽合并顺序,可单测)
-    src/components/                     SuggestPanel(地址栏下拉)/ SplitMenu(分屏面板)/ CloseConfirmModal(关闭窗口确认)/ ModalShell(弹层壳 + Esc 栈顶)
-    src/lib/                            avatar(字母头像)/ openFolder(批量后台开标签)/ modalStack
+    src/components/                     SuggestPanel(地址栏下拉)/ SplitMenu(分屏面板)/ CloseConfirmModal(关闭窗口确认)/ ModalShell(弹层壳,ESC/焦点/层号走库的 useOverlayLayer)
+    src/lib/                            avatar(字母头像)/ openFolder(批量后台开标签)
                                          / splitKeys(设置页自己的分屏键判据,与主进程共用 matchSplitHotkey)
+
   shared/                        三端共享纯逻辑(无 electron / DOM)
     types.ts        跨端类型(TabInfo/Settings/Suggestion/Overlay*/ActionResult…)
     plugins.ts      插件契约类型 + PluginCapability 标签表
@@ -139,6 +140,21 @@ packages/pi-bow/  pi 插件包(**唯一真相源**):extensions/bow-agent-state.t
 scripts/          构建与运维脚本(见 §11)
 docs/             本文件 + opencode-session-header.md
 ```
+
+### 样式与组件库
+
+- 颜色与尺度**唯一真源**是 `@ruinb0w/ui`(`~/Workspace/ui`,node_modules 里是 `link:../ui` 软链,
+  消费的是它的 `dist/`)。各入口 html 上写死 `data-theme="bow-dark"` + `data-density="compact"`
+  (远程页是 `touch`),切主题/密度就改这两个属性,不要在项目里发明新的色值或档位。
+- `src/renderer/src/style.css` 顶部的 `:root` 只是**旧变量名 → 库语义变量**的别名
+  (`--bg → --bg-page`、`--bg3 → --bg-elevated` …),存量 scoped 样式继续用旧名字。
+- 按钮/输入/弹层壳等基础件用库组件(`RButton` / `ModalShell` 内的 `useOverlayLayer` …),
+  不要再写新的 `.btn` / `.tool-btn` 类;库没盖住的样式才在项目里手写,且只用语义变量。
+- 图标:`import { X } from '@lucide/vue'` 直接引组件。按**名字**渲染图标(库组件的 `icon`/`name` 参数)
+  时必须在入口 `registerIcons({...})` 登记,库里没有「回落整包」——
+  未登记的名字只显示图标名 + 控制台 warn。
+- 浮层层叠走库的 `useOverlayLayer`(ESC 只关最上层 / 焦点陷阱 / `z-index = --z-modal + 层号`),
+  项目里不再维护自己的弹层栈。
 
 ---
 

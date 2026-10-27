@@ -7,12 +7,13 @@
  * 阶段结束的 `phase-end` 事件触发闪烁 + 一声 WebAudio 提示音
  * (AudioContext 在本组件被点击时解锁 —— 从未点过按钮则提示音静默失败,系统通知仍在)。
  */
+import { RButton } from '@ruinb0w/ui'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Coffee, Timer } from 'lucide-vue-next'
+import { Coffee, Timer } from '@lucide/vue'
 import { POMO_EVENT, durationMs, formatClock, remainingMsOf, type PomoSnapshot } from '../shared'
 
 const api = window.browserAPI
-const buttonEl = ref<HTMLButtonElement | null>(null)
+const buttonEl = ref<{ $el?: HTMLElement } | null>(null)
 const snapshot = ref<PomoSnapshot | null>(null)
 const now = ref(Date.now())
 const blinking = ref(false)
@@ -110,7 +111,7 @@ function blink(): void {
 
 function openPanel(): void {
   ensureAudio()
-  const r = buttonEl.value?.getBoundingClientRect()
+  const r = buttonEl.value?.$el?.getBoundingClientRect()
   void api.showOverlay({
     id: 'plugin:pomo:panel',
     placement: 'below-chrome',
@@ -145,26 +146,15 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <button
-    ref="buttonEl"
-    class="tool-btn no-drag pomo-btn"
-    :class="{ on: running, blink: blinking }"
-    :title="title"
-    @click="openPanel"
-  >
+  <RButton text size="default" class="no-drag pomo-btn" ref="buttonEl" :active="running" :class="{ blink: blinking }" :title="title" @click="openPanel">
     <Coffee v-if="phase !== 'focus'" :size="15" />
     <Timer v-else :size="15" />
     <span v-if="showClock" class="pomo-clock">{{ clock }}</span>
-  </button>
+  </RButton>
 </template>
 
 <style scoped>
-.pomo-btn {
-  width: auto;
-  min-width: 30px;
-  padding: 0 6px;
-  gap: 4px;
-}
+/* 内距/间距/高度由 RButton 给,这里只留时钟排版与闪烁 */
 .pomo-clock {
   font-size: 11px;
   line-height: 1;

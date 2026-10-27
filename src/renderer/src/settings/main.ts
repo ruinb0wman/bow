@@ -1,6 +1,7 @@
 import { createApp } from 'vue'
 import SettingsPage from './SettingsPage.vue'
 import { isEditableTarget, splitHotkeyFromEvent } from '../lib/splitKeys'
+import '@ruinb0w/ui/style.css'
 import '../style.css'
 
 createApp(SettingsPage).mount('#app')

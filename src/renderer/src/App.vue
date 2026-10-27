@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { RButton } from '@ruinb0w/ui'
 import { computed, onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue'
 import type { Component } from 'vue'
 import type {
@@ -40,7 +41,7 @@ import {
   Square,
   TriangleAlert,
   X
-} from 'lucide-vue-next'
+} from '@lucide/vue'
 
 const api = window.browserAPI
 
@@ -105,7 +106,7 @@ const splitMenuOpen = ref(false)
  * 所以取数回来要先比一代,过期的结果直接丢弃。
  */
 let splitMenuSeq = 0
-const splitBtn = ref<HTMLElement | null>(null)
+const splitBtn = ref<{ $el?: HTMLElement } | null>(null)
 /** chrome 实测高度(既上报主进程,也用来定位分隔条的起点) */
 const chromeHeight = ref(0)
 
@@ -321,7 +322,7 @@ async function closeTab(id: number, e?: MouseEvent): Promise<void> {
 
 // ---------- 分屏面板(chrome 是 owner,面板只回传事件) ----------
 function splitButtonRect(): SplitMenuPayload['rect'] {
-  const r = splitBtn.value?.getBoundingClientRect()
+  const r = splitBtn.value?.$el?.getBoundingClientRect()
   return { x: r?.x ?? 0, y: r?.y ?? 0, width: r?.width ?? 0, height: r?.height ?? 0 }
 }
 
@@ -763,20 +764,16 @@ onBeforeUnmount(() => {
 
     <!-- 工具栏 -->
     <div class="toolbar">
-      <button class="tool-btn no-drag" title="后退" :disabled="!activeTab?.canGoBack" @click="back">
+      <RButton text circle size="default" class="no-drag" title="后退" :disabled="!activeTab?.canGoBack" @click="back">
         <ArrowLeft :size="16" />
-      </button>
-      <button class="tool-btn no-drag" title="前进" :disabled="!activeTab?.canGoForward" @click="forward">
+      </RButton>
+      <RButton text circle size="default" class="no-drag" title="前进" :disabled="!activeTab?.canGoForward" @click="forward">
         <ArrowRight :size="16" />
-      </button>
-      <button
-        class="tool-btn no-drag"
-        :title="loading ? '停止加载' : '刷新 (Ctrl+R)'"
-        @click="loading ? stopLoading() : reload()"
-      >
+      </RButton>
+      <RButton text circle size="default" class="no-drag" :title="loading ? '停止加载' : '刷新 (Ctrl+R)'" @click="loading ? stopLoading() : reload()">
         <X v-if="loading" :size="16" />
         <RotateCw v-else :size="16" />
-      </button>
+      </RButton>
       <div ref="addressBarEl" class="addressbar no-drag">
         <div class="addressbar-row">
           <input
@@ -796,18 +793,12 @@ onBeforeUnmount(() => {
       </div>
       <!-- 插件工具栏按钮(书签管理等) -->
       <component v-for="(C, i) in toolbarSlots" :key="`tb-${i}`" :is="C" />
-      <button
-        ref="splitBtn"
-        class="tool-btn no-drag split-btn"
-        :class="{ on: !!activeGroup && isSplitGroup(activeGroup) }"
-        :title="activeGroup && isSplitGroup(activeGroup) ? '分屏中(保存/套用布局、取消分屏)' : '分屏:把当前标签拆成多个窗格'"
-        @click="toggleSplitMenu"
-      >
+      <RButton text circle size="default" class="no-drag split-btn" ref="splitBtn" :active="!!activeGroup && isSplitGroup(activeGroup)" :title="activeGroup && isSplitGroup(activeGroup) ? '分屏中(保存/套用布局、取消分屏)' : '分屏:把当前标签拆成多个窗格'" @click="toggleSplitMenu">
         <Columns2 :size="16" />
-      </button>
-      <button class="tool-btn no-drag" title="设置 (Ctrl+,)" @click="openSettings">
+      </RButton>
+      <RButton text circle size="default" class="no-drag" title="设置 (Ctrl+,)" @click="openSettings">
         <SettingsIcon :size="16" />
-      </button>
+      </RButton>
     </div>
 
     <!-- 分隔条:一个空隙一条,几何完全来自主进程(`groups:changed` 里的 dividers) -->

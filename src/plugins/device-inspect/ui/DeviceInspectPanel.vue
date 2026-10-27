@@ -5,8 +5,9 @@
  * 它只做两件事:调 `plugins.invoke('device-inspect', …)` 和渲染。所有解析/判定/文案都在插件
  * 主进程侧(见 `../shared.ts` 与 `../main.ts`)—— 这样「用户看到的提示」与「AI 看到的提示」是同一套。
  */
+import { RButton } from '@ruinb0w/ui'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Check, Copy, RefreshCw, Smartphone, Wifi, X } from 'lucide-vue-next'
+import { Check, Copy, RefreshCw, Smartphone, Wifi, X } from '@lucide/vue'
 import ModalShell from '@renderer/components/ModalShell.vue'
 import {
   frontendNotice,
@@ -296,10 +297,10 @@ onBeforeUnmount(() => {
           {{ state.targetCount }} 个可调试目标
         </span>
         <span class="dvi-spacer" />
-        <button class="btn" :disabled="loading" @click="refresh()">
+        <RButton size="small" :disabled="loading" @click="refresh()">
           <RefreshCw :size="13" :class="{ spin: loading }" /> 刷新
-        </button>
-        <button class="btn" @click="showSettings = !showSettings">设置</button>
+        </RButton>
+        <RButton size="small" @click="showSettings = !showSettings">设置</RButton>
         <button class="win-btn" title="关闭" @click="requestClose"><X :size="13" /></button>
       </div>
 
@@ -324,34 +325,22 @@ onBeforeUnmount(() => {
           />
         </label>
         <div class="dvi-row">
-          <button class="btn" :disabled="loading" @click="checkAdb">自检</button>
-          <button class="btn primary" @click="saveSettings">保存</button>
-          <button class="btn danger" @click="cleanupForwards">回收全部转发</button>
+          <RButton size="small" :disabled="loading" @click="checkAdb">自检</RButton>
+          <RButton size="small" type="primary" @click="saveSettings">保存</RButton>
+          <RButton size="small" type="danger" plain @click="cleanupForwards">回收全部转发</RButton>
         </div>
         <div class="dvi-field">
           <span class="dvi-kv">DevTools 前端</span>
           <div class="dvi-row">
-            <button
-              class="btn"
-              :class="{ primary: strategyDraft === 'auto' }"
-              @click="switchStrategy('auto')"
-            >
+            <RButton size="small" :type="strategyDraft === 'auto' ? 'primary' : 'default'" @click="switchStrategy('auto')">
               自动(推荐)
-            </button>
-            <button
-              class="btn"
-              :class="{ primary: strategyDraft === 'device-suggested' }"
-              @click="switchStrategy('device-suggested')"
-            >
+            </RButton>
+            <RButton size="small" :type="strategyDraft === 'device-suggested' ? 'primary' : 'default'" @click="switchStrategy('device-suggested')">
               设备指定
-            </button>
-            <button
-              class="btn"
-              :class="{ primary: strategyDraft === 'electron-bundled' }"
-              @click="switchStrategy('electron-bundled')"
-            >
+            </RButton>
+            <RButton size="small" :type="strategyDraft === 'electron-bundled' ? 'primary' : 'default'" @click="switchStrategy('electron-bundled')">
               bow 自带
-            </button>
+            </RButton>
           </div>
         </div>
         <p class="dvi-hint">
@@ -370,8 +359,8 @@ onBeforeUnmount(() => {
         <Wifi :size="14" />
         <input v-model="wirelessAddress" class="pbm-input" spellcheck="false" placeholder="无线调试地址,如 192.168.1.5:5555" />
         <input v-model="wirelessCode" class="pbm-input dvi-code-input" spellcheck="false" placeholder="配对码(仅配对需要)" />
-        <button class="btn" :disabled="loading" @click="wireless('pair')">配对</button>
-        <button class="btn" :disabled="loading" @click="wireless('connect')">连接</button>
+        <RButton size="small" :disabled="loading" @click="wireless('pair')">配对</RButton>
+        <RButton size="small" :disabled="loading" @click="wireless('connect')">连接</RButton>
       </div>
 
       <div v-if="notice || error" class="dvi-notice">{{ notice || error }}</div>
@@ -412,25 +401,17 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <div class="dvi-target-actions">
-              <button
-                class="btn"
-                :title="`复制 WebSocket 地址:${row.wsUrl}`"
-                @click="copyText('ws', row.key, row.wsUrl, ' WebSocket 地址')"
-              >
+              <RButton size="small" :title="`复制 WebSocket 地址:${row.wsUrl}`" @click="copyText('ws', row.key, row.wsUrl, ' WebSocket 地址')">
                 <Check v-if="isCopied('ws', row.key)" :size="13" />
                 <Copy v-else :size="13" />
                 复制 ws
-              </button>
-              <button
-                class="btn"
-                :title="`复制检查地址(DevTools 前端):${row.frontendUrl}`"
-                @click="copyText('frontend', row.key, row.frontendUrl, '检查地址')"
-              >
+              </RButton>
+              <RButton size="small" :title="`复制检查地址(DevTools 前端):${row.frontendUrl}`" @click="copyText('frontend', row.key, row.frontendUrl, '检查地址')">
                 <Check v-if="isCopied('frontend', row.key)" :size="13" />
                 <Copy v-else :size="13" />
                 复制地址
-              </button>
-              <button class="btn primary" :disabled="busyKey === row.key" @click="inspect(row.key)">检查</button>
+              </RButton>
+              <RButton size="small" type="primary" :disabled="busyKey === row.key" @click="inspect(row.key)">检查</RButton>
             </div>
           </div>
         </template>

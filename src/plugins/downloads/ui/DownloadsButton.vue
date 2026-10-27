@@ -6,8 +6,9 @@
  * 轮询策略:只在「有非终态记录」时 500ms 轮询一次(下载进度没有推送),
  * 状态迁移靠主进程的 `changed` 广播立刻刷新 —— 面板关闭时也不额外打扰主进程。
  */
+import { RButton } from '@ruinb0w/ui'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Download } from 'lucide-vue-next'
+import { Download } from '@lucide/vue'
 import { DOWNLOADS_EVENT, percentOf, type DownloadRecord, type DownloadsListResult } from '../shared'
 
 const api = window.browserAPI
@@ -76,17 +77,17 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <button class="tool-btn no-drag db-btn" :class="{ busy: active.length > 0 }" :title="title" @click="open">
+  <RButton text size="default" class="no-drag db-btn" :class="{ busy: active.length > 0 }" :title="title" @click="open">
     <Download :size="16" />
     <span v-if="percent !== null" class="db-pct">{{ percent }}%</span>
     <span v-if="active.length > 1" class="db-count">{{ active.length }}</span>
-  </button>
+  </RButton>
 </template>
 
 <style scoped>
+/* 计数角标要绝对定位,所以这条必须留着(内距/间距归 RButton) */
 .db-btn {
   position: relative;
-  gap: 3px;
 }
 .db-btn.busy {
   color: var(--accent);

@@ -5,8 +5,9 @@
  * 只负责表单与密码生成;保存由父组件调 `plugins.invoke('passwords','save')` ——
  * 站点地址允许填完整 URL,主进程侧统一 `originOf()` 归一化(受信任的校验在那边)。
  */
+import { RButton } from '@ruinb0w/ui'
 import { reactive, ref, watch } from 'vue'
-import { RefreshCw, Save, X } from 'lucide-vue-next'
+import { RefreshCw, Save, X } from '@lucide/vue'
 import {
   DEFAULT_GENERATE_OPTIONS,
   generatePassword,
@@ -77,9 +78,9 @@ function submit(): void {
     <div class="set-row">
       <span class="set-label">密码</span>
       <input v-model="form.password" class="pe-input" spellcheck="false" autocomplete="off" />
-      <button type="button" class="btn" title="生成强密码" @click="generate">
+      <RButton size="small" title="生成强密码" @click="generate">
         <RefreshCw :size="12" />生成
-      </button>
+      </RButton>
     </div>
 
     <div class="pe-gen">
@@ -100,8 +101,8 @@ function submit(): void {
     <div v-if="error" class="pe-error">{{ error }}</div>
 
     <div class="pe-actions">
-      <button type="button" class="btn" @click="emit('cancel')"><X :size="12" />取消</button>
-      <button type="submit" class="btn primary" :disabled="busy"><Save :size="12" />保存</button>
+      <RButton size="small" @click="emit('cancel')"><X :size="12" />取消</RButton>
+      <RButton size="small" type="primary" native-type="submit" :disabled="busy"><Save :size="12" />保存</RButton>
     </div>
   </form>
 </template>

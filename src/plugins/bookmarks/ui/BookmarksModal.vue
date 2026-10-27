@@ -1,10 +1,11 @@
 <script setup lang="ts">
 /** 收藏 Launchpad 面板(书签插件贡献的 full 浮层):搜索 + 磁贴网格 + 管理 */
+import { RButton } from '@ruinb0w/ui'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { BookmarkNode, BookmarkTree } from '@shared/types'
 import { childrenOf } from '@shared/bookmarkTree'
 import { isInternalUrl } from '@shared/internalPages'
-import { ArrowLeft, ArrowRightLeft, Folder, Pencil, Plus, Search, Trash2, X } from 'lucide-vue-next'
+import { ArrowLeft, ArrowRightLeft, Folder, Pencil, Plus, Search, Trash2, X } from '@lucide/vue'
 import { domainHue, faviconLetter } from '@renderer/lib/avatar'
 import { openAllInFolder, openBookmarkBackground } from '@renderer/lib/openFolder'
 import ModalShell from '@renderer/components/ModalShell.vue'
@@ -243,7 +244,7 @@ onBeforeUnmount(() => {
 
       <!-- 目录视图返回条 -->
       <div v-if="viewFolderId !== null" class="la-nav">
-        <button class="btn" @click="back"><ArrowLeft :size="13" /> 返回</button>
+        <RButton size="small" @click="back"><ArrowLeft :size="13" /> 返回</RButton>
         <span class="la-nav-title">{{ viewTitle }}</span>
       </div>
 
@@ -312,29 +313,29 @@ onBeforeUnmount(() => {
           spellcheck="false"
           @keyup.enter="confirmAdd"
         />
-        <button class="btn primary" @click="confirmAdd">添加</button>
-        <button class="btn" @click="cancelAdd">取消</button>
+        <RButton size="small" type="primary" @click="confirmAdd">添加</RButton>
+        <RButton size="small" @click="cancelAdd">取消</RButton>
       </div>
 
       <!-- 编辑小表单 -->
       <div v-if="editing" class="la-bar" @click.stop>
         <input v-model="editTitle" class="pbm-input" placeholder="名称" />
         <input v-if="editing.type === 'bookmark'" v-model="editUrl" class="pbm-input" placeholder="URL" />
-        <button class="btn primary" @click="saveEdit">保存</button>
-        <button class="btn" @click="cancelEdit">取消</button>
+        <RButton size="small" type="primary" @click="saveEdit">保存</RButton>
+        <RButton size="small" @click="cancelEdit">取消</RButton>
       </div>
 
       <!-- 移动选择(候选:根 + 根级目录) -->
       <div v-if="moving" class="la-bar" @click.stop>
         <span class="la-move-title">移动到:</span>
-        <button class="btn" @click="moveTo(moving, '__root__')">根目录</button>
-        <button v-for="f in rootFolders" :key="f.id" class="btn" @click="moveTo(moving, f.id)">{{ f.title }}</button>
+        <RButton size="small" @click="moveTo(moving, '__root__')">根目录</RButton>
+        <RButton size="small" v-for="f in rootFolders" :key="f.id" @click="moveTo(moving, f.id)">{{ f.title }}</RButton>
       </div>
 
       <!-- 底部工具条 -->
       <div class="la-foot">
-        <button class="btn" @click="startAddBookmark"><Plus :size="13" /> 新建书签</button>
-        <button class="btn" @click="startAddFolder"><Plus :size="13" /> 新建文件夹</button>
+        <RButton size="small" @click="startAddBookmark"><Plus :size="13" /> 新建书签</RButton>
+        <RButton size="small" @click="startAddFolder"><Plus :size="13" /> 新建文件夹</RButton>
         <span class="la-hint">单击目录进入; Ctrl+点击目录后台打开全部页面</span>
         <span v-if="notice" class="la-notice">{{ notice }}</span>
       </div>

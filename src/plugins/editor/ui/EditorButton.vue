@@ -4,8 +4,9 @@
  * —— 不做全局 `*\shell` 右键菜单的代价就靠它补回来。
  * 选完文件由主进程开编辑器标签(`plugins.invoke('editor','pickFile')`);这里只把结果反馈到 title。
  */
+import { RButton } from '@ruinb0w/ui'
 import { ref } from 'vue'
-import { FileCode2 } from 'lucide-vue-next'
+import { FileCode2 } from '@lucide/vue'
 
 const api = window.browserAPI
 const LABEL = '用编辑器打开…'
@@ -28,7 +29,7 @@ async function open(): Promise<void> {
 </script>
 
 <template>
-  <button class="tool-btn no-drag" :title="title" @click="open">
+  <RButton text circle size="default" class="no-drag" :title="title" @click="open">
     <FileCode2 :size="16" />
-  </button>
+  </RButton>
 </template>

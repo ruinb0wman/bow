@@ -6,7 +6,7 @@
  */
 import { ref, watch } from 'vue'
 import type { SuggestPayload } from '@shared/types'
-import { Bookmark as BookmarkIcon, History as HistoryIcon, Search } from 'lucide-vue-next'
+import { Bookmark as BookmarkIcon, History as HistoryIcon, Search } from '@lucide/vue'
 
 const props = defineProps<{ payload: SuggestPayload; bandTop: number }>()
 const emit = defineEmits<{ 'overlay-event': [event: string, args?: unknown] }>()

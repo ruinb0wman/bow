@@ -6,6 +6,7 @@
  * - 「关闭窗口」→ 回传 'confirm'(主进程置位后放行 close);
  * - 「取消」/ Esc / 点遮罩 → 回传 'close-request'(现有通用分支关闭浮层,窗口不关)。
  */
+import { RButton } from '@ruinb0w/ui'
 import { onMounted, ref } from 'vue'
 import type { CloseConfirmPayload } from '@shared/types'
 import ModalShell from '@renderer/components/ModalShell.vue'
@@ -15,7 +16,7 @@ const emit = defineEmits<{ 'overlay-event': [event: string, args?: unknown] }>()
 // 宿主(OverlayApp)无条件传 band-top;本弹层是 full placement,bandTop 恒为 0,别让它落到根元素上
 defineOptions({ inheritAttrs: false })
 
-const cancelBtn = ref<HTMLButtonElement | null>(null)
+const cancelBtn = ref<{ $el?: HTMLElement } | null>(null)
 
 function onShellEvent(event: string, args?: unknown): void {
   emit('overlay-event', event, args)
@@ -28,7 +29,7 @@ function confirm(): void {
 }
 
 // 默认焦点给「取消」:回车不该顺手把窗口(和全部标签页)关掉
-onMounted(() => cancelBtn.value?.focus())
+onMounted(() => cancelBtn.value?.$el?.focus())
 </script>
 
 <template>
@@ -39,8 +40,8 @@ onMounted(() => cancelBtn.value?.focus())
       不保存会话,重启后不会恢复。
     </div>
     <div class="cc-actions">
-      <button ref="cancelBtn" class="btn" @click="cancel">取消</button>
-      <button class="btn primary" @click="confirm">关闭窗口</button>
+      <RButton size="small" ref="cancelBtn" @click="cancel">取消</RButton>
+      <RButton size="small" type="primary" @click="confirm">关闭窗口</RButton>
     </div>
   </ModalShell>
 </template>

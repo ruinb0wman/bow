@@ -6,8 +6,9 @@
  * `data-bridge-state` / `data-bridge-action` 是给 E2E(`scripts/e2e-agent-status.mjs`)用的钩子:
  * 一键接入是个「点一下真的会写文件到用户家目录」的动作,靠文案选按钮太脆。
  */
+import { RButton } from '@ruinb0w/ui'
 import { computed, onMounted, ref } from 'vue'
-import { Plus, Trash2 } from 'lucide-vue-next'
+import { Plus, Trash2 } from '@lucide/vue'
 import {
   FONT_SIZE_RANGE,
   SCROLLBACK_RANGE,
@@ -264,14 +265,9 @@ async function copyWslCommand(): Promise<void> {
               @change="patchProfile(profile.id, { cwd: ($event.target as HTMLInputElement).value })"
             />
           </div>
-          <button
-            class="btn danger"
-            :disabled="profiles.length <= 1"
-            :title="profiles.length <= 1 ? '至少保留一条配置' : '删除该配置'"
-            @click="removeProfile(profile.id)"
-          >
+          <RButton size="small" type="danger" plain :disabled="profiles.length <= 1" :title="profiles.length <= 1 ? '至少保留一条配置' : '删除该配置'" @click="removeProfile(profile.id)">
             <Trash2 :size="13" />
-          </button>
+          </RButton>
         </div>
 
         <div class="term-add">
@@ -281,7 +277,7 @@ async function copyWslCommand(): Promise<void> {
               {{ item.profile.name }} · {{ item.profile.shell }}{{ item.available ? '' : '(未找到)' }}
             </option>
           </select>
-          <button class="btn" title="添加一条自定义配置" @click="addCustom"><Plus :size="13" /></button>
+          <RButton size="small" title="添加一条自定义配置" @click="addCustom"><Plus :size="13" /></RButton>
         </div>
 
         <div class="pbm-tools hint">
@@ -307,25 +303,12 @@ async function copyWslCommand(): Promise<void> {
           >
             {{ bridgeStateText() }}
           </span>
-          <button
-            class="btn"
-            data-bridge-action="install"
-            :disabled="bridgeBusy || !bridge?.sourceAvailable"
-            :title="bridge?.foreign ? '目标文件不是 bow 装的,点击会覆盖它' : '把扩展写进 pi 的扩展目录'"
-            @click="runBridge('install')"
-          >
+          <RButton size="small" data-bridge-action="install" :disabled="bridgeBusy || !bridge?.sourceAvailable" :title="bridge?.foreign ? '目标文件不是 bow 装的,点击会覆盖它' : '把扩展写进 pi 的扩展目录'" @click="runBridge('install')">
             {{ bridgeButtonText() }}
-          </button>
-          <button
-            v-if="bridge?.installed"
-            class="btn danger"
-            data-bridge-action="uninstall"
-            :disabled="bridgeBusy"
-            title="删除 bow 装的那个扩展文件(不动别的扩展)"
-            @click="runBridge('uninstall')"
-          >
+          </RButton>
+          <RButton size="small" type="danger" plain v-if="bridge?.installed" data-bridge-action="uninstall" :disabled="bridgeBusy" title="删除 bow 装的那个扩展文件(不动别的扩展)" @click="runBridge('uninstall')">
             卸载
-          </button>
+          </RButton>
         </div>
         <div v-if="bridge" class="term-bridge-path">{{ bridge.target }}</div>
         <div class="pbm-tools hint">
@@ -342,14 +325,9 @@ async function copyWslCommand(): Promise<void> {
           </div>
           <div class="term-bridge-cmd">
             <code data-bridge-wsl-command>{{ bridge.wsl.command }}</code>
-            <button
-              class="btn"
-              data-bridge-action="copy-wsl"
-              title="复制这条命令,粘到 WSL 终端里执行"
-              @click="copyWslCommand()"
-            >
+            <RButton size="small" data-bridge-action="copy-wsl" title="复制这条命令,粘到 WSL 终端里执行" @click="copyWslCommand()">
               {{ wslCopied ? '已复制' : '复制' }}
-            </button>
+            </RButton>
           </div>
           <div class="pbm-tools hint">然后在 WSL 里的 pi 中 <code>/reload</code> 或重开终端。</div>
         </div>

@@ -7,8 +7,9 @@
  * 由本组件打开密码面板。`Ctrl+Shift+P` 走同一套流程 —— 但快捷键在主进程,
  * 它发 `open-panel` 事件,同样由本组件负责开浮层(主进程不能直接开 overlay)。
  */
+import { RButton } from '@ruinb0w/ui'
 import { onBeforeUnmount, onMounted } from 'vue'
-import { KeyRound } from 'lucide-vue-next'
+import { KeyRound } from '@lucide/vue'
 import type { BeginFillResult } from '../shared'
 
 const api = window.browserAPI
@@ -46,11 +47,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <button
-    class="tool-btn no-drag"
-    title="密码:填充当前页 / 打开密码库(Ctrl+Shift+P)"
-    @click="onClick"
-  >
+  <RButton text circle size="default" class="no-drag" title="密码:填充当前页 / 打开密码库(Ctrl+Shift+P)" @click="onClick">
     <KeyRound :size="16" />
-  </button>
+  </RButton>
 </template>

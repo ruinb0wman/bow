@@ -6,8 +6,9 @@
  * 导入用系统文件选择框选一份 JSON 并**整树替换**(校验 + 归一在 `normalizeImportedTree()`)。
  * 书签面板(星标旁边那个管理浮层)不再放导出按钮 —— 那是日常整理的地方,备份这类低频操作归设置页。
  */
+import { RButton } from '@ruinb0w/ui'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Download, Upload } from 'lucide-vue-next'
+import { Download, Upload } from '@lucide/vue'
 import { flatten } from '@shared/bookmarkTree'
 import type { BookmarkTree } from '@shared/types'
 import type { BookmarkExportResult, BookmarkImportResult } from '../shared'
@@ -109,12 +110,12 @@ onBeforeUnmount(() => {
       <span class="set-label">导出全部书签</span>
       <template v-if="exportArmed">
         <span class="bm-settings-hint">整棵树写进 bow 下载目录(与 bookmarks.json 内容一致)。</span>
-        <button class="btn primary" @click="exportBookmarks"><Download :size="12" />确认导出</button>
-        <button class="btn" @click="exportArmed = false">取消</button>
+        <RButton size="small" type="primary" @click="exportBookmarks"><Download :size="12" />确认导出</RButton>
+        <RButton size="small" @click="exportArmed = false">取消</RButton>
       </template>
-      <button v-else class="btn" :disabled="counts.bookmarks + counts.folders === 0" @click="exportArmed = true">
+      <RButton size="small" v-else :disabled="counts.bookmarks + counts.folders === 0" @click="exportArmed = true">
         <Download :size="12" />导出…
-      </button>
+      </RButton>
     </div>
     <div v-if="exportPath" class="bm-settings-hint">已导出:<code>{{ exportPath }}</code></div>
 
@@ -124,10 +125,10 @@ onBeforeUnmount(() => {
         <span class="bm-settings-hint">
           会<strong>整树替换</strong>当前书签(现共 {{ counts.bookmarks + counts.folders }} 项),这一步不可撤销。
         </span>
-        <button class="btn danger" @click="importBookmarks"><Upload :size="12" />确认导入</button>
-        <button class="btn" @click="importArmed = false">取消</button>
+        <RButton size="small" type="danger" plain @click="importBookmarks"><Upload :size="12" />确认导入</RButton>
+        <RButton size="small" @click="importArmed = false">取消</RButton>
       </template>
-      <button v-else class="btn" @click="importArmed = true"><Upload :size="12" />导入…</button>
+      <RButton size="small" v-else @click="importArmed = true"><Upload :size="12" />导入…</RButton>
     </div>
     <div v-if="summary" class="bm-settings-hint">{{ summary }}</div>
 

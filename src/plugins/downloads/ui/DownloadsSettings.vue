@@ -3,8 +3,9 @@
  * 下载插件设置分区:保存位置 / 是否询问 / 记录上限 / 清空记录。
  * 所有设置即时保存(没有保存按钮的只有「记录上限」—— 那个需要先校验输入)。
  */
+import { RButton } from '@ruinb0w/ui'
 import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { FolderOpen, Save, Trash2 } from 'lucide-vue-next'
+import { FolderOpen, Save, Trash2 } from '@lucide/vue'
 import {
   DEFAULT_DOWNLOAD_SETTINGS,
   DOWNLOADS_EVENT,
@@ -114,8 +115,8 @@ onBeforeUnmount(() => {
       <span class="set-label">保存到</span>
       <code class="ds-dir" :title="state?.dir">{{ state?.dir ?? '读取中…' }}</code>
       <span v-if="state?.dirIsDefault" class="ds-tag">系统默认</span>
-      <button class="btn" @click="pick"><FolderOpen :size="13" />选择目录</button>
-      <button class="btn" @click="reveal">打开目录</button>
+      <RButton size="small" @click="pick"><FolderOpen :size="13" />选择目录</RButton>
+      <RButton size="small" @click="reveal">打开目录</RButton>
     </div>
     <div class="set-row">
       <label class="set-check">
@@ -146,21 +147,21 @@ onBeforeUnmount(() => {
         @keyup.enter="saveCap"
       />
       <span class="ds-unit">条</span>
-      <button class="btn primary" @click="saveCap"><Save :size="13" />保存</button>
+      <RButton size="small" type="primary" @click="saveCap"><Save :size="13" />保存</RButton>
       <span class="set-hcount">当前 {{ count }} 条(进行中的下载永不裁剪)</span>
     </div>
     <div v-if="capError" class="ds-error">{{ capError }}</div>
     <div class="set-row">
       <span class="set-label">清空记录</span>
       <template v-if="!clearConfirm">
-        <button class="btn danger" :disabled="count === 0" @click="clearAll">
+        <RButton size="small" type="danger" plain :disabled="count === 0" @click="clearAll">
           <Trash2 :size="13" />清空全部记录
-        </button>
+        </RButton>
       </template>
       <template v-else>
         <span class="ds-confirm">确认清空全部 {{ count }} 条?</span>
-        <button class="btn danger" @click="clearAll">确认清空</button>
-        <button class="btn" @click="clearConfirm = false">取消</button>
+        <RButton size="small" type="danger" plain @click="clearAll">确认清空</RButton>
+        <RButton size="small" @click="clearConfirm = false">取消</RButton>
       </template>
       <span v-if="notice" class="ds-notice">{{ notice }}</span>
     </div>

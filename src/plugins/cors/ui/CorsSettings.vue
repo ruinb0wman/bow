@@ -1,8 +1,9 @@
 <script setup lang="ts">
 /** CORS 放行插件设置分区(改动即时保存) */
+import { RButton } from '@ruinb0w/ui'
 import { onMounted, ref } from 'vue'
 import { normalizeCorsEntry } from '@shared/cors'
-import { Plus, Trash2 } from 'lucide-vue-next'
+import { Plus, Trash2 } from '@lucide/vue'
 
 interface CorsSettings {
   enabled: boolean
@@ -60,7 +61,7 @@ onMounted(async () => {
     <div class="cors-list">
       <div v-for="(entry, i) in draft.whitelist" :key="entry + i" class="cors-row">
         <span class="cors-entry">{{ entry }}</span>
-        <button class="btn danger" title="移除" @click="removeEntry(i)"><Trash2 :size="13" /></button>
+        <RButton size="small" type="danger" plain title="移除" @click="removeEntry(i)"><Trash2 :size="13" /></RButton>
       </div>
       <div class="cors-add">
         <input
@@ -69,7 +70,7 @@ onMounted(async () => {
           placeholder="example.com / example.com:8080 / *.example.com / IP"
           @keydown.enter.prevent="addEntry"
         />
-        <button class="btn" title="添加" @click="addEntry"><Plus :size="13" /></button>
+        <RButton size="small" title="添加" @click="addEntry"><Plus :size="13" /></RButton>
       </div>
       <div v-if="entryError" class="cors-error">{{ entryError }}</div>
       <div class="pbm-tools hint">

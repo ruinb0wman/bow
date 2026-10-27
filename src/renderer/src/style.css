@@ -1,13 +1,26 @@
+/* bow chrome 样式。颜色与尺度的唯一真源是 @ruinb0w/ui 的 token:各入口 html 上已设
+   data-theme="bow-dark" + data-density="compact"。这里只把 bow 历史变量名映射到库的语义变量,
+   存量 scoped 样式继续用旧名字(见 DESIGN.md 的迁移约定)。 */
 :root {
-  --bg: #1e1f24;
-  --bg2: #26272e;
-  --bg3: #2e3038;
-  --border: #3a3d48;
-  --fg: #e8e8ee;
-  --fg-dim: #9aa0ad;
-  --accent: #4a8ef7;
-  --danger: #e5534b;
-  --radius: 6px;
+  --bg: var(--bg-page);
+  --bg2: var(--bg-card);
+  --bg3: var(--bg-elevated);
+  --border: var(--border-default);
+  --fg: var(--text-primary);
+  --fg-dim: var(--text-secondary);
+  --accent: var(--color-primary);
+  --danger: var(--color-danger);
+  --radius: var(--radius-sm);
+}
+
+/* 库 base.css 在窗口窄于 768px 时把 button/a/input/select 顶到 44px(移动端触控底线);
+   桌面 chrome 是 compact 档,窗口拖窄不能把工具栏撑高。远程页不引本文件,继续保留 44px。 */
+button,
+a,
+input,
+select,
+textarea {
+  min-height: 0;
 }
 
 * {
@@ -26,7 +39,9 @@ body,
 body {
   font-family:
     'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', -apple-system, 'Segoe UI', Roboto, sans-serif;
-  font-size: 13px;
+  font-size: var(--font-ui);
+  /* 库 base.css 给 body 设了 1.6,会把标签栏/按钮撑高一个像素级;chrome 用紧凑行高 */
+  line-height: var(--leading-tight);
   color: var(--fg);
   background: var(--bg);
   user-select: none;
@@ -43,7 +58,7 @@ button {
 input,
 select {
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--font-ui);
   color: var(--fg);
   background: var(--bg3);
   border: 1px solid var(--border);
@@ -213,10 +228,8 @@ select:focus {
 
 .tab-close svg,
 .tab-new svg,
-.tool-btn svg,
 .win-btn svg,
-.star svg,
-.btn svg {
+.star svg {
   display: block;
   flex: none;
 }
@@ -281,38 +294,6 @@ select:focus {
   height: 40px;
 }
 
-
-.tool-btn {
-  flex: none;
-  width: 30px;
-  height: 28px;
-  border-radius: var(--radius);
-  font-size: 14px;
-  color: var(--fg);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.tool-btn:hover:not(:disabled) {
-  background: var(--bg3);
-}
-
-.tool-btn:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
-
-.tool-btn.small {
-  width: auto;
-  padding: 0 8px;
-  font-size: 12px;
-}
-
-/* 分屏激活中的工具栏按钮 */
-.tool-btn.on {
-  background: color-mix(in srgb, var(--accent) 24%, transparent);
-}
 
 /* ---------- 标签组(分屏) ---------- */
 /* 拖动排序中:被拖的那一项半透明(顺序本身就是实时重排的,不需要 ghost / 插入指示线) */
@@ -667,13 +648,12 @@ select:focus {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  /* z-index 由 ModalShell 从库的 useOverlayLayer 取(--z-modal + 层号) */
 }
 
-/* 嵌套弹层(如插件设置):更浅遮罩 + 更高层级,叠在基础弹层之上 */
+/* 嵌套弹层(如插件设置):更浅遮罩,叠在基础弹层之上(层级仍由层栈给) */
 .modal-mask.nested {
   background: rgba(0, 0, 0, 0.25);
-  z-index: 1100;
 }
 
 .modal {
@@ -724,31 +704,6 @@ select:focus {
   flex: 1;
 }
 
-.btn {
-  flex: none;
-  padding: 4px 10px;
-  border-radius: var(--radius);
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  font-size: 12px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.btn:hover {
-  background: var(--bg);
-}
-
-.btn.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-
-.btn.danger {
-  color: var(--danger);
-}
 
 .set-row {
   display: flex;

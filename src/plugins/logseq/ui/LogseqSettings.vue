@@ -6,7 +6,7 @@
  * `:default-templates {:journals "…"}`,本插件只读不写;这里显示它读到了什么、有哪些模板文件可用。
  */
 import { onMounted, ref } from 'vue'
-import { FolderOpen, RefreshCw } from 'lucide-vue-next'
+import { FolderOpen, RefreshCw } from '@lucide/vue'
 import { DEFAULT_LOGSEQ_FONT_SIZE, LOGSEQ_FONT_SIZE_RANGE } from '@plugins/logseq/shared'
 import type { GraphState, LogseqClientSettings } from '@plugins/logseq/shared'
 

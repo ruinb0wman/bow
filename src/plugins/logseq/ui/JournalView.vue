@@ -14,7 +14,7 @@
  * 页面拦不住它,所以只能把窗口压小 —— 这是 README 里写明的代价。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { CalendarDays, ChevronLeft, ChevronRight, FolderOpen, Network, RefreshCw, Search, Star, X } from 'lucide-vue-next'
+import { CalendarDays, ChevronLeft, ChevronRight, FolderOpen, Network, RefreshCw, Search, Star, X } from '@lucide/vue'
 import { LOGSEQ_URL } from '@shared/internalPages'
 import type { PaneDir } from '@shared/split'
 import {

@@ -3,7 +3,7 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import type { FlatBookmark } from '@shared/types'
 import { isInternalUrl } from '@shared/internalPages'
-import { Star } from 'lucide-vue-next'
+import { Star } from '@lucide/vue'
 
 const api = window.browserAPI
 const on = ref(false)

@@ -5,6 +5,7 @@
  * 它只做两件事:调 `plugins.invoke('downloads', …)` 和渲染 ——
  * 「这条记录现在能做什么」由主进程侧的 `shared.actionsFor()` 决定(与 MCP 看到的是同一套判据)。
  */
+import { RButton } from '@ruinb0w/ui'
 import { computed, onBeforeUnmount, onMounted, ref, type Component } from 'vue'
 import {
   Download,
@@ -16,7 +17,7 @@ import {
   RotateCw,
   Trash2,
   X
-} from 'lucide-vue-next'
+} from '@lucide/vue'
 import ModalShell from '@renderer/components/ModalShell.vue'
 import { formatHistoryTime } from '@shared/history'
 import {
@@ -201,12 +202,12 @@ onBeforeUnmount(() => {
         <span class="dl-spacer" />
         <template v-if="finishedCount > 0 && clearConfirm">
           <span class="dl-confirm">清空 {{ finishedCount }} 条已完成的记录?</span>
-          <button class="btn danger" @click="clearFinished">确认</button>
-          <button class="btn" @click="clearConfirm = false">取消</button>
+          <RButton size="small" type="danger" plain @click="clearFinished">确认</RButton>
+          <RButton size="small" @click="clearConfirm = false">取消</RButton>
         </template>
-        <button v-else class="btn" :disabled="finishedCount === 0" @click="clearFinished">
+        <RButton size="small" v-else :disabled="finishedCount === 0" @click="clearFinished">
           <Trash2 :size="13" />清空已完成
-        </button>
+        </RButton>
         <button class="win-btn" title="关闭" @click="requestClose"><X :size="13" /></button>
       </div>
 
@@ -244,18 +245,10 @@ onBeforeUnmount(() => {
             </div>
 
             <div class="dl-actions">
-              <button
-                v-for="a in actions(r)"
-                :key="a"
-                class="btn dl-act"
-                :class="{ danger: a === 'cancel' || a === 'remove' }"
-                :disabled="busy === `${r.id}:${a}`"
-                :title="ACTION_LABEL[a]"
-                @click="run(a, r)"
-              >
+              <RButton size="small" text class="dl-act" v-for="a in actions(r)" :key="a" :type="a === 'cancel' || a === 'remove' ? 'danger' : 'default'" :disabled="busy === `${r.id}:${a}`" :title="ACTION_LABEL[a]" @click="run(a, r)">
                 <component :is="ACTION_ICON[a]" :size="13" />
                 <span>{{ ACTION_LABEL[a] }}</span>
-              </button>
+              </RButton>
             </div>
           </div>
         </template>
@@ -416,7 +409,7 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
 }
 .dl-act {
-  font-size: 11px;
-  padding: 2px 8px;
+  /* 字号/内距归 RButton,这里只把行内动作按钮压小一点 */
+  font-size: var(--font-xs);
 }
 </style>

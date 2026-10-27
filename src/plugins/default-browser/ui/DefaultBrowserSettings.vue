@@ -4,8 +4,9 @@
  *
  * 只通过 `api.plugins.invoke('default-browser', …)` 与主进程通信,不碰 fs / 注册表。
  */
+import { RButton } from '@ruinb0w/ui'
 import { onMounted, ref } from 'vue'
-import { RefreshCw } from 'lucide-vue-next'
+import { RefreshCw } from '@lucide/vue'
 import { PLATFORM_LABELS, TARGET_STATE_LABELS, statusBadge, type DesktopActionResult, type DesktopStatus } from '../shared'
 
 const api = window.browserAPI
@@ -99,14 +100,14 @@ onMounted(() => void load())
 
   <div class="set-row">
     <span class="set-label">操作</span>
-    <button class="btn" :disabled="busy || !status?.canRegister" @click="act('register')">
+    <RButton size="small" :disabled="busy || !status?.canRegister" @click="act('register')">
       {{ status?.registered ? '更新注册' : '注册为默认浏览器' }}
-    </button>
-    <button class="btn danger" :disabled="busy || !status?.registered" @click="act('unregister')">撤销注册</button>
-    <button class="btn" :disabled="busy" title="重新读取状态" @click="load"><RefreshCw :size="13" /> 刷新</button>
-    <button v-if="status?.platform === 'win32'" class="btn" :disabled="busy" title="跳到系统「默认应用」设置页逐项选择" @click="openSettings">
+    </RButton>
+    <RButton size="small" type="danger" plain :disabled="busy || !status?.registered" @click="act('unregister')">撤销注册</RButton>
+    <RButton size="small" :disabled="busy" title="重新读取状态" @click="load"><RefreshCw :size="13" /> 刷新</RButton>
+    <RButton size="small" v-if="status?.platform === 'win32'" :disabled="busy" title="跳到系统「默认应用」设置页逐项选择" @click="openSettings">
       打开系统设置
-    </button>
+    </RButton>
   </div>
 
   <div v-if="status" class="set-row set-col">

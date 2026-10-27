@@ -22,7 +22,14 @@ export default defineConfig({
         '@renderer': resolve('src/renderer/src'),
         '@shared': resolve('src/shared'),
         '@plugins': resolve('src/plugins')
-      }
+      },
+      // @ruinb0w/ui 是 node_modules 里的软链(link:../ui),
+      // 它自己的 node_modules 里也有一份 vue / @lucide/vue —— 不去重就会打两份运行时
+      dedupe: ['vue', '@lucide/vue']
+    },
+    server: {
+      // 开发期要读项目根之外的 ui 仓产物(软链被 vite 解析成真实路径)
+      fs: { allow: [resolve('.'), resolve('../ui')] }
     },
     build: {
       rollupOptions: {

@@ -3,8 +3,9 @@
  * 密码插件设置分区:自动锁定 / 剪贴板清除 / 子域匹配 / 修改主密码 / 清空。
  * 「修改主密码」需要已解锁;「清空密码库」在锁定时也能用(它是唯一的逃生口)。
  */
+import { RButton } from '@ruinb0w/ui'
 import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { Download, Lock, Trash2, Upload } from 'lucide-vue-next'
+import { Download, Lock, Trash2, Upload } from '@lucide/vue'
 import {
   AUTO_LOCK_OPTIONS,
   CLIPBOARD_CLEAR_OPTIONS,
@@ -150,7 +151,7 @@ onBeforeUnmount(() => {
       <span class="pw-settings-state">
         {{ !status ? '…' : !status.initialized ? '尚未创建' : status.locked ? `已锁定(共 ${status.count} 条)` : `已解锁(共 ${status.count} 条)` }}
       </span>
-      <button v-if="status && !status.locked" class="btn" @click="lockNow"><Lock :size="12" />立即锁定</button>
+      <RButton size="small" v-if="status && !status.locked" @click="lockNow"><Lock :size="12" />立即锁定</RButton>
     </div>
 
     <div class="set-row">
@@ -196,7 +197,7 @@ onBeforeUnmount(() => {
       <input v-model="newMaster" type="password" autocomplete="new-password" />
       <span class="set-label">再输一次</span>
       <input v-model="confirmMaster" type="password" autocomplete="new-password" />
-      <button class="btn" :disabled="status?.locked ?? true" @click="changeMaster">修改</button>
+      <RButton size="small" :disabled="status?.locked ?? true" @click="changeMaster">修改</RButton>
     </div>
     <div v-if="status?.locked" class="pw-settings-hint">密码库已锁定,先解锁才能修改主密码。</div>
 
@@ -207,12 +208,12 @@ onBeforeUnmount(() => {
         <span class="pw-settings-hint">
           导出的是整库密文(与 passwords.json 内容一致),不会泄露明文;恢复仍需主密码。
         </span>
-        <button class="btn primary" @click="exportBackup"><Download :size="12" />确认导出</button>
-        <button class="btn" @click="backupArmed = false">取消</button>
+        <RButton size="small" type="primary" @click="exportBackup"><Download :size="12" />确认导出</RButton>
+        <RButton size="small" @click="backupArmed = false">取消</RButton>
       </template>
-      <button v-else class="btn" :disabled="!status?.initialized" @click="backupArmed = true">
+      <RButton size="small" v-else :disabled="!status?.initialized" @click="backupArmed = true">
         <Download :size="12" />导出…
-      </button>
+      </RButton>
     </div>
     <div v-if="backupPath" class="pw-settings-hint">已导出:<code>{{ backupPath }}</code></div>
 
@@ -223,10 +224,10 @@ onBeforeUnmount(() => {
           会<strong>整库替换</strong>当前密码库{{ status?.initialized ? '(已初始化时会先把当前库导出一份到 bow 下载目录)' : '' }};
           导入后需要<strong>该备份自己的主密码</strong>才能解锁。
         </span>
-        <button class="btn danger" @click="importBackup"><Upload :size="12" />确认导入</button>
-        <button class="btn" @click="importArmed = false">取消</button>
+        <RButton size="small" type="danger" plain @click="importBackup"><Upload :size="12" />确认导入</RButton>
+        <RButton size="small" @click="importArmed = false">取消</RButton>
       </template>
-      <button v-else class="btn" @click="importArmed = true"><Upload :size="12" />导入…</button>
+      <RButton size="small" v-else @click="importArmed = true"><Upload :size="12" />导入…</RButton>
     </div>
     <div v-if="preimportPath" class="pw-settings-hint">
       导入前的当前库已备份到:<code>{{ preimportPath }}</code>
@@ -237,10 +238,10 @@ onBeforeUnmount(() => {
       <span class="set-label">清空密码库</span>
       <template v-if="wipeArmed">
         <span class="pw-settings-hint">真的要删掉全部条目并重置主密码?这一步不可撤销。</span>
-        <button class="btn danger" @click="wipe"><Trash2 :size="12" />确认清空</button>
-        <button class="btn" @click="wipeArmed = false">取消</button>
+        <RButton size="small" type="danger" plain @click="wipe"><Trash2 :size="12" />确认清空</RButton>
+        <RButton size="small" @click="wipeArmed = false">取消</RButton>
       </template>
-      <button v-else class="btn danger" @click="wipeArmed = true"><Trash2 :size="12" />清空…</button>
+      <RButton size="small" type="danger" plain v-else @click="wipeArmed = true"><Trash2 :size="12" />清空…</RButton>
     </div>
 
     <div v-if="error" class="pw-settings-error">{{ error }}</div>

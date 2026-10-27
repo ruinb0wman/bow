@@ -15,7 +15,7 @@ import type { SplitMenuPayload } from '@shared/types'
 import type { LayoutPreset } from '@shared/split'
 import { shapePaneCount, shapeSummary } from '@shared/split'
 import { faviconLetter } from '../lib/avatar'
-import { Columns2, LayoutPanelTop, Plus, Trash2, X } from 'lucide-vue-next'
+import { Columns2, LayoutPanelTop, Plus, Trash2, X } from '@lucide/vue'
 
 const props = defineProps<{ payload: SplitMenuPayload; bandTop: number }>()
 const emit = defineEmits<{ 'overlay-event': [event: string, args?: unknown] }>()

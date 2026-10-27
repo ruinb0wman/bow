@@ -7,6 +7,7 @@
  * 主进程不能直接开浮层,所以「快捷键触发但需要用户介入」时它发 `open-panel`,
  * 由工具栏按钮组件打开本面板(见 `PasswordsButton.vue`)。
  */
+import { RButton } from '@ruinb0w/ui'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   ClipboardCopy,
@@ -19,7 +20,7 @@ import {
   Search,
   Trash2,
   Unlock
-} from 'lucide-vue-next'
+} from '@lucide/vue'
 import ModalShell from '@renderer/components/ModalShell.vue'
 import {
   draftFromEntry,
@@ -231,7 +232,7 @@ onBeforeUnmount(() => {
           <span v-if="status" class="pw-state">
             {{ !status.initialized ? '未创建' : status.locked ? '已锁定' : `已解锁 · ${status.count} 条` }}
           </span>
-          <button v-if="unlocked" class="btn" @click="doLock"><Lock :size="12" />立即锁定</button>
+          <RButton size="small" v-if="unlocked" @click="doLock"><Lock :size="12" />立即锁定</RButton>
         </div>
       </div>
 
@@ -246,7 +247,7 @@ onBeforeUnmount(() => {
         <label class="pw-field"><span>再输一次</span><input v-model="setupConfirm" type="password" autocomplete="new-password" /></label>
         <div v-if="error" class="pw-error">{{ error }}</div>
         <div class="pw-form-actions">
-          <button class="btn primary" type="submit" :disabled="busy">创建密码库</button>
+          <RButton size="small" type="primary" native-type="submit" :disabled="busy">创建密码库</RButton>
         </div>
       </form>
 
@@ -255,7 +256,7 @@ onBeforeUnmount(() => {
         <label class="pw-field"><span>主密码</span><input v-model="unlockMaster" type="password" autocomplete="current-password" /></label>
         <div v-if="error" class="pw-error">{{ error }}</div>
         <div class="pw-form-actions">
-          <button class="btn primary" type="submit" :disabled="busy"><Unlock :size="12" />解锁</button>
+          <RButton size="small" type="primary" native-type="submit" :disabled="busy"><Unlock :size="12" />解锁</RButton>
         </div>
       </form>
 
@@ -272,10 +273,10 @@ onBeforeUnmount(() => {
           <div class="pw-tools">
             <Search :size="13" class="pw-tools-icon" />
             <input v-model="query" class="pw-search" placeholder="搜索名称 / 站点 / 用户名" spellcheck="false" />
-            <button class="btn" title="读取当前页面的账号密码并预填" @click="startFromPage">
+            <RButton size="small" title="读取当前页面的账号密码并预填" @click="startFromPage">
               <FilePlus2 :size="12" />从当前页面保存
-            </button>
-            <button class="btn primary" @click="startNew"><Plus :size="12" />新增</button>
+            </RButton>
+            <RButton size="small" type="primary" @click="startNew"><Plus :size="12" />新增</RButton>
           </div>
           <div v-if="error" class="pw-error">{{ error }}</div>
           <div class="pw-list">
@@ -290,21 +291,21 @@ onBeforeUnmount(() => {
                 </div>
               </div>
               <div class="pw-row-actions">
-                <button class="tool-btn small" title="填入当前页面" @click="fill(item.id)"><LogIn :size="13" /></button>
-                <button class="tool-btn small" title="复制用户名" @click="copyField(item.id, 'username')">
+                <RButton text circle size="small" title="填入当前页面" @click="fill(item.id)"><LogIn :size="13" /></RButton>
+                <RButton text circle size="small" title="复制用户名" @click="copyField(item.id, 'username')">
                   <ClipboardCopy :size="13" />
-                </button>
-                <button class="tool-btn small" title="复制密码" @click="copyField(item.id, 'password')">
+                </RButton>
+                <RButton text circle size="small" title="复制密码" @click="copyField(item.id, 'password')">
                   <KeyRound :size="13" />
-                </button>
-                <button class="tool-btn small" title="编辑" @click="startEdit(item.id)"><Pencil :size="13" /></button>
+                </RButton>
+                <RButton text circle size="small" title="编辑" @click="startEdit(item.id)"><Pencil :size="13" /></RButton>
                 <template v-if="confirmRemove === item.id">
-                  <button class="btn danger" @click="removeEntry(item.id)">确认删除</button>
-                  <button class="btn" @click="confirmRemove = null">取消</button>
+                  <RButton size="small" type="danger" plain @click="removeEntry(item.id)">确认删除</RButton>
+                  <RButton size="small" @click="confirmRemove = null">取消</RButton>
                 </template>
-                <button v-else class="tool-btn small" title="删除" @click="confirmRemove = item.id">
+                <RButton text circle size="small" v-else title="删除" @click="confirmRemove = item.id">
                   <Trash2 :size="13" />
-                </button>
+                </RButton>
               </div>
             </div>
           </div>

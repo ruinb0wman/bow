@@ -3,10 +3,11 @@
  * 插件管理:启停(立即生效并持久化)、能力标签、核心提示与描述;
  * 贡献了设置分区的插件可直接跳转到其设置分区(在设置页内切换,不再是嵌套弹窗)。
  */
+import { RButton } from '@ruinb0w/ui'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { PluginCapability, PluginInfo } from '@shared/plugins'
 import { PLUGIN_CAPABILITY_LABELS } from '@shared/plugins'
-import { Settings as SettingsIcon } from 'lucide-vue-next'
+import { Settings as SettingsIcon } from '@lucide/vue'
 import { PLUGIN_UI } from '../plugins/registry'
 
 const api = window.browserAPI
@@ -60,14 +61,9 @@ onBeforeUnmount(() => {
         <span v-for="c in p.capabilities" :key="c" class="plugin-cap">{{ capLabel(c) }}</span>
         <span v-if="p.core" class="plugin-core" title="关闭后会影响核心功能">核心</span>
       </span>
-      <button
-        v-if="p.enabled && hasSections(p.id)"
-        class="btn plugin-config"
-        title="打开该插件的设置"
-        @click="emit('configure', p.id)"
-      >
+      <RButton size="small" class="plugin-config" v-if="p.enabled && hasSections(p.id)" title="打开该插件的设置" @click="emit('configure', p.id)">
         <SettingsIcon :size="13" /> 设置
-      </button>
+      </RButton>
       <span class="plugin-desc">{{ p.description }}</span>
     </div>
   </div>

@@ -6,8 +6,9 @@
  * 「有没有注册 / 系统当前把 .txt 交给谁」全部由主进程现算(这里连 `reg query` 都不碰),
  * 注册与撤销也只按键送过去 —— 判定与 I/O 只有一份实现(`../registration.ts`)。
  */
+import { RButton } from '@ruinb0w/ui'
 import { computed, onMounted, ref } from 'vue'
-import { CheckCircle2, ExternalLink, FileCode2, Play, Save, XCircle } from 'lucide-vue-next'
+import { CheckCircle2, ExternalLink, FileCode2, Play, Save, XCircle } from '@lucide/vue'
 import { WINDOWS_MANUAL_STEPS, type EditorSettings, type EditorStatus } from '../shared'
 
 const api = window.browserAPI
@@ -174,17 +175,17 @@ onMounted(() => {
     </div>
 
     <div class="set-row es-actions">
-      <button class="btn" @click="test"><Play :size="13" />测试(开一个空编辑器)</button>
-      <button class="btn" @click="pickFile"><FileCode2 :size="13" />用编辑器打开…</button>
+      <RButton size="small" @click="test"><Play :size="13" />测试(开一个空编辑器)</RButton>
+      <RButton size="small" @click="pickFile"><FileCode2 :size="13" />用编辑器打开…</RButton>
       <span v-if="notice" class="es-notice">{{ notice }}</span>
     </div>
 
     <template v-if="isWindows">
       <div class="section-title">Windows 上的注册</div>
       <div class="set-row es-actions">
-        <button class="btn primary" :disabled="busy" @click="register"><Save :size="13" />注册</button>
-        <button class="btn danger" :disabled="busy" @click="unregister">撤销注册</button>
-        <button class="btn" @click="openSystemSettings"><ExternalLink :size="13" />打开系统默认应用设置</button>
+        <RButton size="small" type="primary" :disabled="busy" @click="register"><Save :size="13" />注册</RButton>
+        <RButton size="small" type="danger" plain :disabled="busy" @click="unregister">撤销注册</RButton>
+        <RButton size="small" @click="openSystemSettings"><ExternalLink :size="13" />打开系统默认应用设置</RButton>
         <span v-if="status?.registered" class="es-state ok"><CheckCircle2 :size="13" />已注册</span>
         <span v-else class="es-state bad"><XCircle :size="13" />尚未注册</span>
       </div>

@@ -2,6 +2,7 @@ import { createApp } from 'vue'
 import App from './App.vue'
 import '@xterm/xterm/css/xterm.css'
 import { trackKeyboardInset } from './keyboardInset'
+import '@ruinb0w/ui/style.css'
 import './style.css'
 
 createApp(App).mount('#app')

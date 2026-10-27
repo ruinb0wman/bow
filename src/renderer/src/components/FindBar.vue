@@ -11,7 +11,7 @@
  * 差别是这里要保持**本** webContents 的输入焦点)。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { ChevronDown, ChevronUp, Search, X } from 'lucide-vue-next'
+import { ChevronDown, ChevronUp, Search, X } from '@lucide/vue'
 import type { FindPayload, FindStateMessage } from '@shared/types'
 
 const props = defineProps<{ payload: FindPayload; bandTop: number }>()

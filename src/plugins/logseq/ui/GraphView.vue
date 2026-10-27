@@ -15,7 +15,7 @@
  *   shadow canvas(与绘制同源),并能通过 `nodePointerAreaPaint` 把标签框一起纳入。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Network, RotateCcw, Search, X } from 'lucide-vue-next'
+import { Network, RotateCcw, Search, X } from '@lucide/vue'
 import ForceGraph from 'force-graph'
 import { localGraph, type GraphData, type GraphNode } from '@plugins/logseq/graph'
 import {

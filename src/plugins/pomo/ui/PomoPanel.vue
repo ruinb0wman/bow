@@ -9,7 +9,7 @@
  * 关闭:点面板外(backdrop)、× 或 Esc,统一发 `close-request`(主进程处理)。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Coffee, Pause, Play, RotateCcw, Settings2, SkipForward, Timer, X } from 'lucide-vue-next'
+import { Coffee, Pause, Play, RotateCcw, Settings2, SkipForward, Timer, X } from '@lucide/vue'
 import {
   POMO_EVENT,
   PHASE_LABELS,
