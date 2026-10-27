@@ -53,6 +53,8 @@ onBeforeUnmount(() => {
         <input
           type="checkbox"
           :checked="p.enabled"
+          :disabled="p.alwaysOn"
+          :title="p.alwaysOn ? '核心插件,随 bow 启动,不能停用' : undefined"
           @change="togglePlugin(p, ($event.target as HTMLInputElement).checked)"
         />
         <span class="plugin-name">{{ p.name }}</span>

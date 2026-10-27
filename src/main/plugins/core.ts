@@ -66,9 +66,14 @@ export class PluginRegistry {
     if (r) r.active = active
   }
 
-  /** 用持久化状态覆盖 disabled 集合(未知 id 忽略,防止历史残留) */
+  /** 结构性必需的插件(manifest.alwaysOn):内核拒绝停用,持久化状态也不认 */
+  isAlwaysOn(id: string): boolean {
+    return this.records.get(id)?.manifest.alwaysOn === true
+  }
+
+  /** 用持久化状态覆盖 disabled 集合(未知 id 与 alwaysOn 忽略,防止历史残留) */
   setDisabled(ids: string[]): void {
-    this.disabled = new Set(ids.filter((id) => this.records.has(id)))
+    this.disabled = new Set(ids.filter((id) => this.records.has(id) && !this.isAlwaysOn(id)))
   }
 
   disabledIds(): string[] {

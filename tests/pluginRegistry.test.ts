@@ -67,6 +67,23 @@ describe('PluginRegistry', () => {
     expect(info.capabilities).toEqual(['ui', 'suggest'])
     expect(info.description).toBe('a 描述')
   })
+
+  it('alwaysOn:isAlwaysOn 认 manifest,setDisabled 过滤,list 透传字段', () => {
+    const r = new PluginRegistry()
+    r.register({
+      ...mod('locked'),
+      manifest: { ...mod('locked').manifest, core: true, alwaysOn: true }
+    })
+    r.register(mod('optional'))
+
+    expect(r.isAlwaysOn('locked')).toBe(true)
+    expect(r.isAlwaysOn('optional')).toBe(false)
+    expect(r.isAlwaysOn('ghost')).toBe(false)
+
+    r.setDisabled(['locked', 'optional'])
+    expect(r.disabledIds()).toEqual(['optional'])
+    expect(r.list().find((p) => p.id === 'locked')?.alwaysOn).toBe(true)
+  })
 })
 
 describe('McpHost', () => {

@@ -289,6 +289,26 @@ async function copyWslCommand(): Promise<void> {
     </div>
 
     <div class="set-row set-col">
+      <span class="set-label">AI 控制</span>
+      <div class="term-mcp">
+        <label class="set-check">
+          <input
+            type="checkbox"
+            :checked="settings.mcpTools"
+            data-term-mcp-tools
+            @change="save({ mcpTools: ($event.target as HTMLInputElement).checked })"
+          />
+          <span>向 AI 暴露终端工具</span>
+        </label>
+        <div class="pbm-tools hint">
+          <code>terminal_list_sessions</code> / <code>terminal_read</code> / <code>terminal_send</code> /
+          <code>terminal_run</code> / <code>terminal_close</code>（MCP）。关掉后 AI 调一律报错，终端本身照用 ——
+          终端插件属于核心插件、不能停用，这个开关就是「不让 AI 敲键盘」的出口。
+        </div>
+      </div>
+    </div>
+
+    <div class="set-row set-col">
       <span class="set-label">Pi 联动</span>
       <div class="term-bridge">
         <div class="pbm-tools hint">
@@ -355,6 +375,13 @@ async function copyWslCommand(): Promise<void> {
   min-width: 56px;
   color: var(--fg-dim);
   font-size: 12px;
+}
+
+.term-mcp {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
 }
 
 .term-profiles {

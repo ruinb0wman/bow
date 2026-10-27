@@ -14,6 +14,10 @@
  * 5. **别的插件可以让它在指定标签里跑一条命令**(内核事件 `terminal:run`,见 `@shared/terminalRun`)。
  *    发起方负责先拿到 tabId(`ctx.tabs.openInternal`),这里只存待办、等终端页 attach 时才 spawn ——
  *    尺寸与回放这些事因此仍然只有一条路径。
+ * 6. **它是不可停用的核心插件**(manifest `core + alwaysOn`):核心侧直接依赖它的有
+ *    `InternalPageId`/`isTerminalTab()`(Ctrl+W·L·R·←→ 归属)、`releasesToTerminal()`、
+ *    `RendererEntryName` 与 vite 入口;编辑器插件靠 `terminal:run` 跑 nvim,5 个 `terminal_*` MCP 工具也在这里。
+ *    关掉只会留下一个永远 error 的 `bow://terminal` 页,所以内核在 `setEnabled` 里直接拒绝。
  */
 
 import { app } from 'electron'
@@ -845,7 +849,9 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
       id: 'terminal',
       name: '终端',
       description: '在标签页里开一个连到本机 shell 的终端(xterm + node-pty);shell 与字体可在设置页配置',
-      version: '1.0.0'
+      version: '1.0.0',
+      core: true,
+      alwaysOn: true
     },
     capabilities: ['ui', 'mcp'],
 
@@ -930,6 +936,11 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
       //
       // ⚠️ `terminal_send` 是**无确认的键盘注入**:可以敲开任意会话(包括正在等用户确认的那个),
       // 所以描述里必须明说。`terminal_close` 在 Windows 上会连进程树一起收掉。
+      //
+      // 设置里的「向 AI 暴露终端工具」默认开;关掉后 5 个工具一律回错误(终端本身照用) ——
+      // 这是插件变成 `alwaysOn`(不可停用)之后,收回 AI 控制权的唯一出口。
+      const mcpAllowed = (): boolean => store!.get().mcpTools !== false
+      const mcpBlocked = () => errorContent('终端 MCP 工具已关闭(设置页 → 终端 → 向 AI 暴露终端工具)')
       ctx.mcp.tool(
         'terminal_list_sessions',
         {
@@ -937,7 +948,7 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
             '列出全部终端会话(标签页里的 shell)。给出 id、标题、工作目录、尺寸、最后活跃时间与代理状态(state: working 在跑 / blocked 在等用户 / idle 空闲 —— 终端里的 pi 会上报)。其它 terminal_* 工具都用 id 寻址',
           inputSchema: {}
         },
-        () => textContent({ ok: true, sessions: listSessions() })
+        () => (mcpAllowed() ? textContent({ ok: true, sessions: listSessions() }) : mcpBlocked())
       )
       ctx.mcp.tool(
         'terminal_read',
@@ -950,6 +961,7 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
           }
         },
         (args) => {
+          if (!mcpAllowed()) return mcpBlocked()
           const result = readTail(args.id, args.chars)
           return result.ok ? textContent(result) : errorContent(result.error ?? '读不到这个会话')
         }
@@ -964,7 +976,10 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
             text: z.string().describe('要送上去的字符(要回车就带上 \\r,如 "ls\\r")')
           }
         },
-        (args) => (write(args.id, args.text) ? textContent({ ok: true }) : errorContent('这个会话不存在或已关闭'))
+        (args) => {
+          if (!mcpAllowed()) return mcpBlocked()
+          return write(args.id, args.text) ? textContent({ ok: true }) : errorContent('这个会话不存在或已关闭')
+        }
       )
       ctx.mcp.tool(
         'terminal_run',
@@ -979,6 +994,7 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
           }
         },
         async (args) => {
+          if (!mcpAllowed()) return mcpBlocked()
           const created = createSession({ command: args.command, args: args.args, cwd: args.cwd, name: args.name })
           if (!created.ok || created.tabId == null) return errorContent(created.error ?? '开不了新会话')
           const settled = await waitForRun(created.tabId)
@@ -1000,6 +1016,7 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
           inputSchema: { id: z.number().int().positive().describe('会话 id') }
         },
         (args) => {
+          if (!mcpAllowed()) return mcpBlocked()
           const id = Number(args.id)
           if (!sessions.has(id)) return errorContent('这个会话不存在或已关闭')
           killSession(id, 'closed-by-request')

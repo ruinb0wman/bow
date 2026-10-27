@@ -27,8 +27,14 @@ export interface PluginManifest {
   name: string
   description: string
   version: string
-  /** 关闭后会影响核心功能(设置页给出提示) */
+  /** 关闭后会影响核心功能(设置页给出提示,仍可关闭) */
   core?: boolean
+  /**
+   * 结构性必需:随 bow 启动且**不可停用**。用于核心侧有代码直接依赖它的插件
+   * (内部页面 / 快捷键归属 / 别的插件让它跑命令),关掉只会留下坏掉的入口。
+   * 与 `core` 正交:`core` 只是提示,本字段由内核 `setEnabled` 拒绝停用。
+   */
+  alwaysOn?: boolean
 }
 
 export interface PluginInfo extends PluginManifest {

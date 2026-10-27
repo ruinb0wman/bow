@@ -112,6 +112,13 @@ describe('normalizeSettings', () => {
   it('version 恒为当前版本(便于以后迁移)', () => {
     expect(normalizeSettings({ profiles: undefined }, WIN).version).toBe(WIN.version)
   })
+
+  it('mcpTools 默认开,显式 false 保留,非布尔走 fallback', () => {
+    expect(WIN.mcpTools).toBe(true)
+    expect(normalizeSettings({}, WIN).mcpTools).toBe(true)
+    expect(normalizeSettings({ mcpTools: false }, WIN).mcpTools).toBe(false)
+    expect(normalizeSettings({ mcpTools: 'nope' }, WIN).mcpTools).toBe(true)
+  })
 })
 
 describe('buildSpawnSpec', () => {

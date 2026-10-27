@@ -382,7 +382,7 @@ opensInPane(id)         // openIn === 'pane' 的内部页面(终端 / 笔记):�
 ```ts
 // 主进程侧
 interface PluginMain {
-  manifest: PluginManifest            // { id, name, description, version, core? }
+  manifest: PluginManifest            // { id, name, description, version, core?, alwaysOn? }
   capabilities: PluginCapability[]    // 只是给 UI 显示的标签,不影响实际能力(见下 ⚠️)
   activate(ctx: PluginContext): void | Promise<void>
   deactivate?(ctx: PluginContext): void | Promise<void>
@@ -533,6 +533,9 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 - `addRoute` 同一 `(id, method)` 重复注册直接抛错;`addMcpTool` 重名抛错且**预留核心工具名**。
 - `emitEvent` 遍历订阅者的**快照**(`[...set]`),订阅者抛错被吞掉、只记日志。
 - 停用的插件不参与 `suggest`、不提供 MCP 工具、不注入内容、不再收到网络回调(因为钩子已移除)。
+- `manifest.alwaysOn` 的插件**不可停用**:`setEnabled(id,false)` 是空操作(记日志后原样返回列表),
+  `registry.setDisabled()` 加载持久化状态时也会滤掉它 —— 老版本 `plugins.json` 里残留的 `disabled:['terminal']` 因此自动失效。
+  校验位置只在内核(`isAlwaysOn` 由 `PluginRegistry` 提供),设置页只是把开关置灰。当前只有 `terminal`。
 
 ### 5.6 边界约束(由测试强制)
 
@@ -543,6 +546,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `main.ts` 不得引用 `.vue` | `not.toMatch(/\.vue['"]/)` |
 | `main.ts` 不得引用 `@renderer` | `not.toMatch(/@renderer/)` |
 | `ui.ts` 不得引用 `electron` | `not.toMatch(/from ['"]electron['"]/)` |
+| `alwaysOn` 插件不可停用(内核级,不是 UI 级) | `tests/pluginAlwaysOn.test.ts`:停用请求仍是启用+激活;普通插件照旧可停;历史 `disabled` 被过滤 |
 
 原因:electron-vite 把 main / renderer 编成两个独立 bundle,跨界会把 `.vue` 或 electron 拖进错误的产物。
 
@@ -566,20 +570,20 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 
 **主进程侧**
 
-| id | core | capabilities | IPC 方法 | MCP 工具 | net | content | suggest | shortcut | events | 存储 |
+| id | core / alwaysOn | capabilities | IPC 方法 | MCP 工具 | net | content | suggest | shortcut | events | 存储 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `history` | ✓ | ui, suggest | `list` `count` `remove(ids[])` `clear` `getSettings` `setSettings` | — | — | — | priority 10 | — | on `tab:navigated` `search:performed`;emit `changed` | `history.json` `history-settings.json` |
-| `bookmarks` | ✓ | ui, suggest, mcp | `list` `add` `addFolder` `update` `remove` `move` `findByUrl` `export` `import` | `browser_add_bookmark` `browser_list_bookmarks` | — | — | priority 20 | — | emit `changed` | `bookmarks.json`(`import` = 选一个 JSON → 校验归一 → **整树替换**) |
-| `cors` | — | ui, net | `getSettings` `setSettings` | — | `onBeforeSendHeaders`(记预检 id)+ `onHeadersReceived`(注入 ACAO/ACAM/ACAH,预检覆盖 statusLine) | — | — | — | emit `changed` | `cors.json` |
-| `mcp-http` | ✓ | ui, service | `getState` `setSettings` `restart` `toggle` | — | — | — | — | — | on `mcp-http:ready`(经 `service.onMcpHttpReady`)+ `mcpActivity.onChange`;emit `changed` | `mcp-http.json` |
-| `default-browser` | — | ui | `status` `register` `unregister` `openSettings` | — | — | — | — | — | — | 无(状态现读系统:Linux 读 `mimeapps.list`;Windows 先按 UserChoice 主键→备用键→`Software\Classes` 默认值读“记录”,再用 PowerShell 调 shell 的 `AssocQueryString` 拿“**实际生效者**”,两者不一致时以实际为准并标注记录已失效) |
-| `device-inspect` | — | ui, mcp | `list` `open` `getSettings` `setSettings` `checkAdb` `connect` `pair` `cleanupForwards` `rawAdb` | `device_list_targets` `device_inspect` `device_snapshot` `device_tap` `device_type` `device_press_key` `device_scroll` `device_console` `device_eval` `device_screenshot` `device_connect` | — | — | — | — | — | `device-inspect.json`(adb 命令 / 前端策略 / 端口转发记录) |
-| `terminal` | — | ui, mcp | `getSettings` `setSettings` `listCandidates` `attach` `write` `resize` `detach` `listSessions` `readTail` `sendText` `createSession` `focusSession` `closeSession` | `terminal_list_sessions` `terminal_read` `terminal_send` `terminal_run` `terminal_close` | — | — | — | — | on `tab:closed`(按 tabId 回收 shell);emit `data` `exit` `settings-changed` `session-closed` `sessions-changed` | `terminal.json`(字体/字号/滚动缓冲 + shell 配置列表) |
-| `logseq` | — | ui, mcp | `getState` `pickGraph` `setGraph` `rebuildIndex` `getSettings` `setSettings` `toggleFavorite` `readJournal` `readPage` `listJournals` `listPages` `backlinks` `graph` `listTemplates` `savePage` `attach` `setView` `openInNewPane` | `browser_logseq_graph` | — | — | — | — | on `tab:closed`(按 tabId 丢视图状态);emit `graph-changed` `settings-changed` `favorites-changed` | `logseq.json`(图目录 + 最近图 + 正文字号 + 每个图的收藏) |
-| `downloads` | — | ui, mcp | `list` `pause` `resume` `cancel` `retry` `remove` `clear` `openFile` `showInFolder` `getSettings` `setSettings` `pickDirectory` `revealDir` | `browser_list_downloads` `browser_download` | — | — | — | — | emit `changed` | `downloads.json`(记录)+ `downloads-settings.json`(目录 / 询问 / 保留条数) |
-| `passwords` | — | ui, shortcut | `status` `setup` `unlock` `lock` `list` `getEntry` `save` `remove` `copy` `readPageFields` `fillEntry` `beginFill` `changeMaster` `getSettings` `setSettings` `wipe` `exportBackup` `importBackup` | —(刻意不贡献 MCP 工具:与 AI 隔离) | — | —(按需 `pages.execute` 注入探测 / 下拉 / 填入脚本,不注入常驻脚本) | — | `Ctrl/Cmd+Shift+P` | emit `state-changed` `settings-changed` `open-panel` | `passwords.json`(AES-256-GCM 密文)+ `passwords-settings.json`(自动锁定 / 剪贴板 / 子域匹配);`exportBackup` 只写**密文副本**到 bow 下载目录;`importBackup` 校验形状后**整库替换**(已初始化时先把当前库导出一份再覆盖,导入后强制锁定) |
-| `pomo` | — | ui, mcp, shortcut | `getState` `getSettings` `setSettings` `start` `pause` `skip` `reset` `toggle` | `browser_pomo_status` `browser_pomo_start` `browser_pomo_pause` `browser_pomo_skip` | — | — | — | `Ctrl/Cmd+Shift+O` | emit `state` `phase-end` | `pomo.json`(设置 + 运行状态:阶段 / `endsAt` / 本轮计数 / 今日完成数;**只在状态转换时写盘**) |
-| `editor` | — | ui | `getSettings` `setSettings` `status` `register` `unregister` `openSystemSettings` `test` `pickFile` | — | — | — | — | — | 认领本地文件(`ctx.fileOpeners`);emit `terminal:run`(让终端插件在指定标签里跑 `wsl.exe -e nvim <file>`) | `editor.json`(命令模板 / 路径写法 / 扩展名白名单 + `lastRegistered`)。Windows 注册:ProgID `bowEditor`(open/edit 都指向 `--edit "%1"`)、`OpenWithProgids`、`SystemFileAssociations\.<ext>\shell\bow-edit`、`Capabilities\FileAssociations`(与 `default-browser` 共用,值名不重叠);**不写** `Classes\.<ext>` 默认值 |
+| `history` | ✓ / — | ui, suggest | `list` `count` `remove(ids[])` `clear` `getSettings` `setSettings` | — | — | — | priority 10 | — | on `tab:navigated` `search:performed`;emit `changed` | `history.json` `history-settings.json` |
+| `bookmarks` | ✓ / — | ui, suggest, mcp | `list` `add` `addFolder` `update` `remove` `move` `findByUrl` `export` `import` | `browser_add_bookmark` `browser_list_bookmarks` | — | — | priority 20 | — | emit `changed` | `bookmarks.json`(`import` = 选一个 JSON → 校验归一 → **整树替换**) |
+| `cors` | — / — | ui, net | `getSettings` `setSettings` | — | `onBeforeSendHeaders`(记预检 id)+ `onHeadersReceived`(注入 ACAO/ACAM/ACAH,预检覆盖 statusLine) | — | — | — | emit `changed` | `cors.json` |
+| `mcp-http` | ✓ / — | ui, service | `getState` `setSettings` `restart` `toggle` | — | — | — | — | — | on `mcp-http:ready`(经 `service.onMcpHttpReady`)+ `mcpActivity.onChange`;emit `changed` | `mcp-http.json` |
+| `default-browser` | — / — | ui | `status` `register` `unregister` `openSettings` | — | — | — | — | — | — | 无(状态现读系统:Linux 读 `mimeapps.list`;Windows 先按 UserChoice 主键→备用键→`Software\Classes` 默认值读“记录”,再用 PowerShell 调 shell 的 `AssocQueryString` 拿“**实际生效者**”,两者不一致时以实际为准并标注记录已失效) |
+| `device-inspect` | — / — | ui, mcp | `list` `open` `getSettings` `setSettings` `checkAdb` `connect` `pair` `cleanupForwards` `rawAdb` | `device_list_targets` `device_inspect` `device_snapshot` `device_tap` `device_type` `device_press_key` `device_scroll` `device_console` `device_eval` `device_screenshot` `device_connect` | — | — | — | — | — | `device-inspect.json`(adb 命令 / 前端策略 / 端口转发记录) |
+| `terminal` | ✓ / ✓ | ui, mcp | `getSettings` `setSettings` `listCandidates` `attach` `write` `resize` `detach` `listSessions` `readTail` `sendText` `createSession` `focusSession` `closeSession` | `terminal_list_sessions` `terminal_read` `terminal_send` `terminal_run` `terminal_close` | — | — | — | — | on `tab:closed`(按 tabId 回收 shell);emit `data` `exit` `settings-changed` `session-closed` `sessions-changed` | `terminal.json`(字体/字号/滚动缓冲 + shell 配置列表 + `mcpTools`:是否把 5 个 `terminal_*` 工具暴露给 AI,默认开) |
+| `logseq` | — / — | ui, mcp | `getState` `pickGraph` `setGraph` `rebuildIndex` `getSettings` `setSettings` `toggleFavorite` `readJournal` `readPage` `listJournals` `listPages` `backlinks` `graph` `listTemplates` `savePage` `attach` `setView` `openInNewPane` | `browser_logseq_graph` | — | — | — | — | on `tab:closed`(按 tabId 丢视图状态);emit `graph-changed` `settings-changed` `favorites-changed` | `logseq.json`(图目录 + 最近图 + 正文字号 + 每个图的收藏) |
+| `downloads` | — / — | ui, mcp | `list` `pause` `resume` `cancel` `retry` `remove` `clear` `openFile` `showInFolder` `getSettings` `setSettings` `pickDirectory` `revealDir` | `browser_list_downloads` `browser_download` | — | — | — | — | emit `changed` | `downloads.json`(记录)+ `downloads-settings.json`(目录 / 询问 / 保留条数) |
+| `passwords` | — / — | ui, shortcut | `status` `setup` `unlock` `lock` `list` `getEntry` `save` `remove` `copy` `readPageFields` `fillEntry` `beginFill` `changeMaster` `getSettings` `setSettings` `wipe` `exportBackup` `importBackup` | —(刻意不贡献 MCP 工具:与 AI 隔离) | — | —(按需 `pages.execute` 注入探测 / 下拉 / 填入脚本,不注入常驻脚本) | — | `Ctrl/Cmd+Shift+P` | emit `state-changed` `settings-changed` `open-panel` | `passwords.json`(AES-256-GCM 密文)+ `passwords-settings.json`(自动锁定 / 剪贴板 / 子域匹配);`exportBackup` 只写**密文副本**到 bow 下载目录;`importBackup` 校验形状后**整库替换**(已初始化时先把当前库导出一份再覆盖,导入后强制锁定) |
+| `pomo` | — / — | ui, mcp, shortcut | `getState` `getSettings` `setSettings` `start` `pause` `skip` `reset` `toggle` | `browser_pomo_status` `browser_pomo_start` `browser_pomo_pause` `browser_pomo_skip` | — | — | — | `Ctrl/Cmd+Shift+O` | emit `state` `phase-end` | `pomo.json`(设置 + 运行状态:阶段 / `endsAt` / 本轮计数 / 今日完成数;**只在状态转换时写盘**) |
+| `editor` | — / — | ui | `getSettings` `setSettings` `status` `register` `unregister` `openSystemSettings` `test` `pickFile` | — | — | — | — | — | 认领本地文件(`ctx.fileOpeners`);emit `terminal:run`(让终端插件在指定标签里跑 `wsl.exe -e nvim <file>`) | `editor.json`(命令模板 / 路径写法 / 扩展名白名单 + `lastRegistered`)。Windows 注册:ProgID `bowEditor`(open/edit 都指向 `--edit "%1"`)、`OpenWithProgids`、`SystemFileAssociations\.<ext>\shell\bow-edit`、`Capabilities\FileAssociations`(与 `default-browser` 共用,值名不重叠);**不写** `Classes\.<ext>` 默认值 |
 
 
 **渲染层侧**(`registry.ts` / 各插件 `ui.ts`)

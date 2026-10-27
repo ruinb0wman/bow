@@ -35,6 +35,12 @@ export interface TerminalSettings {
   profiles: TerminalProfile[]
   /** 远程控制服务(S5 起;默认关闭、只绑回环) */
   remote: TerminalRemoteSettings
+  /**
+   * 是否把 5 个 `terminal_*` 工具暴露给 AI(MCP),默认开。
+   * 插件已是不可停用的核心插件(`manifest.alwaysOn`),所以这是「不想让 AI 敲键盘」的出口:
+   * 关掉后终端照用,AI 调这些工具一律回错误。
+   */
+  mcpTools: boolean
 }
 
 /**
@@ -204,7 +210,8 @@ export function defaultSettings(platform: string, loginShell?: string): Terminal
     fontSize: DEFAULT_FONT_SIZE,
     scrollback: DEFAULT_SCROLLBACK,
     profiles,
-    remote: defaultRemoteSettings()
+    remote: defaultRemoteSettings(),
+    mcpTools: true
   }
 }
 
@@ -270,7 +277,8 @@ export function normalizeSettings(input: unknown, fallback: TerminalSettings): T
     fontSize: clampInt(raw.fontSize, FONT_SIZE_RANGE.min, FONT_SIZE_RANGE.max, fallback.fontSize),
     scrollback: clampInt(raw.scrollback, SCROLLBACK_RANGE.min, SCROLLBACK_RANGE.max, fallback.scrollback),
     profiles,
-    remote: normalizeRemote(raw.remote, fallback.remote)
+    remote: normalizeRemote(raw.remote, fallback.remote),
+    mcpTools: typeof raw.mcpTools === 'boolean' ? raw.mcpTools : fallback.mcpTools
   }
 }
 

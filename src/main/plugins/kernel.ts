@@ -242,6 +242,11 @@ export class PluginKernel {
 
   async setEnabled(id: string, enabled: boolean): Promise<PluginInfo[]> {
     if (!this.registry.has(id)) return this.list()
+    // 核心插件不可停用:校验放在内核(IPC 之后),不能只靠设置页把开关置灰
+    if (!enabled && this.registry.isAlwaysOn(id)) {
+      log('插件为核心插件,忽略停用请求', id)
+      return this.list()
+    }
     if (enabled === this.registry.isEnabled(id)) return this.list()
     if (enabled) {
       this.registry.setEnabledState(id, true)
