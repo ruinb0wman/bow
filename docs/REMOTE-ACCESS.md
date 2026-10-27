@@ -155,6 +155,9 @@ B 的好处:浏览器不把口令当不安全页面警告、能加成主屏 PWA�
 ## 7. 这一版没做的事
 
 - **cloudflared 监督(S9–S11)不做**:`src/plugins/terminal/remote/tunnel.ts`、设置页隧道块、二维码,都不写。
-- **tailscale 不集成进 bow**:不 spawn、不管理、不在设置页显示状态。它是个系统级常驻服务,
-  bow 只需要 `bind=lan` 就够了 —— 把「把自己的进程托管给别人的客户端」写进代码只会多一处会坏的连接。
+- **tailscale 不**由 bow 管理**:不登录、不 `up`、不代跑 `serve`,也不改系统状态。
+  设置页「异地访问(Tailscale)」那张卡是**只读自检**(`src/plugins/terminal/remote/tailscale.ts`):
+  找到 CLIs → 读 `status --json` 与 `serve status --json` → 告诉你在不在线、serve 指没指向本端口,
+  缺什么就把那条命令交给你复制。刷新只在进页面 + 「重新检查」时,不轮询。
+  这些信息**只走本地 IPC**,不进 `/healthz`、不进远程页(那里是给还没登录的人看的)。
 - **固定域名 / DDNS / 自建 frps**:不做,除非哪天要暴露给非 tailnet 的人。

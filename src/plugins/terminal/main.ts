@@ -36,6 +36,7 @@ import { PiChatHub } from './remote/piChat'
 import { RemoteAuth, createAuthKey } from './remote/auth'
 import { startRemoteServer } from './remote/server'
 import type { RemoteServerHandle } from './remote/server'
+import { probeTailscale } from './remote/tailscale'
 import type { RemoteSessionApi } from './remote/protocol'
 import {
   MAX_SESSIONS,
@@ -513,6 +514,36 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
   }
 
   /**
+   * 「异地访问」自检用的 CLI 执行器:异步 + 3s 硬超时,失败一律 null。
+   * 不能用 spawnSync —— `tailscale.exe` 冷启动就要几百毫秒,自检要跑三条命令,同步会把主进程卡住。
+   */
+  function runTailscale(bin: string, args: string[]): Promise<string | null> {
+    return new Promise((resolve) => {
+      let out = ''
+      let settled = false
+      let timer: NodeJS.Timeout | undefined
+      const finish = (value: string | null): void => {
+        if (settled) return
+        settled = true
+        if (timer) clearTimeout(timer)
+        resolve(value)
+      }
+      const child = spawn(bin, args, { windowsHide: true })
+      timer = setTimeout(() => {
+        child.kill()
+        finish(null)
+      }, 3000)
+      child.stdout?.on('data', (chunk: Buffer) => {
+        out += chunk.toString()
+      })
+      // stderr 只吞掉:失败就是失败,CLI 的报错原文没有搬进 UI 的价值
+      child.stderr?.on('data', () => {})
+      child.on('error', () => finish(null))
+      child.on('close', (code) => finish(code === 0 ? out : null))
+    })
+  }
+
+  /**
    * cookie 签名密钥:首次使用生成 32 字节并落盘。
    * 单独一个文件而不是塞进 `terminal.json` —— 设置文件是用户会手改/导出的,密钥不该跟着跑。
    */
@@ -870,6 +901,10 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
       // 远程服务:端口/绑定/开关都存在设置里,启停决策也全在插件里
       ctx.ipc.handle('remoteStatus', () => remoteStatus())
       ctx.ipc.handle('applyRemote', () => applyRemote())
+      // 「异地访问(Tailscale)」自检:只读 CLI,不碰系统状态;本地 IPC 专用(不进远程页)
+      ctx.ipc.handle('tailscaleStatus', () =>
+        probeTailscale(runTailscale, (store?.get().remote ?? defaultRemoteSettings()).port)
+      )
       ctx.ipc.handle('readTail', (tabId: unknown, chars: unknown) => readTail(tabId, chars))
       ctx.ipc.handle('sendText', (tabId: unknown, data: unknown) => write(tabId, data))
       ctx.ipc.handle('createSession', (input: unknown) => createSession(input))

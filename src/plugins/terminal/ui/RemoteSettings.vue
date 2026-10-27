@@ -9,7 +9,7 @@
  * 口令是**明文**存的(mcp-http 的 token 也一样):你需要把它拄到手机上,所以得看得见、能复制。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import type { TerminalRemoteSettings, TerminalRemoteStatus } from '../shared'
+import type { TerminalRemoteSettings, TerminalRemoteStatus, TerminalTailscaleStatus } from '../shared'
 import { REMOTE_MIN_PASSWORD, REMOTE_PORT_RANGE } from '../shared'
 
 const api = window.browserAPI
@@ -24,6 +24,22 @@ let noticeTimer: number | undefined
 const url = computed(() => status.value?.lanUrls[0] ?? status.value?.url ?? '')
 const showPassword = ref(false)
 
+/** 「异地访问(Tailscale)」自检结果:主进程读 CLI,这里只展示 + 给出可复制的命令 */
+const tailscale = ref<TerminalTailscaleStatus | null>(null)
+const checking = ref(false)
+const serveUrl = computed(() => tailscale.value?.serve?.url ?? '')
+const serveCommand = computed(() => `tailscale serve --bg ${remote.value?.port ?? ''}`)
+const installCommand = computed(() => 'winget install --id Tailscale.Tailscale -e')
+
+async function checkTailscale(): Promise<void> {
+  checking.value = true
+  try {
+    tailscale.value = await api.plugins.invoke<TerminalTailscaleStatus>('terminal', 'tailscaleStatus')
+  } finally {
+    checking.value = false
+  }
+}
+
 function flash(text: string): void {
   notice.value = text
   if (noticeTimer) window.clearTimeout(noticeTimer)
@@ -36,6 +52,7 @@ async function refresh(): Promise<void> {
   const settings = await api.plugins.invoke<{ remote: TerminalRemoteSettings }>('terminal', 'getSettings')
   remote.value = settings.remote
   status.value = await api.plugins.invoke<TerminalRemoteStatus>('terminal', 'remoteStatus')
+  if (settings.remote.enabled) void checkTailscale()
 }
 
 async function patch(next: Partial<TerminalRemoteSettings>): Promise<void> {
@@ -48,6 +65,8 @@ async function patch(next: Partial<TerminalRemoteSettings>): Promise<void> {
     remote.value = saved.remote
     status.value = await api.plugins.invoke<TerminalRemoteStatus>('terminal', 'applyRemote')
     if (status.value?.error) flash(status.value.error)
+    // 端口变了 → 之前那条 serve 可能不再指向本服务
+    if (saved.remote.enabled) void checkTailscale()
   } finally {
     busy.value = false
   }
@@ -179,6 +198,70 @@ onBeforeUnmount(() => {
       </template>
     </div>
 
+    <!-- 异地访问(Tailscale):只读自检 + 可复制命令。不代用户改系统状态(登录/up/serve 都不做) -->
+    <div v-if="remote.enabled" class="ts">
+      <div class="ts-head">
+        <span class="ts-title">异地访问(Tailscale)</span>
+        <button class="mini" :disabled="checking" @click="checkTailscale()">
+          {{ checking ? '检查中…' : '重新检查' }}
+        </button>
+      </div>
+
+      <template v-if="tailscale?.state === 'running'">
+        <div class="ts-line">
+          <span class="ok">节点在线</span>
+          <code class="chip">{{ tailscale?.host || tailscale?.ip4 }}</code>
+          <span class="tiny dim">另有 {{ tailscale?.peers }} 台设备,其中手机 {{ tailscale?.phones }} 台</span>
+        </div>
+        <div v-if="tailscale?.serve" class="url-row">
+          <code>{{ serveUrl }}</code>
+          <button class="mini" @click="copy(serveUrl)">复制</button>
+        </div>
+        <template v-else>
+          <p class="tiny">serve 还没指向本端口 —— 在装 tailscale 的那台机器上执行一次:</p>
+          <div class="url-row">
+            <code>{{ serveCommand }}</code>
+            <button class="mini" @click="copy(serveCommand)">复制</button>
+          </div>
+        </template>
+      </template>
+
+      <template v-else-if="tailscale?.state === 'missing'">
+        <p class="warn">那台机器上没装 Tailscale。装一次:</p>
+        <div class="url-row">
+          <code>{{ installCommand }}</code>
+          <button class="mini" @click="copy(installCommand)">复制</button>
+        </div>
+      </template>
+
+      <p v-else-if="tailscale?.state === 'needs-login'" class="warn">
+        装了但还没登录 —— 点托盘栏的 Tailscale 图标登录一次。
+      </p>
+      <p v-else-if="tailscale?.state === 'stopped'" class="warn">
+        Tailscale 没在跑(服务停了或已退出登录)。
+      </p>
+      <p v-else-if="tailscale?.error" class="tiny">{{ tailscale.error }}</p>
+      <p v-else class="tiny dim">检查中…</p>
+    </div>
+
+    <details v-if="remote.enabled" class="help">
+      <summary>使用说明</summary>
+      <div class="help-body">
+        <p><strong>同一个 WiFi</strong>:手机直接开上面的 <code>http://192.168.x.x:端口</code>,输口令。</p>
+        <p>
+          <strong>在外面(4G / 别人家 WiFi)</strong>:两台设备先组进同一个 tailnet ——
+          电脑装 Tailscale 并登录,手机装 Tailscale 并登录<strong>同一个账号</strong>;然后在电脑上
+          <code>tailscale serve --bg 端口</code>,手机开 <code>https://机器名.tailnet.ts.net</code>。
+          上面那张卡片会自动显示这条地址。
+        </p>
+        <p>
+          <strong>安全</strong>:这个端口后面是一台机器的交互式 shell。口令要长;别用
+          <code>tailscale funnel</code>(那会把端口公开到互联网);MCP 的 <strong>8765</strong> 端口永远不许往外开。
+        </p>
+        <p class="dim">完整步骤与排障:仓库 <code>docs/REMOTE-ACCESS.md</code>。</p>
+      </div>
+    </details>
+
     <p v-if="notice" class="notice">{{ notice }}</p>
 
     <p class="tiny dim">
@@ -284,6 +367,62 @@ input[type='password'] {
 .notice {
   margin: 0;
   color: #4a8ef7;
+}
+.ts {
+  border: 1px solid #3a3d48;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ts-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ts-title {
+  font-weight: 600;
+  opacity: 0.9;
+}
+.ts-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.chip {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-family: var(--mono, monospace);
+  user-select: all;
+}
+.help {
+  font-size: 12px;
+  line-height: 1.6;
+  border-top: 1px solid #2f323c;
+  padding-top: 10px;
+}
+.help summary {
+  cursor: pointer;
+  opacity: 0.75;
+}
+.help-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+}
+.help-body p {
+  margin: 0;
+}
+.help-body code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: var(--mono, monospace);
 }
 .tiny {
   margin: 0;
