@@ -1,7 +1,7 @@
 /**
  * 设置页「快捷键」分区的唯一数据源(纯数据,无 DOM/Electron 依赖 → 可单测、被 tsc 检查)。
  *
- * ⚠️ 改键位时请同步:本文件、README 的「手动使用快捷键」/「终端」/「笔记」各节,
+ * ⚠️ 改键位时请同步:本文件、README 的「手动使用快捷键」/「终端」各节,
  * 以及真正的识别逻辑(`src/shared/shortcuts.ts`、`src/main/tabShortcuts.ts`、插件热键)。
  * 本文件**只做展示**,不参与按键识别,也不注册任何热键。
  */
@@ -93,7 +93,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
   {
     id: 'split',
     label: '分屏与布局',
-    hint: '在普通网页标签、终端页与手机调试的 DevTools 前端标签上由主进程接管;设置页与笔记页由页面自己调 IPC(输入框里仍是按词选择);地址栏保持原样。代价:网页输入框也拿不到这两个组合。',
+    hint: '在普通网页标签、终端页与手机调试的 DevTools 前端标签上由主进程接管;设置页由页面自己调 IPC(输入框里仍是按词选择);地址栏保持原样。代价:网页输入框也拿不到这两个组合。',
     items: [
       {
         keys: ['Ctrl', 'Shift', '← / → / ↑ / ↓'],
@@ -169,41 +169,6 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
         label: '一律送进 pty',
         note: '如 pi / pi-agents 的 Ctrl+Alt+P 切模式;Windows 上 xterm 会把它当 AltGr 丢掉,终端页启动时已包住那条判据'
       }
-    ]
-  },
-  {
-    id: 'notes',
-    label: '笔记(bow://logseq)',
-    hint: '以下键位只在笔记页里生效;分屏 / 调大小键在笔记页里也管用(由页面自己调 IPC 完成,不经主进程接管)。',
-    items: [
-      { keys: ['Enter'], label: '新建块 / 在块中间劈开', note: '块首按 Enter 在块前插一个空块,光标落在新空块里' },
-      {
-        keys: ['Ctrl', 'Enter'],
-        alternatives: [['Shift', 'Enter']],
-        label: '块内换行',
-        note: '中文输入法下主推 Ctrl+Enter —— 不少输入法把单按 Shift 当「中/英切换」吃掉'
-      },
-      { keys: ['Tab / Shift+Tab'], label: '整组缩进 / 反缩进' },
-      { keys: ['↑ / ↓'], label: '切换当前块' },
-      { keys: ['Esc'], label: '退出编辑态 / 取消多块选中' },
-      {
-        keys: ['Ctrl', 'Z'],
-        alternatives: [['Ctrl', 'Shift', 'Z']],
-        label: '撤销(整篇快照,上限 50 步)',
-        note: 'Ctrl+Shift+Z 是重做'
-      },
-      { keys: ['Backspace'], label: '块首合并到上一个块', note: '顶层第一块若是空块则删掉自己' },
-      {
-        keys: ['Ctrl', 'C'],
-        label: '把选中块按 Logseq markdown 写入剪贴板',
-        note: '多块选区:在块左侧的圆点上按住鼠标往下拖'
-      },
-      {
-        keys: ['Ctrl', 'X'],
-        label: '剪切选中块',
-        note: '先确认复制成功再删 —— 剪贴板写不进去就不删,宁可不删也不丢内容'
-      },
-      { keys: ['Ctrl', '点击 [[链接]]'], label: '在右侧新窗格里打开它' }
     ]
   },
   {

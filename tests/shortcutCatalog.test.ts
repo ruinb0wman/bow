@@ -14,7 +14,6 @@ describe('设置页快捷键清单', () => {
       'split',
       'view',
       'terminal',
-      'notes',
       'window'
     ])
   })

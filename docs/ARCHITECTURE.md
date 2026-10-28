@@ -89,8 +89,6 @@ src/
     adb.ts | targets.ts | cdp.ts          设备检查插件的 I/O 层(spawn / 转发池 / CDP 客户端:含事件订阅与 Input.* 操作;新文件名须登记到 tsconfig.node.json 的 include)
     scripts.ts                            设备检查插件的注入脚本(点定位 / 聚焦全选;纯字符串)
     relay.ts                              设备检查插件的「剥 Origin」TCP 中继(前端能连上设备的唯一原因;新文件名须登记到 tsconfig.node.json 的 include)
-    format.ts | graph.ts | graphForce.ts   笔记插件的 Logseq 文件格式解析 / 索引与反链 / 图谱到 force-graph 的纯胶水(纯逻辑,主进程与渲染层共用;
-                                          这几个文件名也要登记到 tsconfig 的 include。图谱的布局与渲染是唯一引第三方库 `force-graph` 的地方)
     registration.ts | linuxDesktop.ts | windowsRegistry.ts   平台实现 / 注册计划(新文件须登记到 tsconfig.node.json 的 include)
     shared.ts | windowsRegistry.ts | registration.ts (编辑器插件)  设置模型 + 命令拼装 + 路由判定 / Windows
                                           注册计划(ProgID + OpenWithProgids + SystemFileAssociations 动词 +
@@ -102,7 +100,6 @@ src/
     overlay.html + src/overlay/         Overlay 宿主(注册表组件渲染)
     settings.html + src/settings/       设置页(bow://settings 内部标签页)
     terminal.html + src/terminal/       终端页(bow://terminal 内部标签页;xterm 视图在终端插件的 ui/ 里)
-    logseq.html + src/logseq/           笔记页(bow://logseq 内部标签页;编辑器视图在笔记插件的 ui/ 里)
     remote/                             手机远程页(独立 vite 构建 → `out/remote/`,由终端插件的 remote 服务静态提供;
                                         不经 preload、不依赖渲染层 IPC。页内只有登录 + 会话列表 + 对话)
     src/plugins/registry.ts             PLUGIN_UI 注册表 + SLOT_PLUGIN_ORDER(渲染层唯一登记点)
@@ -118,7 +115,7 @@ src/
     groups.ts       标签组记账(标签栏一项 = 一个组:分屏/摘窗格/塌缩/焦点/拆组;纯函数)
     split.ts        嵌套分屏树(LayoutNode)+ 几何(computeLayout)+ 布局形状/预设归一化
     localFile.ts    本地路径形态判定(isFileUrl / looksLikeLocalPath / expandHome / windowsPathToWsl)
-    internalPages.ts bow:// 内部页面标识与 parse(settings 单例 / terminal·logseq 可多开 + `openIn:'pane'` 顶替聚焦窗格,见 singleton / openIn 两轴)
+    internalPages.ts bow:// 内部页面标识与 parse(settings 单例 / terminal 可多开 + `openIn:'pane'` 顶替聚焦窗格,见 singleton / openIn 两轴)
     settingsNav.ts  设置页侧栏导航模型
     pluginMatch.ts  URL 通配 / host 与子域匹配
     suggest.ts      模糊打分 + 多来源合并 + 渲染行构建
@@ -302,28 +299,25 @@ Overlay 视图崩溃会自动重建(`recreate()`),且若当时正开着浮层会
 
 ```ts
 INTERNAL_SCHEME = 'bow'
-InternalPageId = 'settings' | 'terminal' | 'logseq'
+InternalPageId = 'settings' | 'terminal'
 SETTINGS_URL = 'bow://settings'
 TERMINAL_URL = 'bow://terminal'
-LOGSEQ_URL = 'bow://logseq'
 INTERNAL_PAGES = {
   settings: { url, title:'设置', entry:'settings', singleton: true,  openIn: 'tab'  },
-  terminal: { url, title:'终端', entry:'terminal', singleton: false, openIn: 'pane' },
-  logseq:   { url, title:'笔记', entry:'logseq',   singleton: false, openIn: 'pane' }
+  terminal: { url, title:'终端', entry:'terminal', singleton: false, openIn: 'pane' }
 }
 parseInternalUrl(url)   // 只接受 bow://<id> 与 bow://<id>/,带路径/查询/其它 host 一律 null
-opensInPane(id)         // openIn === 'pane' 的内部页面(终端 / 笔记):地址栏通路走「顶替聚焦窗格」
+opensInPane(id)         // openIn === 'pane' 的内部页面(终端):地址栏通路走「顶替聚焦窗格」
 ```
 
 打开语义有**两根正交的轴**:
 
 | 轴 | 取值 | 消费者 |
 | --- | --- | --- |
-| `singleton` | `true`(设置页)已存在则只聚焦 / `false`(终端、笔记)不查找已有标签 | `TabManager.openInternal()` |
-| `openIn` | `'tab'` 新建标签(设置页) / `'pane'` **顶替当前聚焦窗格**(终端、笔记) | 地址栏通路 `TabManager.openUrl()` |
+| `singleton` | `true`(设置页)已存在则只聚焦 / `false`(终端)不查找已有标签 | `TabManager.openInternal()` |
+| `openIn` | `'tab'` 新建标签(设置页) / `'pane'` **顶替当前聚焦窗格**(终端) | 地址栏通路 `TabManager.openUrl()` |
 
-两个 `openIn:'pane'` 页面的理由不同:终端是「这个窗格就该跑一个 shell」,**笔记是「每个窗格一个编辑器实例」**——
-页内导航(日志 ↔ 页面)的状态按 tabId 绑在主进程里,所以左右并排可以一边日志一边页面。
+唯一的 `openIn:'pane'` 页面是终端:这个窗格就该跑一个 shell,所以地址栏输入 `bow://terminal` 是顶替而不是新建。
 
 三个入口都汇到 `openUrl()`:地址栏输入 / `Ctrl+Shift+E`(`tabShortcuts` 的 `terminal` action)/ 历史·书签点选 ——
 所以「点书签里的终端」与「在地址栏输 bow://terminal」行为完全一致(都是顶替聚焦窗格)。
@@ -350,7 +344,7 @@ opensInPane(id)         // openIn === 'pane' 的内部页面(终端 / 笔记):�
 | 内部页面标签可以被**反查 tabId**(终端页据此把会话绑到标签上) | `ipcMain.handle('tab:self')` → `TabManager.findTabIdByWebContents(sender)` |
 | 内部页面不计入「最近浏览标签」(`lastBrowsingId`)且不可后退 | `activate()` / `syncNavigation()` |
 | 跨「内部 ↔ 普通」边界一律拒绝就地导航,必须另开标签 | `navigate()` 返回 false;`openUrl()` 判断后 `create()` |
-| `openIn:'pane'` 的内部页面(终端 / 笔记)从地址栏打开时**顶替聚焦窗格**(不新建标签) | `openUrl()` → `openInternalInPane()`:`spawn()` + `replaceTabInGroups()` + `close(旧)` |
+| `openIn:'pane'` 的内部页面(终端)从地址栏打开时**顶替聚焦窗格**(不新建标签) | `openUrl()` → `openInternalInPane()`:`spawn()` + `replaceTabInGroups()` + `close(旧)` |
 | 活动标签是内部页面时,MCP 的 `navigate`/`search` 另开标签并回 `createdTab:true` | `mcp.ts` 的 `target()` + `openUrl()` |
 
 `TabManager` 里与内部页面相关的取值口径(容易记错):
@@ -360,7 +354,7 @@ opensInPane(id)         // openIn === 'pane' 的内部页面(终端 / 笔记):�
 | `getActiveView()` | 活动标签,**可能是内部页面** |
 | `getActiveBrowsingView()` | 活动标签优先,若是内部页面则退到最近浏览的普通标签 |
 | `getLastBrowsingView()` | 只认普通标签;记忆失效时回退为 **id 最大**的普通标签 |
-| `openInternalInPane(page)` | `openIn:'pane'` 的页面(终端 / 笔记)**顶替聚焦窗格**打开;已是它 / 没有活动窗格 → `null`(不生效) |
+| `openInternalInPane(page)` | `openIn:'pane'` 的页面(终端)**顶替聚焦窗格**打开;已是它 / 没有活动窗格 → `null`(不生效) |
 | `broadcastToInternal(ch, payload)` | 只发给内部页面标签(普通标签没有 preload,收不到) |
 
 ---
@@ -421,7 +415,7 @@ interface PluginUiContribution {
 | `pages.activate` | `(tabId) => boolean` | 不回收(内核持有)。「把某个标签带到眼前」:切标签 + 页面视图焦点 + 窗口提前台,与**点系统通知**同一条实现(`main/agentActivate.ts`)。与 `focus` 的区别是它真会切过去 —— `focus` 只把键盘焦点交给那个 webContents,后台标签 / 别的分屏窗格 / 最小化的窗口都不生效。返回 false = 标签不存在。调用方:终端插件的 `focusSession`(牧群面板的「点一行」) |
 | `pages.openDevToolsTab` | `(frontendUrl, title?, activate?, windowId?) => number` | 不回收(内核持有)。把 CDP 前端接进标签页(设备检查插件用);`windowId` 缺省=聚焦窗口。参数是**已拼好的前端地址**:可能是 `@shared/devtools` 拼的 bow 自带那份,也可能是设备指定的 `https://…`(见 `device-inspect/shared.effectiveStrategy`);标签只允许 `devtools://` 或与入口同源的导航 |
 | `tabs.list/getActive` | `() => TabInfo[] / TabInfo \| null` | 只读;`list` 数据源是 `WindowManager.allTabs()`(**跨窗口**,每条带 `windowId`),`getActive` 是**聚焦窗口**的 `TabManager` |
-| `tabs.openInternal` | `(page: InternalPageId, { windowId? }) => number \| null` | 不回收(内核持有)。**插件唯一的建标签入口**,且只允许内部页(settings/terminal/logseq)—— 插件仍不能导航用户的浏览标签、不能开任意 URL。宿主未注入(窗口还没建好)或宿主抛错时**返回 null 而不是抛**。与 `pages.openDevToolsTab` 同一条分工:核心建资源,插件只做决策。唯一调用方是编辑器插件 |
+| `tabs.openInternal` | `(page: InternalPageId, { windowId? }) => number \| null` | 不回收(内核持有)。**插件唯一的建标签入口**,且只允许内部页(settings/terminal)—— 插件仍不能导航用户的浏览标签、不能开任意 URL。宿主未注入(窗口还没建好)或宿主抛错时**返回 null 而不是抛**。与 `pages.openDevToolsTab` 同一条分工:核心建资源,插件只做决策。唯一调用方是编辑器插件 |
 | `fileOpeners.register` | `({ match(path, mode), open(path, mode) }) => void` | 从 `FileOpenerHost` 移除。**核心在开本地文件之前先问一圈**(`src/main/index.ts` 的 `openLaunchTarget`):第一个 `match` 命中且 `open` 返回 true 的插件说了算,谁都没认领就照旧开 `file://` 标签 —— 最坏情况回到旧行为,不会「双击没反应」。`match`/`open` 抛错只记日志并继续问下一个。认领只影响**启动参数**那条通路(双击 / 右键 / `bow --edit`),地址栏与网页链接不经过它。`mode: 'edit'` = 命令行带了 `--edit`。唯一调用方是编辑器插件 |
 | `service.onMcpHttpReady` | `(cb) => void` | 订阅 `MCP_HTTP_READY_EVENT` |
 | `service.mcpHttp.start/stop/restart/status` | 见 §6.5 | 内核持有监听;`stop()` 固定以 `source:'plugin'` 调用 |
@@ -576,7 +570,6 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `default-browser` | — / — | ui | `status` `register` `unregister` `openSettings` | — | — | — | — | — | — | 无(状态现读系统:Linux 读 `mimeapps.list`;Windows 先按 UserChoice 主键→备用键→`Software\Classes` 默认值读“记录”,再用 PowerShell 调 shell 的 `AssocQueryString` 拿“**实际生效者**”,两者不一致时以实际为准并标注记录已失效) |
 | `device-inspect` | — / — | ui, mcp | `list` `open` `getSettings` `setSettings` `checkAdb` `connect` `pair` `cleanupForwards` `rawAdb` | `device_list_targets` `device_inspect` `device_snapshot` `device_tap` `device_type` `device_press_key` `device_scroll` `device_console` `device_eval` `device_screenshot` `device_connect` | — | — | — | — | — | `device-inspect.json`(adb 命令 / 前端策略 / 端口转发记录) |
 | `terminal` | ✓ / ✓ | ui, mcp | `getSettings` `setSettings` `listCandidates` `attach` `write` `resize` `detach` `listSessions` `readTail` `sendText` `createSession` `focusSession` `closeSession` | `terminal_list_sessions` `terminal_read` `terminal_send` `terminal_run` `terminal_close` | — | — | — | — | on `tab:closed`(按 tabId 回收 shell);emit `data` `exit` `settings-changed` `session-closed` `sessions-changed` | `terminal.json`(字体/字号/滚动缓冲 + shell 配置列表 + `mcpTools`:是否把 5 个 `terminal_*` 工具暴露给 AI,默认开) |
-| `logseq` | — / — | ui, mcp | `getState` `pickGraph` `setGraph` `rebuildIndex` `getSettings` `setSettings` `toggleFavorite` `readJournal` `readPage` `listJournals` `listPages` `backlinks` `graph` `listTemplates` `savePage` `attach` `setView` `openInNewPane` | `browser_logseq_graph` | — | — | — | — | on `tab:closed`(按 tabId 丢视图状态);emit `graph-changed` `settings-changed` `favorites-changed` | `logseq.json`(图目录 + 最近图 + 正文字号 + 每个图的收藏) |
 | `downloads` | — / — | ui, mcp | `list` `pause` `resume` `cancel` `retry` `remove` `clear` `openFile` `showInFolder` `getSettings` `setSettings` `pickDirectory` `revealDir` | `browser_list_downloads` `browser_download` | — | — | — | — | emit `changed` | `downloads.json`(记录)+ `downloads-settings.json`(目录 / 询问 / 保留条数) |
 | `passwords` | — / — | ui, shortcut | `status` `setup` `unlock` `lock` `list` `getEntry` `save` `remove` `copy` `readPageFields` `fillEntry` `beginFill` `changeMaster` `getSettings` `setSettings` `wipe` `exportBackup` `importBackup` | —(刻意不贡献 MCP 工具:与 AI 隔离) | — | —(按需 `pages.execute` 注入探测 / 下拉 / 填入脚本,不注入常驻脚本) | — | `Ctrl/Cmd+Shift+P` | emit `state-changed` `settings-changed` `open-panel` | `passwords.json`(AES-256-GCM 密文)+ `passwords-settings.json`(自动锁定 / 剪贴板 / 子域匹配);`exportBackup` 只写**密文副本**到 bow 下载目录;`importBackup` 校验形状后**整库替换**(已初始化时先把当前库导出一份再覆盖,导入后强制锁定) |
 | `pomo` | — / — | ui, mcp, shortcut | `getState` `getSettings` `setSettings` `start` `pause` `skip` `reset` `toggle` | `browser_pomo_status` `browser_pomo_start` `browser_pomo_pause` `browser_pomo_skip` | — | — | — | `Ctrl/Cmd+Shift+O` | emit `state` `phase-end` | `pomo.json`(设置 + 运行状态:阶段 / `endsAt` / 本轮计数 / 今日完成数;**只在状态转换时写盘**) |
@@ -595,7 +588,6 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `default-browser` | — | — | — | `DefaultBrowserSettings` |
 | `device-inspect` | — | `DeviceInspectButton` | `plugin:device-inspect:panel`(full,`DeviceInspectPanel`) | —(adb 设置放在面板内的折叠区,不占设置页侧栏) |
 | `terminal` | — | `TerminalButton` `HerdButton` | `plugin:terminal:herd`(牧群面板,`full`) | `TerminalSettings` |
-| `logseq` | — | `LogseqButton` | —(笔记也是**内部页面**:`bow://logseq`) | `LogseqSettings` |
 | `downloads` | — | `DownloadsButton` | `plugin:downloads:panel`(full,`DownloadsPanel`) | `DownloadsSettings` |
 | `passwords` | — | `PasswordsButton` | `plugin:passwords:panel`(full,`PasswordsPanel`) | `PasswordsSettings` |
 | `pomo` | — | `PomoButton`(显示倒计时) | `plugin:pomo:panel`(below-chrome,`PomoPanel`;锚定在按钮右下方) | `PomoSettings` |
@@ -603,24 +595,12 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `ok` | — | `OkButton`(知识库) | —(OK 是自带 web 前端的独立服务,只能当普通 http 标签打开) | `OkSettings`(项目目录 / 自启开关 / 运行状态 / 初始化 / 停止) |
 
 
-⚠️ 终端插件的 `ui/TerminalView.vue` 与笔记插件的 `ui/JournalView.vue` **不在**注册表里 ——
-它们分别是 `bow://terminal` / `bow://logseq` 页面的主体,由 `renderer/src/<entry>/main.ts` 直接引用。
+⚠️ 终端插件的 `ui/TerminalView.vue` **不在**注册表里 —— 它是 `bow://terminal` 页面的主体,
+由 `renderer/src/<entry>/main.ts` 直接引用。
 插槽/浮层注册表面向的是 chrome 与 overlay 两个宿主。
 
-`SLOT_PLUGIN_ORDER.toolbar = ['bookmarks','downloads','mcp-http','terminal','logseq','editor','passwords','pomo','files']`;
+`SLOT_PLUGIN_ORDER.toolbar = ['bookmarks','downloads','mcp-http','terminal','editor','passwords','pomo','ok']`;
 `addressbar-trailing` 为空(保持注册顺序)。未列出的插件排在已列出者之后。
-
-**笔记插件(`bow://logseq`)的六条不变式**(它是唯一直接读写用户仓库外文件的插件,改它之前请务必看这几条,
-细节与取舍见 `.pi/plans/2026-09-20-logseq-plugin/plan.md`):
-
-| 不变式 | 为什么 | 钉在哪里 |
-| --- | --- | --- |
-| `serializeLogseqFile(parseLogseqFile(raw)) === raw` 对**任意**输入恒等 | 解析器理解错了也**不会改写用户文件的一个字节** —— 它只做分组,文件在内存里就是逐行原文 | `format.ts` 的行模型 + `tests/logseqFormat.test.ts` |
-| 编辑命令只换被碰过的 `SourceLine` 对象(`cloneFile` 是共享式拷贝) | 「没改的行逐字节不变」不靠自觉,靠对象同一性 | `shared.ts` 的 `setHeadText` / `shiftIndentLines` + 纯函数用例 |
-| 只写图目录内 `journals/`+`pages/` 下的 `.md`(「`logseq/config.edn` 永不写回」) | 与 Logseq 共用同一个图,越界写入是**用户的笔记**而不是浏览器数据 | `main.ts` 的 `assertWritable()` + `tests/logseqPlugin.test.ts` |
-| 行级标记也只是渲染:`matchLineMark` 的标记原文 + 行内 token 拼接 === 整行原文 | 标题/复选框/引用/列表/围栏行不改写文件;`analyzeBlockLines` 顺便给每行算出 textarea 全局偏移(点击落行尾)。**表格行是例外**:`mark.raw` = 整行、`tokens` 为空(与 `hr` 同款),单元格另放 `mark.cells`(`tokensToRaw(cell.tokens) === cell.text`) | `format.ts` 的 `matchLineMark` / `analyzeBlockLines` / `tableCellsFor` + `tests/logseqFormat.test.ts` |
-| **绝不静默覆盖**:认页按「显示名 → 日期 → **文件名词干别名**」三条路(`resolvePage`);编辑器以为不存在的文件(`exists:false`)在保存时如果已经出现,一律报冲突 | 用文件名打开一个 `title::` 与文件名不同的页时,旧行为会把它当成新页 —— 而新页路径**就是那个已存在的文件**,第一次保存就把用户的笔记清空(实测过)。别名把这条路堵死,`expectMissing` 守住「打开之后才出现」的竞态(如 Logseq 先建了今日日志) | `graph.ts` 的 `byStem`/`resolvePage` + `main.ts` 的 `savePage(expectMissing)` + `tests/logseqGraph.test.ts` / `tests/logseqPlugin.test.ts` |
-| **关系图谱是索引的只读派生**:`graphOf(index)` / `localGraph(...)` 只读内存索引产出节点与边,不碰 fs;点击节点(或它右边的名字框)只发 `open-page` 事件,由正常打开页面路径处理。布局/绘制/命中全交给 `force-graph`(Canvas + `d3-force`),我们只喂绘制回调与 `open-page` | 图谱只是一个「看图」入口,任何写盘都走既有的 `savePage` 校验(`assertWritable` + 冲突检测)。**首次 `zoomToFit` 必须等 `onEngineTick`**:布局跑在 `kapsule` 的 debounce update 里,抢在前面会拿 NaN 坐标算出 NaN 变换(整张图随后都画不出来,悬停/点击全落空) | `graph.ts` 的 `graphOf`/`localGraph` + `graphForce.ts` + `ui/GraphView.vue` + `main.ts` 的 `graph` IPC / `browser_logseq_graph` + `tests/logseqGraph.test.ts` / `tests/logseqGraphForce.test.ts` |
 
 ### 5.9 内核事件总线(全部事件名)
 
@@ -628,7 +608,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | --- | --- | --- |
 | `tab:navigated` `{tabId,url,title}` | `TabManager` → `index.ts`(普通标签的主框架导航 + 内部页的逻辑 `bow://<id>` URL;`inspector` 不发) | history, passwords |
 | `tab:created` `{TabInfo}` | 同上 | (当前无) |
-| `tab:closed` `{TabInfo}` | 同上 | terminal, logseq, passwords |
+| `tab:closed` `{TabInfo}` | 同上 | terminal, passwords |
 | `tab:activated` `{TabInfo}` | 同上 | (当前无) |
 | `search:performed` `{url,query,title?}` | `ipc.ts` 的 `nav:go` 分支 | history |
 | `mcp-http:ready` | `kernel.notifyMcpHttpReady()` | mcp-http |
@@ -688,20 +668,20 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `browser_screenshot` | tabId, fullPage | fullPage falsy | **image content**(`image/png`);失败才是 text |
 | `browser_get_info` | tabId | — | `{ok,info:TabInfo}`(info 带 `windowId`) |
 
-插件工具 30 个:`browser_add_bookmark` `browser_list_bookmarks`(书签)、
+插件工具 24 个:`browser_add_bookmark` `browser_list_bookmarks`(书签)、
 `device_list_targets` `device_inspect` `device_snapshot` `device_tap` `device_type` `device_press_key`
 `device_scroll` `device_console` `device_eval` `device_screenshot` `device_connect`(设备检查)、
 `browser_list_downloads` `browser_download`(下载)、
 `browser_pomo_status` `browser_pomo_start` `browser_pomo_pause` `browser_pomo_skip`(番茄钟)、
-`browser_logseq_graph`(笔记的关系图谱,只读)
-—— 共 20 个,合计 **40** 个工具。
+`terminal_list_sessions` `terminal_read` `terminal_send` `terminal_run` `terminal_close`(终端;设置页关掉「AI 控制」后这 5 个一律回错误)
+—— 共 20 个核心 + 24 个插件,合计 **44** 个工具。
 
 静态计数来源:`CORE_MCP_TOOL_NAMES`(20)+ `ctx.mcp.tool(...)` 的调用点
 (`bookmarks/main.ts:137,165`、
 `device-inspect/main.ts:451,493,510,531,554,574,612,642,666,698,731`、
 `downloads/main.ts:500,529`、
 `pomo/main.ts:229,238,249,260`、
-`logseq/main.ts:703`)。
+`terminal/main.ts:926,935,951,966,994`)。
 ⚠️ 实际工具面**随插件启停变化**:停用 device-inspect 就少 11 个,停用 downloads 就少 2 个。
 
 ⚠️ 插件工具的 schema **不做 strict 校验**(走 `kernel.mcp` 声明快照),未知参数会被静默丢弃。
@@ -859,7 +839,6 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | overlay | `renderer/overlay.html` → `OverlayApp.vue` | 按内容 id 从注册表渲染组件,回传 `overlay-event` |
 | settings | `renderer/settings.html` → `SettingsPage.vue` | 左侧导航 + 右侧内容(常规 / 快捷键 / 插件管理 / 插件分区) |
 | terminal | `renderer/terminal.html` → `terminal/TerminalApp.vue` | `bow://terminal` 页面:xterm + node-pty 会话接线(视图组件在终端插件的 `ui/TerminalView.vue`) |
-| logseq | `renderer/logseq.html` → `logseq/LogseqApp.vue` | `bow://logseq` 页面:日志/页面编辑器(视图组件在笔记插件的 `ui/JournalView.vue`) |
 
 `App.vue` 关键机制:
 
@@ -907,20 +886,20 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
   CSI 序列送进 pty,分屏 / 调大小在终端里完全没反应;代价是 shell 与终端里的程序也收不到这两个组合。
   DevTools 前端标签自 2026-09-21 起也接管(手机调试窗格里要能就地分屏旁边开终端):判据先看 `TabInfo.inspector`,
   因为它同时满足 `internal === true && internalId === null` —— 不看 `inspector` 就会被「内部页面不接管」那条吃掉。
-  地址栏里的这些组合保持原样(按词选择);设置页 / 笔记页同样不接管,但它们**由页面自己调 `splitPane` / `resizePane`**
-  (见 `renderer/src/lib/splitKeys.ts` 与笔记页的 `JournalView.vue` —— 非可编辑区域才接管,输入框里仍是按词选择);
+  地址栏里的这些组合保持原样(按词选择);设置页同样不接管,但它**由页面自己调 `splitPane` / `resizePane`**
+  (见 `renderer/src/lib/splitKeys.ts` —— 非可编辑区域才接管,输入框里仍是按词选择);
   DevTools 内部的 `Ctrl+Shift+方向` 按词选择也让位(已在 README 写明代价)。
   `Ctrl+R` 原先只接在 chrome 侧(渲染层 `App.vue`)、页面聚焦时是死键 —— 自 2026-09-21 起步进主进程,与其它 tab 热键同一条路。
-  `Ctrl+F`(页内查找)同样在主进程:除地址栏 / 浮层外**网页与内部页(设置 / 笔记)都接管**;
+  `Ctrl+F`(页内查找)同样在主进程:除地址栏 / 浮层外**网页与内部页(设置)都接管**;
   放行有两处 —— 终端页由 `releasesToTerminal` 放行给 shell 的 forward-char,
   DevTools 前端则用两个判据挡掉(自带的 Electron Detach DevTools 窗口不在 `WindowManager` 里,
   `byWebContents` 会回退到聚焦窗口,所以先用 `isDevToolsFrontendUrl(contents.getURL())` 挡;
   远程调试前端标签的 URL 可能是 https 前端,再由 `TabInfo.inspector` 挡)。
   查找条复用 Overlay 的 `page-top-right` placement,状态与 `findInPage` 调用在 `main/findBar.ts`。
-  `Ctrl+←/→`(历史后退/前进)的接管范围比分屏键宽 —— 除终端页外**不分页面类型**一律接管(含地址栏、设置页、笔记页、DevTools 前端),
+  `Ctrl+←/→`(历史后退/前进)的接管范围比分屏键宽 —— 除终端页外**不分页面类型**一律接管(含地址栏、设置页、DevTools 前端),
   只认 `control`(不认 `meta`)且经 `historyHotkeyEnabled(process.platform)` 在 macOS 上整体关掉
   (mac 的 `⌘+←/→` 是行首/行尾,`Ctrl+←/→` 归系统);代价与分屏键同类 —— 网页输入框里的「按词移动光标」让位。
-  **笔记页(`bow://logseq`)与设置页(`bow://settings`)刻意不在 `shouldTakeSplitHotkey` 的白名单里**:
+  **设置页(`bow://settings`)刻意不在 `shouldTakeSplitHotkey` 的白名单里**:
   按键会正常送到页面,由页面自己调 `splitPane` / `resizePane` 这两个既有 IPC 完成分屏与调大小 ——
   于是核心零改动(终端页必须由主进程接管,是因为 xterm 会先把组合编成 CSI 序列送进 pty;这两个内部页没有这个问题;
   设置页额外用 `isEditableTarget()` 把输入框排除在外,保住按词选择)。
@@ -954,13 +933,10 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 - **常规**只有搜索引擎与主页(主页留空视为放弃修改)。**分屏宽度预设已取消** —— 分屏改成嵌套树,
   分隔比例由 `Alt+Shift+方向` 现场调,可复用的东西变成「布局」(只存结构)在工具栏分屏面板里保存/套用/删除。
 - **快捷键**分区(`ShortcutsHelp.vue`)是一份**纯分类参考清单**,数据全部来自 `shared/shortcutCatalog.ts`
-  (分组:标签 / 地址栏与导航 / 分屏与布局 / 视图与面板 / 终端 / 笔记 / 窗口)。它**不注册热键**,页面上没有搜索框、
+  (分组:标签 / 地址栏与导航 / 分屏与布局 / 视图与面板 / 终端 / 窗口)。它**不注册热键**,页面上没有搜索框、
   没有折叠 —— 只按组列出 `<kbd>` 与说明;真正识别按键的仍是 `shared/shortcuts.ts` / `main/tabShortcuts.ts` /
   插件热键。改键位时需同步该文件与 README 对应章节(`tests/shortcutCatalog.test.ts` 只钉结构与少量关键项,
   不钉全部文案)。
-- **笔记**分区:图目录(选择 / 切换 / 最近图)、索引统计(文件/块/被引用页面/日志条数)与「重建索引」,
-  以及从 `logseq/config.edn` **只读**读到的那一节(日志目录 / 页面目录 / 日期格式 / 默认模板 / `:hidden`)。
-  刻意没有「默认模板」下拉框 —— 模板名属于 Logseq 自己的配置,这里只显示读到了什么。
   整节自带 `padding: 4px 14px 20px`(左右 14px 与全局 `.set-row` 的 `12px 14px` 对齐)与
   `flex: 1; min-height: 0; overflow-y: auto` —— 长列表在自己框内滚,整页不跟着跑
   (`.settings-body` 本身也能滚,所以不自带滚动的分区不会被裁掉)。
@@ -998,7 +974,6 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `mcp-http.json` | `{port, token}` | `{port:8765, token:''}` | mcp-http |
 | `device-inspect.json` | `{version, adbCommand, strategy, forwards[]}` | `{version:2, adbCommand:'', strategy:'auto', forwards:[]}`;`strategy` 三选一(`auto`/`electron-bundled`/`device-suggested`,见 `shared.effectiveStrategy()`;旧名 `device-bundled` 会被归一成 `device-suggested`);v1 → v2 只把默认值换成 `auto`;`forwards` 是端口转发记录(adb 侧的转发登记在 adb server 里,靠它回收) | device-inspect |
 | `terminal.json` | `TerminalSettings` | `{version:1, defaultProfileId, fontFamily, fontSize:14, scrollback:5000, profiles[]}`;profiles 按平台给预设(powershell/pwsh/cmd/wsl/git-bash 或 $SHELL/bash/zsh);每次读写都过 `normalizeSettings()` 夹紧/去重/兜底 | terminal |
-| `logseq.json` | 笔记插件的图目录 + 最近图 | `{version:1, graphPath:'', recentGraphs:[]}` | logseq(图里的笔记内容本身属于用户的 Logseq 图,不在这里) |
 | `downloads.json` | 下载记录(数组整体替换;`DownloadRecord[]`,读盘时过 `sanitizeRecords()` + `reconcileOnStart()`) | `[]` | downloads |
 | `downloads-settings.json` | `{askWhereToSave, downloadDir, maxRecords}` | `{askWhereToSave:true, downloadDir:'', maxRecords:500}`(`downloadDir` 为空 = `app.getPath('downloads')`) | downloads |
 | `files-settings.json` | `{version, roots}`(核心 `fileRoots.ts` 读;老文件里的 `allowPermanentDelete` / `listLimit` / `interceptFileChooser` 只读不认) | `{version:1, roots:[]}`;**生效白名单 = `roots` ∪ 下载目录**(下载目录永远在里面,否则添了工作目录后 `browser_download` 指定保存到下载目录反而会被拒);读盘后都过 `sanitizeRoots()`:相对路径、非字符串、`userData` 一律丢掉。⚠️ 原先的写入方(文件管理插件)已删除 ⇒ **没有设置 UI,加目录只能手改这个文件** | 核心(`fileRoots.ts`) |
@@ -1029,7 +1004,7 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `tab:list` | — | `TabInfo[]` |
 | `tab:active` | — | `TabInfo \| null` |
 | `tab:activate-last-browsing` | — | `TabInfo \| null` |
-| `tab:self` | — | `number \| null`(调用方 webContents 所属的标签 id;不是标签页则 `null`。终端页用它把会话绑到 tabId,笔记页用它把「当前看的是哪一页」绑到 tabId) |
+| `tab:self` | — | `number \| null`(调用方 webContents 所属的标签 id;不是标签页则 `null`。终端页用它把会话绑到 tabId) |
 | `chrome:request-focus-address` | — | `true`(渲染层请求「真正的」地址栏聚焦:先由主进程把键盘焦点交给 chrome webContents,再回发 `chrome:focus-address` 让它聚焦并全选;工具栏 `+` / 双击标签栏 / 建议面板 cancel 走这条) |
 | `clipboard:read-text` | — | `string` |
 | `clipboard:write-text` | text | `true` |
@@ -1069,7 +1044,7 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `groups:changed` | `TabGroupInfo[]` | `ipc.ts`(订阅 `groups-changed`;只发 chrome,面板数据由 chrome 组装) |
 | `settings:changed` | `Settings` | `ipc.ts` 的 `settings:set` |
 | `plugins:changed` | `PluginInfo[]` | `kernel.setEnabled()` 经 broadcaster |
-| `plugin:event` | `{id, event, args}` | `ctx.ipc.emit()` 经 broadcaster。终端插件的 `data`/`exit`/`settings-changed`/`session-closed`/**`sessions-changed`**(后者的负载是**完整台账**,面板与按钮直接拿去渲染;它靠 `sessionSignature` 按 5s 分桶去重,否则持续输出会把通道打满)与笔记插件的 `graph-changed` 走的就是这条(内部页面按 `args.tabId` / `args.paths` 自过滤) |
+| `plugin:event` | `{id, event, args}` | `ctx.ipc.emit()` 经 broadcaster。终端插件的 `data`/`exit`/`settings-changed`/`session-closed`/**`sessions-changed`**(后者的负载是**完整台账**,面板与按钮直接拿去渲染;它靠 `sessionSignature` 按 5s 分桶去重,否则持续输出会把通道打满)走的就是这条(内部页面按 `args.tabId` 自过滤) |
 | `overlay:show` | `OverlayShowMessage \| null` | `OverlayManager.send()` |
 | `find:state` | `FindStateMessage` | `main/findBar.ts` 的 `pushState()`(仅查找条订阅;`currentId !== 'find'` 时不推) |
 | `overlay-event` | `OverlayEvent` | `ipc.ts`(suggest 专用转发) |
@@ -1178,7 +1153,8 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
   ⚠️ 给主进程加新的 `tabs.*` / `wc.*` 调用时**必须同步补假实现**,否则测试会红得莫名其妙。
 - `tests/mcpServer.test.ts`(861 行)用 `InMemoryTransport` + 真实 `McpServer`/`Client` 握手,
   覆盖 instructions 下发、工具面与 schema、`waitUntil` 语义、失败一律 `isError`、内部页面边界、插件工具错误传播。
-- **当前基线(2026-10-05 复测,含关系图谱)**:`bun run test` → **64 个文件 / 1235 个用例全绿**,约 9s。
+- **当前基线(2026-10-27 复测)**:`bun run test` → **81 个文件 / 1396 个用例全绿**,约 6s。
+  (2026-10-27:整体删除「笔记」插件 —— 5 个测试文件 / 186 例随之删除,另 `internalPages` 少 2 例。)
   (2026-10-05:图谱布局换成 `force-graph`,删 `logseqGraphLayout.test.ts`(−10 例)、新增 `logseqGraphForce.test.ts`(+9 例:节点/边映射、`title` 字段、跨刷新复用同一批节点对象、标签可见性与盒子几何)。
   更早一次 +1 文件 / +18 例:`logseqGraphLayout.test.ts` 10 例钉布局的确定性 / 收敛 / 规模保护,`logseqGraph.test.ts` +6 例钉 `graphOf` / `localGraph`,`logseqPlugin.test.ts` +2 例钉 `graph` IPC 与新 MCP 工具 `browser_logseq_graph`。)
   (2026-09-25 → 2026-10-02 期间 `mcpHttp.test.ts` 的「DNS rebinding 防护:非白名单 Host 被拒」
@@ -1189,7 +1165,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
   `fakeWc.ts`、`fakeKernel.ts`。
 - ⚠️ **`.vue` 组件不在 `tsc` 的类型检查范围内**(`npm run typecheck` 只跑 `.ts`):组件里「导入了不存在的
   符号」这类错误只有 `npm run build`(rollup)才会报。改渲染层之后**必须跑一次 build** ——
-  加笔记插件时就是这样抓到 `blockLinesForDisplay` 引用错模块、`hasBlocks` 漏导出的。
+  「引用了不存在的模块成员 / 漏导出」这类错误只有它才会报。
 
 | 测试文件 | 行数 | 用例 | 测试文件 | 行数 | 用例 |
 | --- | --- | --- | --- | --- | --- |
@@ -1210,17 +1186,8 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 平台预设 / spawn 参数 / 环境变量清洗 / 回放缓冲 / PATH 查找 / 参数文本 / 复制粘贴键位)、
 `downloadsShared`(33,下载记录的纯逻辑:设置归一 / 动作可用性 / 启动归一 / 裁剪排序 / 重名去重 / 格式化)。合计 **718**。
 
-笔记插件(`bow://logseq`)另加 5 个文件 / 186 例,外加 `internalPages` 的 2 例:
-
-| 测试文件 | 行数 | 用例 | 钉住的是什么 |
-| --- | --- | --- | --- |
-| `logseqFormat.test.ts` | 427 | 35 | **字节保真**(`serialize(parse(raw)) === raw`,含 CRLF / 无尾换行 / 空文件 / 4 空格缩进)、块树与属性行、**渲染零丢字**(行内 token、行级标记的 `mark.raw` 拼接 === 原文)、**表格判据与单元格偏移/对齐**(含 Logseq 真实形态 `\|-\|-\|`)与源码区间 |
-| `logseqShared.test.ts` | 817 | 83 | 日期 ↔ 文件名词干(moment 方言整条回落)、页面名 ↔ 文件名(`:triple-lowbar`)、`config.edn` 键值、模板变量、**每个编辑命令的整份文件输出**(含多行劈块、**块首回车前插空块 + Backspace 合并往返 / 顶层空块自删**、`toggleTaskMarker`、多块选区的删/缩/反缩/复制、**按 `-` 行粘贴拆块**:嵌套还原 / 非 `-` 行归上一块 / 光标处劈开 / 空块顶替 / 缩进归一 / 复制→粘贴往返)、`display → set` 恒等 |
-| `logseqGraph.test.ts` | 393 | 24 | 索引(mtime 增量 / `:hidden` 三种写法 / **文件名词干别名 `byStem` 只收页面**)、反链排序与「不算自己的反链」、搜索、**页面名别名解析**(`title::` 与文件名不同时两个名字都命中)、日期列表、**关系图谱**(边无向去重 + weight 累加 / 自环丢弃 / 未创建页只计入 `missingRefs` / 别名不分裂节点 / `localGraph` 跳数与子图边 / 中心不存在返回空图) |
-| `logseqPlugin.test.ts` | 591 | 35 | **真实临时目录**:原子写不留 `.tmp`、越界路径被拒、只写 `journals/`+`pages/`、mtime 冲突不覆盖、**`expectMissing` 拒绝静默覆盖**、**用文件名打开 `title::` 不同的页拿到磁盘内容**、模板只在第一次编辑落盘、视图状态按 tabId、**`graph` IPC 与 `browser_logseq_graph` 返回体** |
-| `logseqGraphForce.test.ts` | 127 | 9 | 关系图谱 → `force-graph` 的纯胶水:**`title` 必须进节点对象**(旧版漏它 → 标签全画成 `undefined`)/ 同 id 复用同一批节点对象(过滤与刷新不丢位置)/ 悬停与放大时的标签可见性 / 标签盒子几何(绘制与命中共用)/ `withAlpha` 只认 hex |
-
-**合计 1025**。
+**「笔记」插件(`bow://logseq`)已于 2026-10-27 整体删除**(5 个测试文件 / 186 例、核心 `internalPages` 的 2 例随之删除)。
+它的六条不变式与全部判据见 git 历史与 `.pi/plans/2026-09-20-logseq-plugin/plan.md`;要恢复就整包捞回。
 
 设备检查插件的三个测试文件(它们不在上表里:代码量不大,但每一条都在钉外部格式):
 
@@ -1269,7 +1236,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 
 1. 插件 `activate` 早于窗口/标签创建 → 需要 TabManager 的能力必须走 `onMcpHttpReady` 或惰性取 `ctx.tabs`/`ctx.pages`。
    取的具体能力也一样:**插件不能自己建标签**,只能 `ctx.tabs.openInternal(page)`(内部页,且宿主未注入时返回 `null`);
-   想开终端/笔记页给用户看的插件都得走它,别指望 `ctx.tabs.list/getActive` 反过来建东西。
+   想开终端页给用户看的插件都得走它,别指望 `ctx.tabs.list/getActive` 反过来建东西。
 2. `NetHookHost.install()` / `setupDevTools()` / `setupTabShortcuts()` 都**必须在创建任何窗口/视图之前**调用。
 3. 页面视图永远盖在 chrome 上 → 任何浮在页面上方的 UI 都必须走 OverlayManager,`tabs-changed` 时要 `raise()`。
    **`WebContentsView` 没有点击穿透**(`setIgnoreMouseEvents` 只属于 BaseWindow/BrowserWindow,

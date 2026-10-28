@@ -190,11 +190,11 @@ export interface SplitHotkeyTarget {
  * - 普通网页标签:接管(代价是网页 `<input>` 也拿不到,见 README);
  * - 终端页(`bow://terminal`):**接管** —— 终端窗格也是「要分屏 / 要调大小」的地方,
  *   而 xterm 只会把这两个组合当输入送进 pty,不拦就等于按键没反应;
- * - DevTools 前端标签(inspector,**2026-09-21 起接管**):手机调试的窗格正是「要跟终端 / 笔记并排」的地方;
+ * - DevTools 前端标签(inspector,**2026-09-21 起接管**):手机调试的窗格正是「要跟终端并排」的地方;
  *   它没有 preload(`tabManager.createInspectorTab` 的 webPreferences 里没有 `preload`),
- *   所以**页面自己调不了** `splitPane` IPC(笔记页 / 设置页有 preload,才走页面自处理那条路)。
+ *   所以**页面自己调不了** `splitPane` IPC(设置页有 preload,才走页面自处理那条路)。
  *   代价:DevTools 内部输入框的 `Ctrl+Shift+方向` 按词选择让位(`Alt+Shift+方向` 它没有绑定,零代价)。
- * - 设置页:不接管 —— 输入框要保住按词选择。它和笔记页一样**由页面自己调 IPC**
+ * - 设置页:不接管 —— 输入框要保住按词选择。它**由页面自己调 IPC**
  *   (见 `renderer/src/lib/splitKeys.ts`,非可编辑区域才接管);
  * - `null`(地址栏 / 浮层 / 别的窗口的 webContents):不接管。
  */

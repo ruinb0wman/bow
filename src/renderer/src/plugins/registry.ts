@@ -12,7 +12,6 @@ import mcpHttpUi from '@plugins/mcp-http/ui'
 import defaultBrowserUi from '@plugins/default-browser/ui'
 import deviceInspectUi from '@plugins/device-inspect/ui'
 import terminalUi from '@plugins/terminal/ui'
-import logseqUi from '@plugins/logseq/ui'
 import downloadsUi from '@plugins/downloads/ui'
 import passwordsUi from '@plugins/passwords/ui'
 import pomoUi from '@plugins/pomo/ui'
@@ -27,7 +26,6 @@ export const PLUGIN_UI: PluginUiContribution[] = [
   defaultBrowserUi,
   deviceInspectUi,
   terminalUi,
-  logseqUi,
   downloadsUi,
   passwordsUi,
   pomoUi,
@@ -46,7 +44,6 @@ export const SLOT_PLUGIN_ORDER: Record<PluginSlot, readonly string[]> = {
     'downloads',
     'mcp-http',
     'terminal',
-    'logseq',
     'editor',
     'passwords',
     'pomo',

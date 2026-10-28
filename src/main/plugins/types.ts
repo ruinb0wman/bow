@@ -16,7 +16,7 @@ import type { McpHttpStatus } from './mcpHttpHost'
 import type { McpActivitySnapshot } from '../mcpActivity'
 
 /**
- * 插件建标签的**唯一**入口:只允许内部页(`bow://settings|terminal|logseq`)。
+ * 插件建标签的**唯一**入口:只允许内部页(`bow://settings|terminal`)。
  *
  * 为什么只出这一条窄能力:标签与窗口是核心资源(ARCHITECTURE §13-36 同一条边界 —— 插件拿不到
  * webContents)。插件需要的是「开一个 bow://terminal 页,并知道它的 tabId」,而不是「随便开标签」;

@@ -7,7 +7,7 @@ import '../style.css'
 createApp(SettingsPage).mount('#app')
 
 // 分屏 / 调大小键:设置页不在主进程 `shouldTakeSplitHotkey()` 的白名单里(输入框要保住按词选择),
-// 按键会正常送到页面 —— 于是由页面自己调 IPC 完成,与笔记页同一条路(见 lib/splitKeys.ts)。
+// 按键会正常送到页面 —— 于是由页面自己调 IPC 完成(见 lib/splitKeys.ts)。
 const api = window.browserAPI
 window.addEventListener('keydown', (e) => {
   // 输入框 / 文本域 / 下拉 / contenteditable 里不抢键

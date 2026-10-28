@@ -7,7 +7,7 @@
  * 把**读文件也放在这里**是刻意的:插件侧只需要 `JSON.parse(picked.text)`,
  * 于是插件单测只 mock 这一个模块就够,不必去 mock `node:fs`。
  *
- * 对话框照 `logseq/main.ts` 的 `pickGraph` 写法:优先挂在当前聚焦窗口上(父窗口在场时是模态的),
+ * 对话框的写法:优先挂在当前聚焦窗口上(父窗口在场时是模态的),
  * 拿不到就退化成无父窗口的对话框。
  *
  * 见 `.pi/plans/2026-10-08-plugin-cleanup-imports-settings-split/plan.md`。
