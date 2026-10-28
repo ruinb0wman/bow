@@ -584,6 +584,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `passwords` | — / — | ui, shortcut | `status` `setup` `unlock` `lock` `list` `getEntry` `save` `remove` `copy` `readPageFields` `fillEntry` `beginFill` `changeMaster` `getSettings` `setSettings` `wipe` `exportBackup` `importBackup` | —(刻意不贡献 MCP 工具:与 AI 隔离) | — | —(按需 `pages.execute` 注入探测 / 下拉 / 填入脚本,不注入常驻脚本) | — | `Ctrl/Cmd+Shift+P` | emit `state-changed` `settings-changed` `open-panel` | `passwords.json`(AES-256-GCM 密文)+ `passwords-settings.json`(自动锁定 / 剪贴板 / 子域匹配);`exportBackup` 只写**密文副本**到 bow 下载目录;`importBackup` 校验形状后**整库替换**(已初始化时先把当前库导出一份再覆盖,导入后强制锁定) |
 | `pomo` | — / — | ui, mcp, shortcut | `getState` `getSettings` `setSettings` `start` `pause` `skip` `reset` `toggle` | `browser_pomo_status` `browser_pomo_start` `browser_pomo_pause` `browser_pomo_skip` | — | — | — | `Ctrl/Cmd+Shift+O` | emit `state` `phase-end` | `pomo.json`(设置 + 运行状态:阶段 / `endsAt` / 本轮计数 / 今日完成数;**只在状态转换时写盘**) |
 | `editor` | — / — | ui | `getSettings` `setSettings` `status` `register` `unregister` `openSystemSettings` `test` `pickFile` | — | — | — | — | — | 认领本地文件(`ctx.fileOpeners`);emit `terminal:run`(让终端插件在指定标签里跑 `wsl.exe -e nvim <file>`) | `editor.json`(命令模板 / 路径写法 / 扩展名白名单 + `lastRegistered`)。Windows 注册:ProgID `bowEditor`(open/edit 都指向 `--edit "%1"`)、`OpenWithProgids`、`SystemFileAssociations\.<ext>\shell\bow-edit`、`Capabilities\FileAssociations`(与 `default-browser` 共用,值名不重叠);**不写** `Classes\.<ext>` 默认值 |
+| `ok` | — / — | ui, service | `getState` `ensure` `stop` `pickProject` `initProject` `setSettings` | — | — | — | — | — | emit `changed` | `ok.json`(唯一的项目目录 + 自启开关)。服务**跑在 Electron 自带的 Node 里**:`utilityProcess.fork(node_modules/@inkeep/open-knowledge/dist/cli.mjs, ['start','--no-open-browser'])`,端口从横幅里现抓、再用 `.ok/local/server.lock` 交叉校验;退出前 SIGTERM 让它优雅停机(超时才强杀)。不依赖机器上装没装 `ok` |
 
 
 **渲染层侧**(`registry.ts` / 各插件 `ui.ts`)
@@ -602,6 +603,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `passwords` | — | `PasswordsButton` | `plugin:passwords:panel`(full,`PasswordsPanel`) | `PasswordsSettings` |
 | `pomo` | — | `PomoButton`(显示倒计时) | `plugin:pomo:panel`(below-chrome,`PomoPanel`;锚定在按钮右下方) | `PomoSettings` |
 | `editor` | — | `EditorButton`(用编辑器打开…) | —(编辑器是终端页里的 nvim,本插件没有自己的页面) | `EditorSettings`(命令模板 / 路径写法 / 扩展名白名单 / Windows 注册) |
+| `ok` | — | `OkButton`(知识库) | —(OK 是自带 web 前端的独立服务,只能当普通 http 标签打开) | `OkSettings`(项目目录 / 自启开关 / 运行状态 / 初始化 / 停止) |
 
 
 ⚠️ 终端插件的 `ui/TerminalView.vue` 与笔记插件的 `ui/JournalView.vue` **不在**注册表里 ——

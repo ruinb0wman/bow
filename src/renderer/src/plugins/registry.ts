@@ -17,6 +17,7 @@ import downloadsUi from '@plugins/downloads/ui'
 import passwordsUi from '@plugins/passwords/ui'
 import pomoUi from '@plugins/pomo/ui'
 import editorUi from '@plugins/editor/ui'
+import okUi from '@plugins/ok/ui'
 
 export const PLUGIN_UI: PluginUiContribution[] = [
   bookmarksUi,
@@ -30,7 +31,8 @@ export const PLUGIN_UI: PluginUiContribution[] = [
   downloadsUi,
   passwordsUi,
   pomoUi,
-  editorUi
+  editorUi,
+  okUi
 ]
 
 /**
@@ -39,7 +41,17 @@ export const PLUGIN_UI: PluginUiContribution[] = [
  */
 export const SLOT_PLUGIN_ORDER: Record<PluginSlot, readonly string[]> = {
   'addressbar-trailing': [],
-  toolbar: ['bookmarks', 'downloads', 'mcp-http', 'terminal', 'logseq', 'editor', 'passwords', 'pomo']
+  toolbar: [
+    'bookmarks',
+    'downloads',
+    'mcp-http',
+    'terminal',
+    'logseq',
+    'editor',
+    'passwords',
+    'pomo',
+    'ok'
+  ]
 }
 
 export function pluginUi(id: string): PluginUiContribution | undefined {

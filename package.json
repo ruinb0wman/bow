@@ -18,7 +18,10 @@
       "packages/pi-bow/extensions/bow-agent-state.ts"
     ],
     "asarUnpack": [
-      "**/node_modules/node-pty/**"
+      "**/node_modules/node-pty/**",
+      "**/node_modules/@inkeep/open-knowledge/**",
+      "**/node_modules/@parcel/**",
+      "**/node_modules/@napi-rs/**"
     ],
     "npmRebuild": false,
     "win": {
@@ -80,6 +83,7 @@
     "dev:remote": "vite build --config vite.remote.config.ts --watch"
   },
   "dependencies": {
+    "@inkeep/open-knowledge": "0.88.5",
     "@lucide/vue": "^1.21.0",
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@ruinb0w/ui": "link:../ui",
