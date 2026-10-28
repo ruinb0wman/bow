@@ -54,10 +54,13 @@ onBeforeUnmount(() => {
       class="tab-id-badge"
       :class="{ ok: copiedId === b.tabId, err: failedId === b.tabId }"
       :style="{ left: `${b.x}px`, top: `${b.y}px` }"
-      :title="`复制 tabId ${b.tabId}`"
+      :title="b.label ? `复制 tabId ${b.tabId}\n${b.label}` : `复制 tabId ${b.tabId}`"
       @click="copy(b.tabId)"
     >
-      {{ failedId === b.tabId ? '复制失败' : copiedId === b.tabId ? '已复制' : `tabId ${b.tabId}` }}
+      <span class="tab-id-line">
+        {{ failedId === b.tabId ? '复制失败' : copiedId === b.tabId ? '已复制' : `tabId ${b.tabId}` }}
+      </span>
+      <span v-if="b.label" class="tab-id-label">{{ b.label }}</span>
     </button>
   </div>
 </template>
@@ -86,6 +89,21 @@ onBeforeUnmount(() => {
   cursor: copy;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(2px);
+  /* 带 label 的徽标是两行(tabId + 终端的工作目录),列向排 */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  max-width: 220px;
+}
+
+.tab-id-label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  font-weight: 400;
+  opacity: 0.85;
 }
 
 .tab-id-badge:hover {

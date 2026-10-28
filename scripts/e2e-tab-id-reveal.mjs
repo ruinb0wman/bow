@@ -38,9 +38,9 @@ const packagedBin = process.env.BOW_E2E_BIN?.trim() || null
 
 /**
  * 与 `@shared/tabIdBadge` 的常量保持一致(这里刻意**独立写死**:真机 E2E 的断言不该跟实现共用一份数)。
- * `{width: 96, height: 34}` 徽标盒 + 四周各 6px padding。
+ * `{width: 220, height: 50}` 徽标盒(带终端 cwd 那行要的宽度)+ 四周各 6px padding。
  */
-const BADGE_BOX = { width: 96, height: 34, padding: 6 }
+const BADGE_BOX = { width: 220, height: 50, padding: 6 }
 const BADGES = `Array.from(document.querySelectorAll('.tab-id-badge')).map(e=>e.textContent.trim())`
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))

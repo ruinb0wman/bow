@@ -135,6 +135,40 @@ describe('OscSignalParser:pi 内建的进度序列(降级信号)', () => {
   })
 })
 
+describe('OscSignalParser:shell 的 cwd 序列(OSC 7 / 9;9)', () => {
+  it('OSC 7 解出百分号编码后的路径,并从文本里剥掉', () => {
+    const p = new OscSignalParser()
+    const r = p.feed('a\x1b]7;file://host/home/u/my%20dir\x07b')
+    expect(r.cwd).toBe('/home/u/my dir')
+    expect(r.text).toBe('ab')
+  })
+
+  it('host 为空(file:///…)与 ST 终止符都认;Windows 形式的 /C:/ 去掉前导斜杠', () => {
+    const p = new OscSignalParser()
+    expect(p.feed('\x1b]7;file:///home/u\x1b\\').cwd).toBe('/home/u')
+    expect(p.feed('\x1b]7;file:///C:/Users/u\x07').cwd).toBe('C:/Users/u')
+  })
+
+  it('OSC 9;9(Windows Terminal)也能拿到;不是 file: 的 7 系列与坏编码不会抛', () => {
+    const p = new OscSignalParser()
+    expect(p.feed('\x1b]9;9;C:\\Users\\u\x07').cwd).toBe('C:\\Users\\u')
+    expect(p.feed('\x1b]7;not-a-url\x07').cwd).toBeUndefined()
+    expect(p.feed('\x1b]7;file:///bad%ZZ\x07').cwd).toBe('/bad%ZZ')
+  })
+
+  it('一条序列被切成两个 chunk 也能拼起来(和信号同一条通路)', () => {
+    const p = new OscSignalParser()
+    const raw = '\x1b]7;file:///home/u/proj\x07'
+    expect(p.feed(raw.slice(0, 10)).cwd).toBeUndefined()
+    expect(p.feed(raw.slice(10)).cwd).toBe('/home/u/proj')
+  })
+
+  it('没看到 cwd 序列时不出现这个键(旧用例的 toEqual 不受影响)', () => {
+    const p = new OscSignalParser()
+    expect('cwd' in p.feed('hello')).toBe(false)
+  })
+})
+
 // ---------- ② 角标 ----------
 
 describe('badgeOfSignal', () => {

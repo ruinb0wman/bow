@@ -29,6 +29,7 @@ npm run test:mcp:http  # 真机冒烟测试(连已常驻的 HTTP 浏览器)
 npm run test:e2e:device  # 设备检查的假手机 E2E(真 Electron + 真 MCP,不需要真机/显示环境)
 npm run test:e2e:agent   # 代理状态 E2E(假 pi 往 pty 打 OSC → 角标 / 系统通知 / 点击进标签)
 npm run test:e2e:tabid   # 长按 Shift 的 tabId 徽标 E2E(真 Electron:裸 Shift 链路 + 徽标几何 + 复制)
+npm run test:e2e:termcwd # 终端工作目录 E2E(真 zsh 敲 `cd` → 台账 / 标签标题 / Shift 徽标三处跟着变)
 npm run test:e2e:editor  # 编辑器 E2E(真 Electron + 真 nvim:`--edit a.txt` 进编辑器、`.html` 照旧开标签)
 npm run pi:install-status   # 把状态桥扩展装进 pi(~/.pi/agent/extensions/),终端里的 pi 才有完整状态联动
 npm run pi:install-plugin   # 整包接入:pi install ./packages/pi-bow(状态桥 + MCP 注册 + skill + /bow)
@@ -480,9 +481,10 @@ npm run test:mcp:http
 - `Ctrl+数字`:`Ctrl+1..8` 切到标签栏第 n 项(一个分屏组只算一项)、`Ctrl+9` 取最后一项
 - **按住 `Shift`(约 0.2s)**:当前标签组的每个窗格正中央浮出 `tabId N` 徽标(**只显示当前组**:不分屏时一个、
   分屏时每个窗格各一个),**点徽标把纯数字 id 复制到剪贴板** —— 直接贴给 MCP 的 `tabId` 参数用(见上方「MCP」一节)。
+  **终端窗格的徽标多一行工作目录**(与标签标题同一个值),四个终端并排时靠它分辨。
   短按 `Shift`(在页面里打大写字母)不会显示;松开 `Shift`、按其它键、窗口失焦或缩放都会收起。
   代价:徽标要浮在页面之上(`WebContentsView` 没有点击穿透),所以 **bounds 只紧包徽标本身** ——
-  按住期间只有徽标那一小块(不分屏时是页面正中央约 `108×46`)会吃掉鼠标事件,页面其余部分照常可点、可滚
+  按住期间只有徽标那一小块(不分屏时是页面正中央约 `208×56`)会吃掉鼠标事件,页面其余部分照常可点、可滚
 - `Ctrl+←` / `Ctrl+→`:后退 / 前进(**聚焦的那个窗格**的历史,与 `Ctrl+W` 同口径;焦点不在任何窗格时作用于活动标签)
   —— 除**终端页**与 **macOS** 外,任何焦点下都接管(含地址栏、设置页、笔记页、DevTools 前端),
   所以网页输入框里的「按词移动光标」让位(与 `Ctrl+Shift+方向` 分屏同一类代价);
@@ -576,6 +578,11 @@ npm run test:mcp:http
 
 - **每个终端标签一个独立会话**(可多开,能与网页左右分屏)。标签刷新/崩溃重建会**接回同一个 shell** 并回放最近的输出;
   标签关掉才回收(退出 bow 时全部回收)。
+- **标签标题带工作目录**(`终端 — /home/me/Workspace/bow`,超过 28 字缩成 `…/尾/两段`):多个终端窗格并排时,标签栏、分屏菜单、
+  以及**长按 `Shift` 的 tabId 徽标**(第二行)都靠它区分。目录来源按优先级:shell 每个 prompt 报的
+  OSC 7 / OSC 9;9(oh-my-zsh、VS Code shell integration、Windows Terminal 都发)→ Linux 上的
+  `/proc/<pid>/cwd` → 启动目录。**不发 OSC 7 的 shell(`sh` / `bash --norc`)只能拿到启动目录或 `/proc`**,
+  在别的机器上想让 `cd` 立刻反映到标题,给 bash 加一条 `PROMPT_COMMAND` 打印 `\e]7;file://$HOSTNAME$PWD\e\\`。
 - 默认 shell 在「设置页 → 终端」选:Windows 预设 Windows PowerShell / PowerShell 7 / 命令提示符 / WSL / Git Bash,
   也能自己加配置(名称 / 可执行文件 / 参数 / 工作目录)。WSL 的启动目录用参数 `--cd ~` 表达
   (Windows 侧的 `cwd` 会被映射成 `/mnt/c/...`,不是 WSL 的 home)。

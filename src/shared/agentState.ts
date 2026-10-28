@@ -10,6 +10,9 @@
  * 2. **降级信号**:pi 自己有一份内建的进度序列(`ESC]9;4;3` 活动 / `ESC]9;4;0` 清除,受 pi 的
  *    `terminal.showTerminalProgress` 控制,默认关)。不装桥接扩展时靠它至少能显示「正在执行」。
  *    **一旦某个会话见过一次 `1337;bow`,就再也不用 9;4** —— 否则桥接说的 `blocked` 会被它盖成 `working`。
+ * 2.5 **工作目录**(`OSC 7` / `OSC 9;9`):shell 每个 prompt 报一次自己的 cwd,剥出来直接给会话台账
+ *    用(`SessionInfo.cwd`)。没有这两条序列的 shell(`sh` / `bash --norc` / `cmd`)才轮到
+ *    终端插件那条 Linux 兜底(`/proc/<pid>/cwd`)。
  * 3. **角标与通知文案**:状态 → 标签角标(`badgeOfSignal`)与系统通知的标题/正文(`notificationCopy`)。
  *   通知的**时机与生命周期**在 `main/agentNotify.ts`(那里持有定时器与 Electron 的 `Notification`)。
  *
@@ -50,6 +53,9 @@ const ESC = '\x1b'
 
 /** pi 内建进度序列的选择子(降级信号用)。`9;4;0` = 清除,其余(1/2/3/4…)都算「活动」 */
 const PROGRESS_SELECTOR = '9;4;'
+
+/** Windows Terminal 的 cwd 序列选择子(`9;9;C:\dir`);OSC 7 见 `cwdHintOf` */
+const CWD_WT_SELECTOR = '9;9;'
 
 /** 一条 OSC 没结束时的保留上限:超过就当坏流放行,避免内存被一段永远不结束的流吃掉 */
 const MAX_OSC_LENGTH = 4096
@@ -94,6 +100,8 @@ export interface OscParseResult {
   signals: AgentSignal[]
   /** 本 chunk 里看到的内建进度信号(多个时取最后一个);从未见到为 null */
   progress: OscProgressHint | null
+  /** 本 chunk 里看到的 shell 工作目录(OSC 7 / 9;9);没有就不带这个键 */
+  cwd?: string
 }
 
 /** `done` 角标的存活时长;到点由主进程清掉(避免遗留一个「已完成」钉子) */
@@ -153,6 +161,7 @@ export class OscSignalParser {
     let text = ''
     const signals: AgentSignal[] = []
     let progress: OscProgressHint | null = null
+    let cwd: string | null = null
 
     let i = 0
     while (i < input.length) {
@@ -169,8 +178,11 @@ export class OscSignalParser {
         break
       }
       const hint = progressHintOf(parsed.body)
+      const dir = hint ? null : cwdHintOf(parsed.body)
       if (hint) {
         progress = hint
+      } else if (dir) {
+        cwd = dir
       } else if (!consumeBowSignal(parsed.body, signals)) {
         // 不是本协议 -- 原样交回文本,让 xterm 自己处理
         text += input.slice(start, parsed.end)
@@ -182,7 +194,7 @@ export class OscSignalParser {
       text += this.carry
       this.carry = ''
     }
-    return { text, signals, progress }
+    return { text, signals, progress, ...(cwd ? { cwd } : {}) }
   }
 }
 
@@ -197,6 +209,42 @@ function readOsc(input: string, start: number): { body: string; end: number } | 
     }
   }
   return null
+}
+
+/**
+ * shell 的当前目录,两条标准序列:
+ * - **OSC 7** `file://<host>/<percent-encoded path>` —— oh-my-zsh(`lib/termsupport.zsh` 的
+ *   `omz_termsupport_cwd`)、VS Code shell integration、foot/kitty 等都在发;
+ * - **OSC 9;9** `C:\dir` —— Windows Terminal 用的形态。
+ *
+ * 为什么在**主进程**剥而不是只让渲染层的 xterm 解析:目录是会话台账的字段
+ * (`SessionInfo.cwd`,Herd 面板 / MCP / 手机远程页都读它)。只在渲染层解析的话,
+ * 那些消费者永远显示过期目录(默认 shell 的台账 cwd 就是 spawn 时的目录)。
+ * 序列本身对终端是隐形的,吃掉它不会影响任何可显示内容。
+ */
+function cwdHintOf(body: string): string | null {
+  if (body.startsWith(CWD_WT_SELECTOR)) return clampCwd(body.slice(CWD_WT_SELECTOR.length))
+  if (!body.startsWith('7;')) return null
+  // `file://<host>/<path>`:host 常为空(`file:///home/u`),这里只要路径
+  const m = /^file:\/\/[^/]*(\/.*)$/.exec(body.slice(2))
+  if (!m) return null
+  const decoded = percentDecode(m[1]!)
+  // Windows 的 `file:///C:/dir` 解出来是 `/C:/dir`
+  return clampCwd(/^\/[A-Za-z]:[\\/]/.test(decoded) ? decoded.slice(1) : decoded)
+}
+
+/** 百分号编码解不出来(坏负载)时原样返回,绝不抛 */
+function percentDecode(text: string): string {
+  try {
+    return decodeURIComponent(text)
+  } catch {
+    return text
+  }
+}
+
+function clampCwd(dir: string): string | null {
+  const trimmed = dir.trim()
+  return trimmed ? trimmed.slice(0, MAX_AGENT_CWD) : null
 }
 
 /** `9;4;<n>` 的 `n`:0 = 清除,其余都是「活动」;不是进度序列返回 null */

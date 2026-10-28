@@ -131,7 +131,7 @@ src/
     bookmarkTree.ts 书签树 CRUD + 展平 + 一级目录迁移
     ua.ts           bowUserAgent() 纯函数
     devtools.ts     DevTools 前端 URL 构造(tabManager 与设备检查插件共用的唯一来源)
-    agentState.ts   代理状态协议与纯逻辑:OSC 信号解析(1337;bow + pi 内建 9;4 降级)、角标映射、通知文案
+    agentState.ts   代理状态协议与纯逻辑:OSC 信号解析(1337;bow + pi 内建 9;4 降级)、剥出来的 shell cwd(OSC 7 / 9;9)、角标映射、通知文案
     terminalRun.ts  内核事件 `terminal:run` 的契约 + 负载校验(插件 → 插件,见 §5.9)
 tests/            vitest 测试文件 + 3 个测试替身(fakeTabs/fakeWc/fakeKernel)
 packages/pi-bow/  pi 插件包(**唯一真相源**):extensions/bow-agent-state.ts = 状态桥扩展、
@@ -1126,6 +1126,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `npm run test:e2e:device` | 设备检查插件的**假手机** E2E:真 Electron + 真 MCP + 真 TCP/WS,只有 adb 与设备端是假的(不需要真机,也不需要显示环境) |
 | `npm run test:e2e:agent` | 代理状态的 E2E:假 pi(只往 pty 打一条 `1337;bow` 信号)走真终端 → 断言标签栏角标、系统通知的标题/正文(桌面通知观察不到,靠 `BOW_NOTIFY_LOG` 的 JSONL)、代理继续时那条通知被撤回、点通知进入对应标签(OS 点击合成不了,走 `__bowNotifyClick`)、点通知≠回答弹框、关标签后清理,并断言 `toast.html` 不存在;后半段还验设置页「Pi 联动」的一键接入(写/删真实文件到临时 `PI_CODING_AGENT_DIR`);在 Linux 上另验「WSL2 提醒不出现」(`status.wsl` 不存在——那段提醒只在 Windows 上给,免得误导)。`BOW_E2E_BIN=dist/linux-unpacked/bow` 可改验打包版(确认源码能从 asar 里读到)。Linux 缺 `libasound.so.2` 时不需要 root:从镜像的 `extra.db` 查出 `alsa-lib` 的包名,下下来 `bsdtar -xf` 到**持久目录**(如 `~/.cache/bow-alsa` —— 放 `/tmp` 会被清掉),再 `LD_LIBRARY_PATH=<解包的 usr/lib>`(与 README 的 `SMOKE_LD_LIBRARY_PATH` 同一招) |
 | `npm run test:e2e:tabid` | 长按 Shift 的 tabId 徽标 E2E:真 Electron + CDP —— 在**页面 target** 上发裸 `Shift` 的 `rawKeyDown`(验证修饰键确实会触发主进程 `before-input-event`)、短按 60ms 不显示、长按后 overlay target 里出现徽标、浮层视图尺寸 = 紧包 bounds、徽标几何 = 窗格中心、点一下 `readClipboardText()` 拿到纯数字 id、松开后消失、已有浮层时不抢;再分屏一次验「每个窗格各一个徽标」 |
+| `npm run test:e2e:termcwd` | 终端「工作目录」全链路 E2E:真 Electron + 真 zsh —— 验启动目录已在标题/台账里一致,然后用 `window.__bowTerminal.send('cd /tmp\r')` 真敲一条 `cd`,断言台账 `cwd`、`TabInfo.title`(经 `page-title-updated`)、以及按住 Shift 的徽标第二行三处一起跟着变。这条盖住了单测盖不到的四段:shell 的 OSC 7 → 主进程剥出 → 台账广播 → 标题/徽标 |
 | `npm run mcp` / `mcp:http` | 经 `open-bow.mjs` 以 stdio / HTTP 模式启动 |
 | `npm run mcp:install [-- …]` | 把 MCP 配置 + skill 写进 pi(幂等、可回滚、非 JSON 直接中止) |
 | `npm run pi:install-status [-- …]` | 把状态桥扩展写进 `~/.pi/agent/extensions/bow-agent-state.ts`(幂等;`--dry-run` / `--print` / `--uninstall` / `--force` / `--extension-dir`)。目标文件带 `managed by bow` 标记:没有该标记且存在时拒写(不覆盖别人的扩展) |
@@ -1148,6 +1149,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `e2e-agent-status.mjs` | 代理状态 E2E:不装 MCP、不用真 pi,全程 CDP —— chrome target 开终端页、终端页 `window.__bowTerminal.send` 敲命令、主进程 inspector target 驱动 `__bowNotifyClick` 并读 `BOW_NOTIFY_LOG`、设置页 target 点一键接入的按钮 |
 | `e2e-herd.mjs` | 牧群面板 E2E:真 Electron + 真 pty + 真台账(代理是假的,一条 `printf` 把 OSC 打进 pty)。验 `window.browserAPI.plugins.invoke('terminal', …)` 的六个新方法与面板:按钮计数/高亮 → 浮层里的行与注意力排序 → 点一行走 `pages.activate` 并关面板 → 关会话后列表/计数跟着变。⚠️ 认 chrome target 必须**正面**匹配 `/renderer/index.html`:标签页也是 `type: 'page'`,黑名单式过滤会选中普通网页(那边的 `window.browserAPI` 是 undefined) |
 | `e2e-tab-id-reveal.mjs` | 长按 Shift 的 tabId 徽标 E2E(见上表);几何常量**独立写死**在脚本里(真机断言不该跟 `@shared/tabIdBadge` 共用一份数) |
+| `e2e-terminal-cwd.mjs` | 终端工作目录全链路 E2E(见上表);与 `e2e-tab-id-reveal.mjs` 一样只在 chrome target 上取数,认 target 必须**正面**匹配 `/renderer/index.html`(内部页面也挂 `browserAPI`) |
 | `cors-test-server.mjs` / `cors-probe.html` | CORS 插件的人工验证环境 |
 | `fetch-northbound.mjs` | 外网连通性探测 |
 

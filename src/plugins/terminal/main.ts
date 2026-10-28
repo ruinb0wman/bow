@@ -23,7 +23,7 @@
 import { app } from 'electron'
 import { randomBytes } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { z } from 'zod'
@@ -340,12 +340,29 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
 
   // ---------- 会话台账(台账 = 三个调用方共用的那一份描述:本地面板 / 远程页 / MCP)----------
 
+  /**
+   * 台账里报给外部的 cwd:Linux 上以 `/proc/<pid>/cwd` 为准(它就是那个 shell 的当前目录,
+   * `cd` 立刻可见,不依赖 shell 是否发 OSC 7);其它平台沿用 `session.cwd`(OSC 7 / 9;9 / pi 报的)。
+   *
+   * 为什么在**投影**里读而不是在输入流里读:读的是同一份状态,但省掉「轮询 / 监听哪个事件」的决策 ——
+   * 台账本来就只在 `emitSessions` 里结算(闸门是 `SESSIONS_THROTTLE_MS` 与指纹去重),
+   * 而每次结算都是一次 12 个 readlink 的代价。
+   */
+  function liveCwd(session: Session): string {
+    if (process.platform !== 'linux') return session.cwd
+    try {
+      return readlinkSync(`/proc/${session.proc.pid}/cwd`) || session.cwd
+    } catch {
+      return session.cwd
+    }
+  }
+
   function describeSession(session: Session): SessionInfo {
     return {
       id: session.tabId,
       title: session.profileName,
       profileId: session.profileId,
-      cwd: session.cwd,
+      cwd: liveCwd(session),
       pid: session.proc.pid,
       cols: session.cols,
       rows: session.rows,
@@ -752,6 +769,8 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
         notifySessions()
         // 剥掉代理写的控制序列:文本走原路(回放 + 合批下发),信号只用来算状态
         const parsed = session.parser.feed(data)
+        // shell 报的目录(OSC 7 / 9;9):下一轮台账结算就会带上它(签名里已含 cwd)
+        if (parsed.cwd) session.cwd = parsed.cwd
         if (parsed.text) {
           session.replay = pushReplay(session.replay, parsed.text)
           enqueue(session, parsed.text)

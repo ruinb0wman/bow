@@ -15,7 +15,7 @@
 import type { Rect } from './split'
 
 /** 徽标盒的估算尺寸(px):只用来算 bounds,真实大小由 CSS 决定(两者接近即可) */
-export const TAB_ID_BADGE_SIZE = { width: 96, height: 34 }
+export const TAB_ID_BADGE_SIZE = { width: 220, height: 50 }
 /** bounds 四周留白(px):给徽标阴影留一点空间,同时不贴着页面内容 */
 export const TAB_ID_BADGE_PADDING = 6
 
@@ -24,6 +24,8 @@ export interface TabIdBadgeCenter {
   tabId: number
   x: number
   y: number
+  /** 第二行文字(终端窗格 = 带 cwd 的标题);没有就只显示 tabId */
+  label?: string
 }
 
 /** 浮层视图本地坐标里的徽标中心 */
@@ -31,6 +33,7 @@ export interface TabIdBadge {
   tabId: number
   x: number
   y: number
+  label?: string
 }
 
 /** `tab-ids` 浮层的 payload(OverlayManager 直接用 `bounds` 设视图大小) */
@@ -79,6 +82,12 @@ export function tabIdBadgeLayout(
   const height = clamp(Math.ceil(bottom + TAB_ID_BADGE_PADDING) - y, 1, h - y)
   return {
     bounds: { x, y, width, height },
-    badges: centers.map((c) => ({ tabId: c.tabId, x: Math.round(c.x - x), y: Math.round(c.y - y) }))
+    badges: centers.map((c) => ({
+      tabId: c.tabId,
+      x: Math.round(c.x - x),
+      y: Math.round(c.y - y),
+      // 只带 label 有值时这个键才存在(包大小仍按最长那种算,见 TAB_ID_BADGE_SIZE)
+      ...(c.label ? { label: c.label } : {})
+    }))
   }
 }

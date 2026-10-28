@@ -19,9 +19,10 @@ import {
   DEFAULT_SCROLLBACK,
   TERMINAL_EVENTS,
   TERMINAL_THEME,
-  matchClipboardKey
+  matchClipboardKey,
+  shortPath
 } from '@plugins/terminal/shared'
-import type { TerminalAttachResult, TerminalRenderSettings } from '@plugins/terminal/shared'
+import type { SessionInfo, TerminalAttachResult, TerminalRenderSettings } from '@plugins/terminal/shared'
 import { installWindowsCtrlAltChordRepair } from './xtermCtrlAltChord'
 
 const api = window.browserAPI
@@ -36,6 +37,10 @@ const message = ref('')
 let term: Terminal | null = null
 let fitAddon: FitAddon | null = null
 let tabId: number | null = null
+/** 这个窗格用的 shell 配置名(cwd 还没拿到时的标题素材) */
+let profileName = ''
+/** 上一次写过的标题:避免每次台账结算都重设同一个 `document.title` */
+let shownTitle = ''
 /** 装上没装上 xterm 里那条 AltGr 误判的补丁(见 ui/xtermCtrlAltChord.ts);拿不到接缝时为 false */
 let ctrlAltRepaired = false
 let unsubs: Array<() => void> = []
@@ -45,6 +50,22 @@ let alive = true
 
 function invoke<T>(method: string, ...args: unknown[]): Promise<T> {
   return api.plugins.invoke<T>('terminal', method, ...args)
+}
+
+/** 标题里给路径留的宽度;再长就靠 `shortPath` 缩成 `…/尾/两段` */
+const TITLE_PATH_MAX = 28
+
+/**
+ * 标题带上工作目录:`终端 — …/Workspace/bow`。这是**多个分屏终端之间唯一的一眼区分依据** ——
+ * 标签栏只显示聚焦窗格的标题,其余窗格只有一个图标;长按 Shift 的徽标、分屏菜单也都是读这个 title。
+ * 所以目录只在这里决定一次,下游(chrome / 主进程)不需要任何终端知识。
+ */
+function syncTitle(cwd: string | null): void {
+  const where = cwd ? shortPath(cwd, TITLE_PATH_MAX) : ''
+  const title = where ? `终端 — ${where}` : profileName ? `终端 — ${profileName}` : '终端'
+  if (title === shownTitle) return
+  shownTitle = title
+  document.title = title
 }
 
 function applyRender(render?: TerminalRenderSettings): void {
@@ -145,6 +166,12 @@ function subscribe(): void {
         fail(args.reason === 'plugin-disabled' ? '终端插件已被停用' : '会话已结束')
         return
       }
+      if (payload.event === TERMINAL_EVENTS.sessionsChanged) {
+        // 台账变化 = 某个会话的 cwd / 状态变了(签名去重过),本窗格只认自己那条
+        const infos: SessionInfo[] = Array.isArray(payload.args) ? (payload.args as SessionInfo[]) : []
+        syncTitle(infos.find((s) => s.id === tabId)?.cwd ?? null)
+        return
+      }
       if (payload.event === TERMINAL_EVENTS.settingsChanged) {
         applyRender(args as unknown as TerminalRenderSettings)
         refit()
@@ -206,7 +233,11 @@ async function boot(): Promise<void> {
   refit()
   if (result.replay) term?.write(result.replay)
   status.value = 'ready'
-  document.title = result.profileName ? `终端 — ${result.profileName}` : '终端'
+  profileName = result.profileName ?? ''
+  // 先立一个可用标题,再按台账把目录补上(attach 期间的 `sessions-changed` 早于本次订阅,拿不到)
+  syncTitle(null)
+  const infos = await invoke<SessionInfo[]>('listSessions').catch(() => [] as SessionInfo[])
+  syncTitle(infos.find((s) => s.id === tabId)?.cwd ?? null)
   term?.focus()
   // 等字体真正就绪再量一次:等宽字体的第一帧测量在字体回退时可能偏
   void document.fonts?.ready.then(() => refit())
@@ -232,6 +263,10 @@ function exposeDebugHandle(): void {
     },
     get status() {
       return status.value
+    },
+    /** 失败原因(E2E 断言失败时能看出是 pty 起不来还是别的原因) */
+    get message() {
+      return message.value
     },
     /** E2E 判据:AltGr 误判的补丁真的装上了(不是静默退化成丢键) */
     get ctrlAltRepaired() {

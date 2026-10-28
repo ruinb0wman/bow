@@ -96,6 +96,15 @@ describe('tabIdBadgeLayout 徽标浮层几何', () => {
     expect(insideWindow(out)).toBe(true)
   })
 
+  it('终端的 label 原样进徽标(徽标宽度/高度按 TAB_ID_BADGE_SIZE 估,与 CSS 接近即可)', () => {
+    const out = tabIdBadgeLayout([{ tabId: 9, x: 400, y: 300, label: '终端 — …/Workspace/bow' }], W, H)!
+    expect(out.badges[0]?.label).toBe('终端 — …/Workspace/bow')
+    expect(insideWindow(out)).toBe(true)
+    // 没有 label 的窗格不带这个键(渲染层据此决定一行还是两行)
+    const plain = tabIdBadgeLayout([{ tabId: 3, x: 400, y: 300 }], W, H)!
+    expect('label' in plain.badges[0]!).toBe(false)
+  })
+
   it('同一组中心的顺序被保留(徽标与窗格一一对应)', () => {
     const centers: TabIdBadgeCenter[] = [
       { tabId: 11, x: 100, y: 100 },

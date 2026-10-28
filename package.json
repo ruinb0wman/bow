@@ -70,6 +70,7 @@
     "test:e2e:device": "node scripts/e2e-device-inspect.mjs",
     "test:e2e:agent": "node scripts/e2e-agent-status.mjs",
     "test:e2e:tabid": "node scripts/e2e-tab-id-reveal.mjs",
+    "test:e2e:termcwd": "node scripts/e2e-terminal-cwd.mjs",
     "test:e2e:editor": "node scripts/e2e-editor-open.mjs",
     "test:e2e:herd": "node scripts/e2e-herd.mjs",
     "test:e2e:remote": "node scripts/e2e-remote.mjs",

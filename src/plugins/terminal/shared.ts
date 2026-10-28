@@ -444,7 +444,10 @@ export interface SessionInfo {
   /** 标签标题的来源:profileName,或 `terminal:run` 带来的命令名 */
   title: string
   profileId: string
-  /** 工作目录:spawn 时的目录(`profile.cwd` 为空时是用户主目录);终端里的代理会报自己的真目录覆盖它 */
+  /**
+   * 工作目录:Linux 上是那个 shell 的实时 cwd(`/proc/<pid>/cwd`),其它平台以 shell 报的 OSC 7 / 9;9
+   * 为准,都没有才是 spawn 时的目录(`profile.cwd`,空则用户主目录)。见 `liveCwd`。
+   */
   cwd: string
   pid: number
   cols: number

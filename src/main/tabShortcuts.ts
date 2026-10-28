@@ -78,11 +78,19 @@ let revealOff: (() => void) | null = null
 /** 活动组的窗格中心(窗口内容坐标)。非活动组 `listGroups()` 给的 `panes` 是空数组。 */
 function activePaneCenters(tabs: TabManager): TabIdBadgeCenter[] {
   const panes = tabs.listGroups().find((g) => g.panes.length > 0)?.panes ?? []
-  return panes.map((p) => ({
-    tabId: p.tabId,
-    x: p.rect.x + p.rect.width / 2,
-    y: p.rect.y + p.rect.height / 2
-  }))
+  if (panes.length === 0) return []
+  // 终端窗格额外带一行标题(里面已经带了 cwd):分屏时标签栏只显示聚焦窗格的名字,
+  // 其余窗格只剩一个图标 —— 徽标是「一眼区分四个终端」的唯一位置。
+  const byId = new Map(tabs.listTabs().map((t) => [t.id, t]))
+  return panes.map((p) => {
+    const tab = byId.get(p.tabId) ?? null
+    return {
+      tabId: p.tabId,
+      x: p.rect.x + p.rect.width / 2,
+      y: p.rect.y + p.rect.height / 2,
+      ...(isTerminalTab(tab) && tab?.title ? { label: tab.title } : {})
+    }
+  })
 }
 
 /**
