@@ -85,9 +85,6 @@ src/
     ui/*.vue                    该插件的 UI 组件(终端插件的 `ui/TerminalView.vue` 例外:它是 bow://terminal
                                 页面的主体,由 renderer/src/terminal 直接挂载,不经渲染层注册表;
                                 终端插件的 `ui/HerdButton.vue`+`HerdPanel.vue` 是常规的工具栏按钮 + full 浮层)
-    piBridge.ts                  终端插件的「pi 状态桥一键接入」纯逻辑(注入 fs;设置页的按钮走它,
-                                  还负责算「bow 在 Windows、pi 在 WSL2」时那条醒用户的拷贝命令 —— 见 `wslHint`)
-                                与仓库脚本 scripts/install-pi-agent-state.mjs 同规则)
     shared.ts | picker.ts | scripts.ts   同构纯逻辑或注入脚本字符串(便于单测)
     adb.ts | targets.ts | cdp.ts          设备检查插件的 I/O 层(spawn / 转发池 / CDP 客户端:含事件订阅与 Input.* 操作;新文件名须登记到 tsconfig.node.json 的 include)
     scripts.ts                            设备检查插件的注入脚本(点定位 / 聚焦全选;纯字符串)
@@ -1101,9 +1098,9 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `SMOKE_ALLOW_MUTATIONS` | `mcp-smoke.mjs` | HTTP 模式下必须为 `1` 才允许写操作 |
 | `SMOKE_LD_LIBRARY_PATH` `SMOKE_ELECTRON_ARGS` `SMOKE_SHOT_PATH` `SMOKE_FULL_PAGE_SHOT_PATH` | `mcp-smoke.mjs` | Linux 库路径 / 额外参数 / 截图输出路径 |
 | `BOW_E2E_DIR` | `scripts/e2e-device-inspect.mjs`、`e2e-agent-status.mjs` 与其 fixtures | E2E 的临时目录(默认 `$TMPDIR/bow-e2e`) |
-| `BOW_E2E_BIN` | `scripts/e2e-agent-status.mjs` | 设了就改验**打包版**:指向 `dist/<平台>-unpacked/bow`(不带结尾的 `.` 参数)。用来确认「一键接入」的源码能从 `app.asar` 里读到 |
+| `BOW_E2E_BIN` | `scripts/e2e-agent-status.mjs` | 设了就改验**打包版**:指向 `dist/<平台>-unpacked/bow`(不带结尾的 `.` 参数)。 |
 | `BOW_TERMINAL` | 终端插件的 `cleanEnv`(写)| `=1`:告诉 pty 里的程序「你在 bow 的终端里」。目前唯一消费方是 pi 桥接扩展(`packages/pi-bow/extensions/bow-agent-state.ts`)—— 别的终端不会收到,所以那套 OSC 不会乱发。**WSL 例外**:`shell` 是 `wsl.exe` 的 profile 由 `withBowTerminalEnv()` 额外把它列进 `WSLENV` —— Windows 侧的环境变量默认**不会**进发行版,不列就是空的(实测三种组合的表在那个函数的注释里) |
-| `PI_CODING_AGENT_DIR` | `scripts/install-pi-agent-state.mjs` 与终端插件的 `piBridge.ts`(读)| pi 的 agent 目录(默认 `~/.pi/agent`);状态桥装到其 `extensions/` 下。设置页的一键接入与仓库脚本都认它(测试靠它把文件写进临时目录,不碰真实的 `~/.pi`)。**注**:设置页的一键接入用的是 **bow 进程自己的**家目录 —— bow 在 Windows、pi 在 WSL2 时两者不是同一个目录,所以 `piBridgeStatus` 会在 Windows 上额外带一个 `wsl` 字段 (`PiBridgeWslHint`: `from` / `to` / `command`),设置页把它连同命令一起显示成一段「请到 WSL2 里执行」的提醒(命令里的 `/mnt/<盘>/…` 由 `windowsPathToWsl()` 换算,不是盘符路径时就不给) |
+| `PI_CODING_AGENT_DIR` | `scripts/install-pi-agent-state.mjs`(读)| pi 的 agent 目录(默认 `~/.pi/agent`);状态桥装到其 `extensions/` 下。**应用侧不再读它** —— 安装只在脚本里做,设置页只显示那条命令 |
 
 ⚠️ 绝不要在 shell 里写 `MCP_HTTP=1 electron .` 这种内联赋值(Windows 不认);
 统一走 `scripts/open-bow.mjs` 或 `npm run mcp:http`。
@@ -1126,7 +1123,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `npm run test:mcp` | 真机冒烟:自己拉起 MCP 模式浏览器跑关键流程 |
 | `npm run test:mcp:http` | 连已常驻的 HTTP 浏览器 |
 | `npm run test:e2e:device` | 设备检查插件的**假手机** E2E:真 Electron + 真 MCP + 真 TCP/WS,只有 adb 与设备端是假的(不需要真机,也不需要显示环境) |
-| `npm run test:e2e:agent` | 代理状态的 E2E:假 pi(只往 pty 打一条 `1337;bow` 信号)走真终端 → 断言标签栏角标、系统通知的标题/正文(桌面通知观察不到,靠 `BOW_NOTIFY_LOG` 的 JSONL)、代理继续时那条通知被撤回、点通知进入对应标签(OS 点击合成不了,走 `__bowNotifyClick`)、点通知≠回答弹框、关标签后清理,并断言 `toast.html` 不存在;后半段还验设置页「Pi 联动」的一键接入(写/删真实文件到临时 `PI_CODING_AGENT_DIR`);在 Linux 上另验「WSL2 提醒不出现」(`status.wsl` 不存在——那段提醒只在 Windows 上给,免得误导)。`BOW_E2E_BIN=dist/linux-unpacked/bow` 可改验打包版(确认源码能从 asar 里读到)。Linux 缺 `libasound.so.2` 时不需要 root:从镜像的 `extra.db` 查出 `alsa-lib` 的包名,下下来 `bsdtar -xf` 到**持久目录**(如 `~/.cache/bow-alsa` —— 放 `/tmp` 会被清掉),再 `LD_LIBRARY_PATH=<解包的 usr/lib>`(与 README 的 `SMOKE_LD_LIBRARY_PATH` 同一招) |
+| `npm run test:e2e:agent` | 代理状态的 E2E:假 pi(只往 pty 打一条 `1337;bow` 信号)走真终端 → 断言标签栏角标、系统通知的标题/正文(桌面通知观察不到,靠 `BOW_NOTIFY_LOG` 的 JSONL)、代理继续时那条通知被撤回、点通知进入对应标签(OS 点击合成不了,走 `__bowNotifyClick`)、点通知≠回答弹框、关标签后清理,并断言 `toast.html` 不存在;后半段还验设置页「Pi 联动」:安装命令(`npm run pi:install-status`)显示出来、旁边有复制按钮(安装本身在应用里不做,E2E 因此不碰真实家目录)。`BOW_E2E_BIN=dist/linux-unpacked/bow` 可改验打包版。Linux 缺 `libasound.so.2` 时不需要 root:从镜像的 `extra.db` 查出 `alsa-lib` 的包名,下下来 `bsdtar -xf` 到**持久目录**(如 `~/.cache/bow-alsa` —— 放 `/tmp` 会被清掉),再 `LD_LIBRARY_PATH=<解包的 usr/lib>`(与 README 的 `SMOKE_LD_LIBRARY_PATH` 同一招) |
 | `npm run test:e2e:tabid` | 长按 Shift 的 tabId 徽标 E2E:真 Electron + CDP —— 在**页面 target** 上发裸 `Shift` 的 `rawKeyDown`(验证修饰键确实会触发主进程 `before-input-event`)、短按 60ms 不显示、长按后 overlay target 里出现徽标、浮层视图尺寸 = 紧包 bounds、徽标几何 = 窗格中心、点一下 `readClipboardText()` 拿到纯数字 id、松开后消失、已有浮层时不抢;再分屏一次验「每个窗格各一个徽标」 |
 | `npm run test:e2e:termcwd` | 终端「工作目录」全链路 E2E:真 Electron + 真 zsh —— 验启动目录已在标题/台账里一致,然后用 `window.__bowTerminal.send('cd /tmp\r')` 真敲一条 `cd`,断言台账 `cwd`、`TabInfo.title`(经 `page-title-updated`)、以及按住 Shift 的徽标第二行三处一起跟着变。这条盖住了单测盖不到的四段:shell 的 OSC 7 → 主进程剥出 → 台账广播 → 标题/徽标 |
 | `npm run mcp` / `mcp:http` | 经 `open-bow.mjs` 以 stdio / HTTP 模式启动 |
@@ -1147,8 +1144,8 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `ensure-electron.mjs` | postinstall:确保 electron 二进制就位(走镜像) |
 | `mcp-smoke.mjs` | 真机冒烟(405 行) |
 | `e2e-device-inspect.mjs` + `fixtures/fake-phone-{,adb,device}.mjs` | 设备检查插件的假手机 E2E:`fake-phone-adb.mjs` 仿 adb 输出并在 `forward` 时拉起 `fake-phone-device.mjs`(HTTP `/json` + WS CDP,并把收到的每条命令写进 `cdp-log.jsonl`),驱动脚本用 MCP 客户端跑 11 个 `device_*` 工具,并用 bow 自己的 `--remote-debugging-port` 往手机 DevTools 前端 target 发 `Ctrl+Shift+→` 验分屏 |
-| `install-pi-agent-state.mjs` | 写 pi 的状态桥扩展;源是 **pi 插件包**里的 `packages/pi-bow/extensions/bow-agent-state.ts`(单文件、无运行时依赖、jiti 直接跑;它必须**自包含** —— 会被单独复制到 `~/.pi/agent/extensions/`,这条不变式由 `tests/piBridgeExtension.test.ts` 钉住)。整包接入走 `pi install ./packages/pi-bow`(`npm run pi:install-plugin`),那样还顺带拿到 MCP 自动注册(`pi.registerMcpServer`,不写 `mcp.json`)与 `/bow` 命令。未安装时的降级:只有「正在执行」角标(靠 pi 内建的 `terminal.showTerminalProgress`)。打包后的应用里**没有这个脚本**:设置页的一键接入走 `src/plugins/terminal/piBridge.ts`(同一套规则,读同一份源) |
-| `e2e-agent-status.mjs` | 代理状态 E2E:不装 MCP、不用真 pi,全程 CDP —— chrome target 开终端页、终端页 `window.__bowTerminal.send` 敲命令、主进程 inspector target 驱动 `__bowNotifyClick` 并读 `BOW_NOTIFY_LOG`、设置页 target 点一键接入的按钮 |
+| `install-pi-agent-state.mjs` | 写 pi 的状态桥扩展;源是 **pi 插件包**里的 `packages/pi-bow/extensions/bow-agent-state.ts`(单文件、无运行时依赖、jiti 直接跑;它必须**自包含** —— 会被单独复制到 `~/.pi/agent/extensions/`,这条不变式由 `tests/piBridgeExtension.test.ts` 钉住)。整包接入走 `pi install ./packages/pi-bow`(`npm run pi:install-plugin`),那样还顺带拿到 MCP 自动注册(`pi.registerMcpServer`,不写 `mcp.json`)与 `/bow` 命令。未安装时的降级:只有「正在执行」角标(靠 pi 内建的 `terminal.showTerminalProgress`)。**这是安装状态的唯一入口** —— 应用内不写文件,设置页只显示这条命令(打包版里既没有 `scripts/` 也没有 node,替用户写进一个它验证不了的位置只会装错地方)。行为(幂等 / 归属标记 / 卸载只删自己那个)由 `tests/installPiAgentState.test.ts` 跑真脚本钉住 |
+| `e2e-agent-status.mjs` | 代理状态 E2E:不装 MCP、不用真 pi,全程 CDP —— chrome target 开终端页、终端页 `window.__bowTerminal.send` 敲命令、主进程 inspector target 驱动 `__bowNotifyClick` 并读 `BOW_NOTIFY_LOG`、设置页 target 断言 Pi 联动那条安装命令与复制按钮 |
 | `e2e-herd.mjs` | 牧群面板 E2E:真 Electron + 真 pty + 真台账(代理是假的,一条 `printf` 把 OSC 打进 pty)。验 `window.browserAPI.plugins.invoke('terminal', …)` 的六个新方法与面板:按钮计数/高亮 → 浮层里的行与注意力排序 → 点一行走 `pages.activate` 并关面板 → 关会话后列表/计数跟着变。⚠️ 认 chrome target 必须**正面**匹配 `/renderer/index.html`:标签页也是 `type: 'page'`,黑名单式过滤会选中普通网页(那边的 `window.browserAPI` 是 undefined) |
 | `e2e-tab-id-reveal.mjs` | 长按 Shift 的 tabId 徽标 E2E(见上表);几何常量**独立写死**在脚本里(真机断言不该跟 `@shared/tabIdBadge` 共用一份数) |
 | `e2e-terminal-cwd.mjs` | 终端工作目录全链路 E2E(见上表);与 `e2e-tab-id-reveal.mjs` 一样只在 chrome target 上取数,认 target 必须**正面**匹配 `/renderer/index.html`(内部页面也挂 `browserAPI`) |

@@ -33,8 +33,6 @@ import { BOW_SIGNAL_VERSION, OscSignalParser } from '@shared/agentState'
 import type { AgentSignal } from '@shared/agentState'
 import { TERMINAL_RUN_EVENT, parseTerminalRunRequest } from '@shared/terminalRun'
 import type { TerminalRunRequest } from '@shared/terminalRun'
-import { installPiBridge, piBridgeStatus, uninstallPiBridge } from './piBridge'
-import type { PiBridgeEnv, PiBridgeIo } from './piBridge'
 import { SessionHub } from './remote/hub'
 import { PiChatHub } from './remote/piChat'
 import { RemoteAuth, createAuthKey } from './remote/auth'
@@ -170,26 +168,6 @@ function toPositiveInt(value: unknown, fallback: number, min: number, max: numbe
   const n = typeof value === 'number' ? value : Number(value)
   if (!Number.isFinite(n)) return fallback
   return Math.min(max, Math.max(min, Math.round(n)))
-}
-
-/**
- * 「一键接入 pi 状态桥」的真 fs 适配(纯逻辑在 `./piBridge`,I/O 从这里注入)。
- * `readFile` 失败返回 null(而不是抛),因为上层先 `exists` 再读,读不到只可能是权限/编码问题。
- */
-function realPiBridgeIo(): PiBridgeIo {
-  return {
-    exists: (path) => existsSync(path),
-    readFile: (path) => {
-      try {
-        return readFileSync(path, 'utf-8')
-      } catch {
-        return null
-      }
-    },
-    writeFile: (path, content) => writeFileSync(path, content, 'utf-8'),
-    mkdirp: (path) => void mkdirSync(path, { recursive: true }),
-    remove: (path) => rmSync(path)
-  }
 }
 
 function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
@@ -900,23 +878,8 @@ function createTerminalPlugin(deps: TerminalPluginDeps = {}): PluginMain {
       // 远程登录 cookie 的签名密钥(首次生成)
       remoteKeyStore = ctx.storage<{ key: string }>({ file: 'terminal-remote.json', defaults: { key: '' } })
 
-      // ---------- pi 状态桥的一键接入(设置页 → 终端)----------
-      // 源取自应用根目录下的 `packages/pi-bow/extensions/bow-agent-state.ts`(必须进 build.files,
-      // 否则打包版里 sourceAvailable 为 false —— 设置页会把这句话显示出来,不静默失败)。
-      const bridgeIo = realPiBridgeIo()
-      const bridgeEnv = (): PiBridgeEnv => ({
-        home: homedir(),
-        appPath: app.getAppPath(),
-        env: process.env,
-        // 只有 Windows 上才存在「bow 在 Windows、pi 在 WSL2」这种两个系统的情况(见 piBridge.wslHint)
-        platform: process.platform
-      })
-      const asForce = (opts: unknown): boolean => !!(opts as { force?: boolean } | undefined)?.force
-      ctx.ipc.handle('piBridgeStatus', () => piBridgeStatus(bridgeIo, bridgeEnv()))
-      ctx.ipc.handle('piBridgeInstall', (opts: unknown) => installPiBridge(bridgeIo, bridgeEnv(), { force: asForce(opts) }))
-      ctx.ipc.handle('piBridgeUninstall', (opts: unknown) =>
-        uninstallPiBridge(bridgeIo, bridgeEnv(), { force: asForce(opts) })
-      )
+      // ---------- pi 状态桥 ----------
+      // 扩展的安装不在应用里做:设置页只显示 `npm run pi:install-status`(scripts/install-pi-agent-state.mjs)。
       ctx.ipc.handle('attach', (input: { tabId?: unknown; cols?: unknown; rows?: unknown }) => attach(input ?? {}))
       ctx.ipc.handle('write', (tabId: unknown, data: unknown) => write(tabId, data))
       ctx.ipc.handle('resize', (tabId: unknown, cols: unknown, rows: unknown) => resize(tabId, cols, rows))

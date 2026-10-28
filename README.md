@@ -659,23 +659,23 @@ npm run test:mcp:http
   - **任务完成**(pi 的 `agent_settled` —— 重试/压缩/排队续跑都真的结束了)→ 弹「pi 已完成」系统通知,带上会话名;
   - **点系统通知 = 进入对应标签**:切标签 + 把窗口提到前台 + 把键盘焦点交给那个终端(标签已经关了则什么都不做);
   - 通知一律 **silent**(不出声),不看窗口是否聚焦(在 bow 里也照发)。
-  接入(**三选一,别同时装**):
+  接入(**二选一,别同时装**):
   ① 整包(推荐)`pi install <bow 仓库>/packages/pi-bow` —— 顺带拿到 MCP 自动注册、skill 与 `/bow` 命令;
-  ② **设置页 → 终端 → Pi 联动 → 安装**(离线可用,只装这一个文件;装完在 pi 里重开或 `/reload` 生效);
-  ③ 命令行 `npm run pi:install-status`(幂等,`--uninstall` 可撤;需要 pi ≥ 0.84.4)。
-  ① 与 ②③ 同时装的话,同一个 pi 进程里会有两个扩展都发 OSC(状态变化重复上报一遍)——bow 侧幂等,只是噪音。
+  ② 单装这一个文件:`npm run pi:install-status`(幂等,`--uninstall` 可撤,`--dry-run` 只看会做什么;需要 pi ≥ 0.84.4)。
+     设置页 → 终端 → **Pi 联动** 显示的就是这条命令(带复制按钮),**应用自己不写文件** ——
+     打包版里既没有 `scripts/` 也没有 node,替用户写进一个它验证不了的位置只会装错地方。
+  ① 与 ② 同时装的话,同一个 pi 进程里会有两个扩展都发 OSC(状态变化重复上报一遍)——bow 侧幂等,只是噪音。
   不想动 pi 配置、只想试一次:`pi --extension <仓库>/packages/pi-bow/extensions/bow-agent-state.ts`。
   - 📁 **pi 会把 `~/.pi/agent/extensions/` 下的每个 `*.ts` 都加载**,没有登记表 —— 所以这个目录里
     可能同时躺着**别的宿主**留下的同类扩展(比如 herdr 装的那份)。这不是重复:每个扩展自己拿环境变量
     门禁(bow 看 `BOW_TERMINAL=1`,herdr 看 `HERDR_ENV=1`),在别人的终端里一步就返回、什么都不做;
     bow 的安装/卸载只碰**自己那个文件**(文件名 + `managed by bow` 归属标记),绝不改别人的扩展。
-  - ⚠️ **pi 与 bow 不在同一个系统里时**(典型:Windows 的 `bow.exe` + WSL 的 pi),要装两份到认知不一的地址:
-    设置页的按钮写的是 **`bow` 进程自己的家目录**(Windows 的 `%USERPROFILE%\.pi\agent\extensions`),
-    而发行版里的 pi 读的是 **WSL 的 `~/.pi/agent/extensions`** —— 后者要自己放一份。
-    **这一段不需要你手写命令**:只要你的终端配置里有 `wsl.exe`,设置页就会把那条命令显示出来并可一键复制
-    (它是拿主进程算出的 `/mnt/<盘>/…` 路径拼的,见 `src/plugins/terminal/piBridge.ts` 的 `wslHint`);
-    命令行等价写法:从 WSL 里 `cp /mnt/c/…/bow/packages/pi-bow/extensions/bow-agent-state.ts ~/.pi/agent/extensions/`,
-    或在 WSL 里直接跑 `node scripts/install-pi-agent-state.mjs`(整包则要在 WSL 里能访问到那个仓库路径,再 `pi install`)。
+  - ⚠️ **pi 与 bow 不在同一个系统里时**(典型:Windows 的 `bow.exe` + WSL 的 pi):
+    脚本写的是**执行它那个系统**的家目录,所以**在跑 pi 的那个系统里跑它** ——
+    pi 在 WSL2 就在 WSL2 的终端里跑 `node scripts/install-pi-agent-state.mjs`
+    (仓库在 Windows 盘上时路径是 `/mnt/c/…`;整包则要在 WSL 里能访问到那个仓库路径,再 `pi install`)。
+    这正是应用内一键安装做不到的事:它只知道 bow 进程自己的家目录(`%USERPROFILE%\.pi\agent\extensions`),
+    发行版里的 pi 读的却是 WSL 的 `~/.pi/agent/extensions`。
   - ⚠️ **`shell` 是 `wsl.exe` 时**:bow 会自动把 `BOW_TERMINAL` 列进 `WSLENV`(否则 Windows 的变量进不了发行版,
     扩展会认不出 bow —— 实测:不列是空、列了是 `1`)。若你用别的容器/远程终端做类似的事,就在那边 `export BOW_TERMINAL=1`。
   **不装也能用一半**:靠 pi 内建的 `terminal.showTerminalProgress`(默认关)至少能显示「正在执行」,
@@ -829,11 +829,10 @@ npm run test:mcp:http
 - **快捷键**:按分类列出全部键位(标签 / 地址栏与导航 / 分屏与布局 / 视图与面板 / 终端 / 笔记 / 窗口),纯参考清单、**不注册任何热键**;macOS 上的 `⌘` 差异与平台受限组合(`Ctrl+←/→`)在条目里单独注明。`Ctrl+Shift+方向` 分屏 / `Alt+Shift+方向` 调大小**在设置页里也管用**(由页面自己调 IPC;输入框里仍是按词选择)。
 - **插件管理**:运行时启停(立即生效并持久化)、能力标签、核心提示;核心插件(如终端)的开关置灰、不可停用;有设置分区的插件可一键跳到对应分区。
 - **插件设置**:CORS 放行 / 浏览历史 / **书签**(导入导出) / 终端 / 笔记 / 下载 / **密码**(加密备份的导出与导入) / **编辑器** / 番茄钟 等分区直接内联展示(取消旧版的嵌套弹窗)。
-  「终端」分区里有 shell 配置与外观、**AI 控制**(是否把 `terminal_*` 工具暴露给 AI),还有 **Pi 联动** —— 一个按钮把扩展装进 pi(或卸载),状态角标、系统通知、
-  手机上的对话页都靠它;装完终端里的 pi 就会把「执行中 / 等待确认 / 已完成」显示成标签角标与系统通知(见「终端」一节);
-  如果你的终端配置里有 `wsl.exe`(bow 在 Windows、pi 在 WSL2),这一段还会多出一条
-  **「如果使用 WSL2,请执行以下命令将扩展安装到 WSL2 中」** 的提醒 —— 命令直接可复制粘贴,
-  因为上面那个按钮装的是 bow 自己那个系统的家目录,发行版里的 pi 看不到(见「终端」一节的跨系统说明)。
+  「终端」分区里有 shell 配置与外观、**AI 控制**(是否把 `terminal_*` 工具暴露给 AI),还有 **Pi 联动** —— 状态角标、系统通知、
+  手机上的对话页都靠它;装完终端里的 pi 就会把「执行中 / 等待确认 / 已完成」显示成标签角标与系统通知(见「终端」一节)。
+  这一段只给**一条可复制的命令**(`npm run pi:install-status`),不在应用里代你写文件:扩展装到哪个家目录取决于
+  你在哪个系统里跑 pi,只有你自己知道(见「终端」一节的跨系统说明)。
   「笔记」分区可调**正文字号**,并**显示**从 `logseq/config.edn` 读到的目录 / 日期格式 / 默认模板与索引统计,还提供「重建索引」——
   改模板请去 Logseq 里改配置(这份插件从不写回 `config.edn`);收藏在笔记页里用标题旁的星标管理。
 
@@ -1104,9 +1103,9 @@ BOW_E2E_BIN=dist/linux-unpacked/bow npm run test:e2e:agent                      
   而且**点通知 ≠ 回答弹框**(角标仍停在 blocked,直到 pi 报出下一个状态);
 - 清理:关标签后角标与在途的等待通知都不留。
 
-后半段还验**设置页 → 终端 → Pi 联动**的一键接入:`PI_CODING_AGENT_DIR` 指向临时目录,
-脚本点侧栏进分区、点「安装」→ 断言文件真的落盘且带 `managed by bow` 标记 → 点「卸载」→ 断言文件没了。
-`BOW_E2E_BIN` 指向打包后的可执行文件时,额外验一遍「源码能从 `app.asar` 里读到」(就靠 `build.files` 里的 `packages/pi-bow/extensions`)。
+后半段还验**设置页 → 终端 → Pi 联动**:点侧栏进分区,断言那条安装命令(`npm run pi:install-status`)
+真的显示出来、旁边有复制按钮。安装脚本本身在应用里不做,它的行为(幂等 / 归属 / 卸载)由
+`tests/installPiAgentState.test.ts` 跑真脚本覆盖,所以 E2E 不再碰真实家目录,也不需要 `PI_CODING_AGENT_DIR`。
 
 与设备 E2E 一样:独立 userData + 独立调试端口,不会碰你正在跑的 bow。
 
@@ -1143,7 +1142,7 @@ npm run build && npm run test:e2e:herd
 
 代理状态联动也能无显示环境测三层:`tests/agentState.test.ts`(OSC 解析、角标映射与通知文案,含 chunk 切开 / 非本协议序列放行 / `9;4` 降级)、
 `tests/agentNotify.test.ts`(假时钟下通知时机:撤回 / 角标过期)、`tests/systemNotify.test.ts`(假 electron 验证 `Notification` 的构造参数 / click 接线 / 缓存与失败不上抛)、
-`tests/terminalAgentSignal.test.ts`(假 pty 跑真插件代码)、`tests/piBridge.test.ts`(真 fs + 临时目录验证一键接入的归属/幂等)。
+`tests/terminalAgentSignal.test.ts`(假 pty 跑真插件代码)、`tests/installPiAgentState.test.ts`(真跑安装脚本:归属标记 / 幂等 / 卸载只删自己那个)。
 端到端那层(`npm run test:e2e:agent`)需要能跑 Electron 的机器或 `LD_LIBRARY_PATH` 补库(见上)。
 
 ## 编辑器 E2E(真 nvim)
@@ -1184,7 +1183,7 @@ src/
                  代理状态协议/角标映射与通知文案(agentState.ts)、
                  书签树/历史/模糊匹配/建议合并/URL 匹配纯逻辑
   packages/pi-bow/ pi 插件包(**唯一真相源**):状态桥扩展、bow MCP 自动注册、/bow 命令、能力索引 skill
-                 (装法:pi install ./packages/pi-bow,或设置页→终端→Pi 联动)
+                 (装法:pi install ./packages/pi-bow,或 npm run pi:install-status)
 tests/           vitest 单元测试(url 解析、内部页面、设置导航、书签树、历史、模糊建议、插件注册表/匹配/边界、代理状态与通知)
 ```
 

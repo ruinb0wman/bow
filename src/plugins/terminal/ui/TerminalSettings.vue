@@ -3,8 +3,7 @@
  * 终端设置分区(设置页 → 终端):外观(字体族 / 字号 / 滚动缓冲)+ shell 配置列表 + Pi 联动。
  * 全部即时保存,没有保存按钮 —— 与其它插件分区一致。
  *
- * `data-bridge-state` / `data-bridge-action` 是给 E2E(`scripts/e2e-agent-status.mjs`)用的钩子:
- * 一键接入是个「点一下真的会写文件到用户家目录」的动作,靠文案选按钮太脆。
+ * `data-bridge-*` 是给 E2E(`scripts/e2e-agent-status.mjs`)用的钩子:靠文案选元素太脆。
  */
 import { RButton } from '@ruinb0w/ui'
 import { computed, onMounted, ref } from 'vue'
@@ -13,17 +12,10 @@ import {
   FONT_SIZE_RANGE,
   SCROLLBACK_RANGE,
   formatArgsLine,
-  isWslShell,
   newProfileId,
   parseArgsLine
 } from '@plugins/terminal/shared'
-import type {
-  PiBridgeResult,
-  PiBridgeStatus,
-  TerminalCandidate,
-  TerminalProfile,
-  TerminalSettings
-} from '@plugins/terminal/shared'
+import type { TerminalCandidate, TerminalProfile, TerminalSettings } from '@plugins/terminal/shared'
 
 const api = window.browserAPI
 
@@ -32,10 +24,6 @@ const candidates = ref<TerminalCandidate[]>([])
 const choice = ref('')
 
 const profiles = computed(() => settings.value?.profiles ?? [])
-/** 配了 WSL 的终端配置的名字(有它就说明用户会把 pi 跑在 WSL2 里 → 显示那条「装进 WSL2」的说明) */
-const wslProfiles = computed(() =>
-  profiles.value.filter((p) => isWslShell(p.shell ?? '')).map((p) => p.name)
-)
 const fontFamilyDraft = ref('')
 const argsDraft = ref<Record<string, string>>({})
 
@@ -103,67 +91,26 @@ onMounted(async () => {
   settings.value = await invoke<TerminalSettings>('getSettings')
   syncDrafts()
   candidates.value = await invoke<TerminalCandidate[]>('listCandidates')
-  await refreshBridge()
 })
 
 // ---------- Pi 联动(把扩展装进 pi:状态角标 / 通知 / 手机对话)----------
+// 安装不在应用里做(那个扩展只是仓库里一个文件),这里只显示该跑哪条命令:
+// 打包版里既没有 `scripts/` 也没有 node,写完也验证不了,不如把入口交给仓库脚本。
+const PI_BRIDGE_COMMAND = 'npm run pi:install-status'
 
-const bridge = ref<PiBridgeStatus | null>(null)
-const bridgeBusy = ref(false)
-const bridgeMessage = ref('')
-
-/** 界面上那句话:先报「能不能做」,再报「做没做过」 */
-async function refreshBridge(): Promise<void> {
-  bridge.value = await invoke<PiBridgeStatus>('piBridgeStatus')
-}
-
-function bridgeStateText(): string {
-  const b = bridge.value
-  if (!b) return '检查中…'
-  if (!b.sourceAvailable) return '不可用:这个构建里没有扩展源码(打包漏配 build.files)'
-  if (b.foreign) return '目标文件已存在且不是 bow 装的'
-  if (!b.installed) return b.agentDirExists ? '未接入' : '未接入(没检测到 pi 的 agent 目录,也可以先装)'
-  return b.upToDate ? '已接入(最新)' : '已接入,有新版本可更新'
-}
-
-function bridgeButtonText(): string {
-  const b = bridge.value
-  if (!b?.installed) return '安装'
-  if (b.foreign) return '覆盖'
-  return b.upToDate ? '重装' : '更新'
-}
-
-async function runBridge(kind: 'install' | 'uninstall'): Promise<void> {
-  if (bridgeBusy.value) return
-  bridgeBusy.value = true
-  bridgeMessage.value = ''
+/** 渲染层的 navigator.clipboard 在内部页面可用(见 DeviceInspectPanel) */
+const commandCopied = ref(false)
+let commandCopiedTimer: number | undefined
+async function copyBridgeCommand(): Promise<void> {
   try {
-    // 覆盖「不是 bow 装的」同名文件需要显式 force —— 界面上那个按钮写明了「覆盖」
-    const force = bridge.value?.foreign === true
-    const method = kind === 'install' ? 'piBridgeInstall' : 'piBridgeUninstall'
-    const result = await invoke<PiBridgeResult>(method, { force })
-    bridge.value = result.status
-    bridgeMessage.value = result.ok ? result.message : (result.status.error ?? result.message)
-  } finally {
-    bridgeBusy.value = false
-  }
-}
-
-/** 「WSL2 请执行这条命令」里的命令复制(渲染层的 navigator.clipboard 在内部页面可用,见 DeviceInspectPanel) */
-const wslCopied = ref(false)
-let wslCopiedTimer: number | undefined
-async function copyWslCommand(): Promise<void> {
-  const command = bridge.value?.wsl?.command
-  if (!command) return
-  try {
-    await navigator.clipboard.writeText(command)
-    wslCopied.value = true
-    if (wslCopiedTimer) window.clearTimeout(wslCopiedTimer)
-    wslCopiedTimer = window.setTimeout(() => {
-      wslCopied.value = false
+    await navigator.clipboard.writeText(PI_BRIDGE_COMMAND)
+    commandCopied.value = true
+    if (commandCopiedTimer) window.clearTimeout(commandCopiedTimer)
+    commandCopiedTimer = window.setTimeout(() => {
+      commandCopied.value = false
     }, 2000)
   } catch {
-    bridgeMessage.value = '复制失败,请手动选中上面的命令'
+    /* 复制不了就算了：命令就显在旁边（`user-select: all`），点一下就全选 */
   }
 }
 </script>
@@ -315,44 +262,19 @@ async function copyWslCommand(): Promise<void> {
           装一个 pi 扩展,拿到两样东西:终端标签上的<strong>状态角标 + 系统通知</strong>
           (正在执行 / 等你确认 / 已完成),以及手机上那个<strong>对话页</strong>。
         </div>
-        <div class="term-bridge-row">
-          <span
-            class="term-bridge-state"
-            data-bridge-state
-            :class="{ ok: bridge?.upToDate, warn: !!bridge && !bridge.upToDate }"
-          >
-            {{ bridgeStateText() }}
-          </span>
-          <RButton size="small" data-bridge-action="install" :disabled="bridgeBusy || !bridge?.sourceAvailable" :title="bridge?.foreign ? '目标文件不是 bow 装的,点击会覆盖它' : '把扩展写进 pi 的扩展目录'" @click="runBridge('install')">
-            {{ bridgeButtonText() }}
-          </RButton>
-          <RButton size="small" type="danger" plain v-if="bridge?.installed" data-bridge-action="uninstall" :disabled="bridgeBusy" title="删除 bow 装的那个扩展文件(不动别的扩展)" @click="runBridge('uninstall')">
-            卸载
+        <div class="term-bridge-cmd">
+          <code data-bridge-command>{{ PI_BRIDGE_COMMAND }}</code>
+          <RButton size="small" data-bridge-action="copy-command" title="复制这条命令" @click="copyBridgeCommand()">
+            {{ commandCopied ? '已复制' : '复制' }}
           </RButton>
         </div>
-        <div v-if="bridge" class="term-bridge-path">{{ bridge.target }}</div>
         <div class="pbm-tools hint">
+          在 <strong>跑 pi 的那个系统</strong>里、bow 仓库根目录跑它(pi 在 WSL2 就在 WSL2 的终端里跑——
+          它写的是执行者的 <code>~/.pi/agent/extensions/bow-agent-state.ts</code>)。
+          重复跑是更新,<code>--uninstall</code> 删除,<code>--dry-run</code> 只看会做什么。
           装完在 pi 里 <code>/reload</code> 或重开终端生效。不装也能用一半:pi 自己打开
           <code>terminal.showTerminalProgress</code> 只有「正在执行」角标,没有通知与手机对话。
         </div>
-
-        <div v-if="bridge?.wsl && wslProfiles.length" class="term-bridge-wsl" data-bridge-wsl>
-          <div class="term-bridge-wsl-head">WSL 里的 pi 要另装一份</div>
-          <div class="pbm-tools hint">
-            上面的按钮写的是 <code>{{ bridge.agentDir }}</code>;跑在 WSL 里的 pi 读的是发行版的
-            <code>~/.pi/agent/extensions</code>,看不到那一份(你的 <code>{{ wslProfiles.join(' / ') }}</code> 配置就是这种情况)。
-            把下面这条命令粘到 <strong>WSL 的终端</strong>里执行:
-          </div>
-          <div class="term-bridge-cmd">
-            <code data-bridge-wsl-command>{{ bridge.wsl.command }}</code>
-            <RButton size="small" data-bridge-action="copy-wsl" title="复制这条命令,粘到 WSL 终端里执行" @click="copyWslCommand()">
-              {{ wslCopied ? '已复制' : '复制' }}
-            </RButton>
-          </div>
-          <div class="pbm-tools hint">然后在 WSL 里的 pi 中 <code>/reload</code> 或重开终端。</div>
-        </div>
-
-        <div v-if="bridgeMessage || bridge?.error" class="pbm-tools hint">{{ bridgeMessage || bridge?.error }}</div>
       </div>
     </div>
   </template>
@@ -441,51 +363,6 @@ async function copyWslCommand(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 6px;
-}
-
-.term-bridge-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.term-bridge-state {
-  flex: 1;
-  min-width: 0;
-  font-size: 12px;
-  color: var(--fg-dim);
-}
-
-/* 状态色与标签角标一致:已接入=绿、待处理=黄(见 src/renderer/src/style.css 的 .tab-agent) */
-.term-bridge-state.ok {
-  color: #7ec96a;
-}
-
-.term-bridge-state.warn {
-  color: #e2b93d;
-}
-
-.term-bridge-path {
-  font-family: ui-monospace, monospace;
-  font-size: 11px;
-  color: var(--fg-dim);
-  overflow-wrap: anywhere;
-}
-
-.term-bridge-wsl {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg2);
-}
-
-.term-bridge-wsl-head {
-  font-size: 12px;
-  font-weight: 600;
-  color: #e2b93d;
 }
 
 /* 命令要能一眼看清并整行选中:横向可滚,不折行打断路径 */

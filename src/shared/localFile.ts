@@ -55,8 +55,7 @@ export function expandHome(input: string, home: string): string {
  * 按默认的 automount root(`/mnt`)换算;不是盘符路径(UNC `\\wsl$\…`、POSIX 路径)时返回 null ——
  * 那种情况给不出一条可靠路径,宁可让调用方报错,也不猜。
  *
- * 两个调用方:终端插件的 pi 桥接提示(`plugins/terminal/piBridge.ts`,已知的唯一真相源),
- * 以及编辑器插件的 `pathStyle: 'wsl'`。
+ * 调用方:编辑器插件的 `pathStyle: 'wsl'`、ok 插件的路径框。
  */
 export function windowsPathToWsl(path: string): string | null {
   const m = /^([A-Za-z]):[\\/](.+)$/.exec(path)

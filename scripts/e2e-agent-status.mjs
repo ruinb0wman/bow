@@ -38,8 +38,6 @@ const dir = process.env.BOW_E2E_DIR ?? join(tmpdir(), 'bow-e2e')
 const run = process.pid
 const userdata = join(dir, `agent-userdata-${run}`)
 const fakePi = join(dir, `fake-pi-${run}.mjs`)
-/** 把 pi 的 agent 目录钉在临时目录里:一键接入那段**绝不能**碰用户真实的 ~/.pi */
-const piAgentDir = join(dir, `pi-agent-${run}`)
 const debugPort = 9700 + (run % 200)
 /**
  * 主进程的 Node inspector 端口(`--inspect`)。系统通知从渲染层观测不到,两条路都走它:
@@ -142,7 +140,7 @@ const child = spawn(
   {
     cwd: root,
     // BOW_NOTIFY_LOG 打开系统通知的测试缝(JSONL + __bowNotifyClick),见 src/main/systemNotify.ts
-    env: { ...process.env, BOW_E2E_DIR: dir, PI_CODING_AGENT_DIR: piAgentDir, BOW_NOTIFY_LOG: notifyLog },
+    env: { ...process.env, BOW_E2E_DIR: dir, BOW_NOTIFY_LOG: notifyLog },
     stdio: 'ignore'
   }
 )
@@ -171,7 +169,6 @@ async function cleanup() {
   }
   await sleep(400)
   rmSync(userdata, { recursive: true, force: true })
-  rmSync(piAgentDir, { recursive: true, force: true })
 }
 
 const targets = async () => {
@@ -366,9 +363,10 @@ async function main() {
   }, 10000)
   check(cleaned === true, '关标签后角标与在途的等待通知都清掉了')
 
-  // ---------------------------------------------------------------- 设置页「Pi 状态联动」一键接入
-  // 这一段跟 pi 无关:它验的是「点一下真的把文件写进 pi 的扩展目录」(PI_CODING_AGENT_DIR 指向临时目录)
-  console.log('\n--- 设置页一键接入 ---')
+  // ---------------------------------------------------------------- 设置页「Pi 联动」的脚本提示
+  // 安装本身不再由应用代做(唯一入口是仓库脚本 `npm run pi:install-status`),所以这里只验那句命令
+  // 真的显示出来、复制按钮在。脚本的行为(幂等 / 归属 / 卸载)由 tests/installPiAgentState.test.ts 跑真脚本覆盖。
+  console.log('\n--- 设置页 Pi 联动提示 ---')
   await chromeEval("window.browserAPI.createTab('bow://settings')")
   const settingsTarget = await waitFor(() => findTarget('settings.html'), 15000)
   check(!!settingsTarget, '找到设置页 target', settingsTarget?.url)
@@ -386,50 +384,13 @@ async function main() {
   }, 15000)
   check(navOk === true, '侧栏点进「终端」分区')
 
-  const bridgeState = () => settingsEval("document.querySelector('[data-bridge-state]')?.innerText ?? ''")
-  const before = await waitFor(async () => {
-    const text = await bridgeState()
-    // 状态是异步拉的:先渲染「检查中…」,得等到真结果 —— 否则打包版会在这里误判(实测会 flake)
-    return text && !/检查中/.test(text) ? text : null
+  const command = await waitFor(async () => {
+    const text = await settingsEval("document.querySelector('[data-bridge-command]')?.innerText ?? ''")
+    return /npm run pi:install-status/.test(text) ? text : null
   }, 10000)
-  check(/未接入/.test(String(before)), '初始状态是「未接入」', before)
-
-  const installedFile = join(piAgentDir, 'extensions', 'bow-agent-state.ts')
-  // 打包版专用判据:源必须能**从 asar 里**读到(也就是 build.files 里那个 packages/pi-bow/extensions 真的生效了)
-  const sourceReadable = await settingsEval(
-    "window.browserAPI.plugins.invoke('terminal','piBridgeStatus').then((s) => s.sourceAvailable && s.source)"
-  )
-  check(!!sourceReadable, 'bow 能读到自带的扩展源码(打包版 = 从 asar 里读)', sourceReadable)
-
-  // 「WSL2 请执行这条命令」那段说明:只在 Windows(bow 与 pi 可能是两个系统)且用户配了 WSL 终端时才出现。
-  // 这条 E2E 跑在 Linux 上,所以这里断言的是**不该出现**(免得给不存在 WSL 的人看一段误导的提示);
-  // 「Windows 上会给、且命令里的 /mnt/<盘> 换算正确」由 tests/piBridge.test.ts 的纯函数用例覆盖。
-  const wslField = await settingsEval(
-    "window.browserAPI.plugins.invoke('terminal','piBridgeStatus').then((s) => Object.hasOwn(s, 'wsl'))"
-  )
-  check(wslField === false, '非 Windows 时状态里没有 wsl 字段(bow 与 pi 在同一个系统里)', String(wslField))
-  const wslNote = await settingsEval("!!document.querySelector('[data-bridge-wsl]')")
-  check(wslNote === false, '非 Windows 时不显示「装进 WSL2」的说明')
-
-  await settingsEval("document.querySelector('[data-bridge-action=install]').click()")
-  const after = await waitFor(async () => {
-    const text = await bridgeState()
-    return /最新/.test(text) ? text : null
-  }, 10000)
-  check(!!after, '点「安装」后状态变成已接入(最新)', after)
-  check(existsSync(installedFile), '扩展文件真的写进了 pi 的扩展目录', installedFile)
-  check(
-    existsSync(installedFile) && readFileSync(installedFile, 'utf-8').includes('managed by bow'),
-    '落盘的文件带 managed by bow 标记(这就是卸载时的归属判据)'
-  )
-
-  await settingsEval("document.querySelector('[data-bridge-action=uninstall]').click()")
-  const removed = await waitFor(async () => {
-    const text = await bridgeState()
-    return /未接入/.test(text) ? text : null
-  }, 10000)
-  check(!!removed, '点「卸载」后回到未接入', removed)
-  check(!existsSync(installedFile), '文件真的被删掉了')
+  check(!!command, 'Pi 联动里显示安装命令', command)
+  const copyButton = await settingsEval("!!document.querySelector('[data-bridge-action=copy-command]')")
+  check(copyButton === true, '那条命令旁边有复制按钮')
 }
 
 try {

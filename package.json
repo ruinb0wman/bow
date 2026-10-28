@@ -14,8 +14,7 @@
     },
     "files": [
       "out/**/*",
-      "package.json",
-      "packages/pi-bow/extensions/bow-agent-state.ts"
+      "package.json"
     ],
     "asarUnpack": [
       "**/node_modules/node-pty/**"

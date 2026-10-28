@@ -4,15 +4,15 @@
  * 这个包不参与 bow 的构建(它是给 pi 加载的),所以没有类型检查与运行期覆盖兜底;
  * 它的**字符串常量与事件名**必须和 bow 侧逐字对上,否则表现是「什么都没发生」—— 最难查的那种。
  * 这里钉三类:①协议(OSC 前缀 / 版本 / 门禁)、②包的形状(manifest / 自包含 / skill 在包里)、
- * ③安装路径(包内源 ↔ 安装脚本 ↔ 设置页一键接入 ↔ `build.files`)。
+ * ③安装路径(包内源 ↔ `scripts/install-pi-agent-state.mjs`)。
  *
- * 状态机的行为(三态、done、去重)在 `packages/pi-bow/tests/bow-agent-state.test.ts` 里用假 pi 覆盖。
+ * 状态机的行为(三态、done、去重)在 `packages/pi-bow/tests/bow-agent-state.test.ts` 里用假 pi 覆盖,
+ * 安装脚本的行为(幂等 / 归属 / 卸载)在 `tests/installPiAgentState.test.ts` 里跑真脚本覆盖。
  */
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { BOW_OSC_KEY, BOW_OSC_CODE, BOW_SIGNAL_VERSION } from '../src/shared/agentState'
-import { PI_BRIDGE_FILENAME, PI_BRIDGE_MARKER, PI_BRIDGE_SOURCE_REL } from '../src/plugins/terminal/piBridge'
 
 const pkgRoot = new URL('../packages/pi-bow/', import.meta.url)
 const source = readFileSync(new URL('extensions/bow-agent-state.ts', pkgRoot), 'utf-8')
@@ -21,6 +21,11 @@ const manifest = JSON.parse(readFileSync(new URL('package.json', pkgRoot), 'utf-
   pi?: { extensions?: string[]; skills?: string[] }
 }
 const installer = readFileSync(new URL('../scripts/install-pi-agent-state.mjs', import.meta.url), 'utf-8')
+
+/** 安装约定的字面量:源文件名 / 目标文件名是同一个,归属标记是「这文件是不是 bow 装的」的唯一判据 */
+const BRIDGE_FILENAME = 'bow-agent-state.ts'
+const BRIDGE_MARKER = 'managed by bow'
+const BRIDGE_SOURCE_REL = 'packages/pi-bow/extensions/bow-agent-state.ts'
 
 describe('协议:pi 侧扩展与 bow 侧逐字一致', () => {
   it('OSC 前缀与协议版本', () => {
@@ -56,7 +61,7 @@ describe('包的形状', () => {
     expect(existsSync(new URL('skills/bow-browser/SKILL.md', pkgRoot))).toBe(true)
   })
 
-  it('扩展文件必须**自包含**:一键接入会把单个文件复制进 pi 的扩展目录', () => {
+  it('扩展文件必须**自包含**:安装脚本会把单个文件复制进 pi 的扩展目录', () => {
     // 复制之后相对路径会找不到,所以只允许 node: 内建与 pi 自己(仅类型导入)
     const specifiers = [...source.matchAll(/from\s+['"]([^'"]+)['"]/g)].map((m) => m[1])
     expect(specifiers.length).toBeGreaterThan(0)
@@ -67,26 +72,19 @@ describe('包的形状', () => {
   })
 })
 
-describe('安装路径:包内源 ↔ 安装脚本 ↔ 设置页一键接入 ↔ build.files', () => {
-  it('扩展源码里有归属标记(两份安装实现都靠它判断「这文件是不是 bow 装的」)', () => {
-    expect(source).toContain(PI_BRIDGE_MARKER)
+describe('安装路径:包内源 ↔ scripts/install-pi-agent-state.mjs', () => {
+  it('扩展源码里有归属标记(安装脚本靠它判断「这文件是不是 bow 装的」)', () => {
+    expect(source).toContain(BRIDGE_MARKER)
   })
 
   it('文件名/标记/源路径三处一致', () => {
     // 文件名:pi 只把该目录下的 .ts 当扩展;源文件名与目标文件名是同一个约定
-    expect(PI_BRIDGE_FILENAME).toBe('bow-agent-state.ts')
-    expect(installer).toContain(PI_BRIDGE_FILENAME)
+    expect(BRIDGE_FILENAME).toBe('bow-agent-state.ts')
+    expect(installer).toContain(BRIDGE_FILENAME)
     // 归属标记:脚本里的字面量必须与常量一致
-    expect(installer).toContain(`const marker = '${PI_BRIDGE_MARKER}'`)
-    // 源路径:脚本从仓库读,应用从 app.getAppPath() 读 —— 相对路径必须一致
-    expect(PI_BRIDGE_SOURCE_REL.join('/')).toBe('packages/pi-bow/extensions/bow-agent-state.ts')
+    expect(installer).toContain(`const marker = '${BRIDGE_MARKER}'`)
+    // 源路径:脚本从仓库根读这份唯一的源
+    expect(BRIDGE_SOURCE_REL).toBe('packages/pi-bow/extensions/bow-agent-state.ts')
     expect(installer).toContain("'packages', 'pi-bow', 'extensions', 'bow-agent-state.ts'")
-    expect(installer).toContain("'packages', 'pi-bow', 'extensions'")
-  })
-
-  it('打包配置里带着包内的状态桥源(否则打包版的一键接入会显示「没有扩展源码」)', () => {
-    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf-8'))
-    // 只要这一个文件:bow 从不加载 bow-mcp.ts / bow-command.ts,没必要把半个包打进产物
-    expect(pkg.build.files).toContain('packages/pi-bow/extensions/bow-agent-state.ts')
   })
 })
