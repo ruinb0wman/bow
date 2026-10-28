@@ -6,10 +6,11 @@
  * 导入用系统文件选择框选一份 JSON 并**整树替换**(校验 + 归一在 `normalizeImportedTree()`)。
  * 书签面板(星标旁边那个管理浮层)不再放导出按钮 —— 那是日常整理的地方,备份这类低频操作归设置页。
  */
-import { RButton } from '@ruinb0w/ui'
+import { RButton, RFormRow } from '@ruinb0w/ui'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Download, Upload } from '@lucide/vue'
 import { flatten } from '@shared/bookmarkTree'
+import { useFlash } from '@renderer/lib/useFlash'
 import type { BookmarkTree } from '@shared/types'
 import type { BookmarkExportResult, BookmarkImportResult } from '../shared'
 
@@ -21,9 +22,8 @@ const importArmed = ref(false)
 const exportPath = ref('')
 const summary = ref('')
 const error = ref('')
-const notice = ref('')
+const { notice, flash } = useFlash(2600)
 const unsubs: Array<() => void> = []
-let noticeTimer: number | undefined
 
 const counts = computed(() => {
   const flat = flatten(tree.value)
@@ -32,14 +32,6 @@ const counts = computed(() => {
     folders: flat.filter((b) => b.type === 'folder').length
   }
 })
-
-function flash(text: string): void {
-  notice.value = text
-  if (noticeTimer) window.clearTimeout(noticeTimer)
-  noticeTimer = window.setTimeout(() => {
-    notice.value = ''
-  }, 2600)
-}
 
 function apply(next: BookmarkTree): void {
   tree.value = next
@@ -93,21 +85,18 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   unsubs.forEach((u) => u())
-  if (noticeTimer) window.clearTimeout(noticeTimer)
 })
 </script>
 
 <template>
   <section class="bm-settings">
     <div class="section-title">书签</div>
-    <div class="set-row">
-      <span class="set-label">当前</span>
+    <RFormRow label="当前">
       <span class="bm-settings-state">共 {{ counts.bookmarks }} 个书签 / {{ counts.folders }} 个目录</span>
-    </div>
+    </RFormRow>
 
     <div class="section-title">备份</div>
-    <div class="set-row">
-      <span class="set-label">导出全部书签</span>
+    <RFormRow label="导出全部书签">
       <template v-if="exportArmed">
         <span class="bm-settings-hint">整棵树写进 bow 下载目录(与 bookmarks.json 内容一致)。</span>
         <RButton size="small" type="primary" @click="exportBookmarks"><Download :size="12" />确认导出</RButton>
@@ -116,11 +105,10 @@ onBeforeUnmount(() => {
       <RButton size="small" v-else :disabled="counts.bookmarks + counts.folders === 0" @click="exportArmed = true">
         <Download :size="12" />导出…
       </RButton>
-    </div>
+    </RFormRow>
     <div v-if="exportPath" class="bm-settings-hint">已导出:<code>{{ exportPath }}</code></div>
 
-    <div class="set-row">
-      <span class="set-label">导入书签</span>
+    <RFormRow label="导入书签">
       <template v-if="importArmed">
         <span class="bm-settings-hint">
           会<strong>整树替换</strong>当前书签(现共 {{ counts.bookmarks + counts.folders }} 项),这一步不可撤销。
@@ -129,7 +117,7 @@ onBeforeUnmount(() => {
         <RButton size="small" @click="importArmed = false">取消</RButton>
       </template>
       <RButton size="small" v-else @click="importArmed = true"><Upload :size="12" />导入…</RButton>
-    </div>
+    </RFormRow>
     <div v-if="summary" class="bm-settings-hint">{{ summary }}</div>
 
     <div v-if="error" class="bm-settings-error">{{ error }}</div>

@@ -3,7 +3,7 @@
  * 插件管理:启停(立即生效并持久化)、能力标签、核心提示与描述;
  * 贡献了设置分区的插件可直接跳转到其设置分区(在设置页内切换,不再是嵌套弹窗)。
  */
-import { RButton } from '@ruinb0w/ui'
+import { RBadge, RButton, RCheckbox } from '@ruinb0w/ui'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { PluginCapability, PluginInfo } from '@shared/plugins'
 import { PLUGIN_CAPABILITY_LABELS } from '@shared/plugins'
@@ -49,19 +49,18 @@ onBeforeUnmount(() => {
 <template>
   <div class="plugin-list">
     <div v-for="p in plugins" :key="p.id" class="plugin-row">
-      <label class="set-check plugin-toggle">
-        <input
-          type="checkbox"
-          :checked="p.enabled"
-          :disabled="p.alwaysOn"
-          :title="p.alwaysOn ? '核心插件,随 bow 启动,不能停用' : undefined"
-          @change="togglePlugin(p, ($event.target as HTMLInputElement).checked)"
-        />
+      <RCheckbox
+        class="plugin-toggle"
+        :model-value="p.enabled"
+        :disabled="p.alwaysOn"
+        :title="p.alwaysOn ? '核心插件,随 bow 启动,不能停用' : undefined"
+        @change="(v: boolean) => togglePlugin(p, v)"
+      >
         <span class="plugin-name">{{ p.name }}</span>
-      </label>
+      </RCheckbox>
       <span class="plugin-meta">
-        <span v-for="c in p.capabilities" :key="c" class="plugin-cap">{{ capLabel(c) }}</span>
-        <span v-if="p.core" class="plugin-core" title="关闭后会影响核心功能">核心</span>
+        <RBadge v-for="c in p.capabilities" :key="c" class="plugin-cap">{{ capLabel(c) }}</RBadge>
+        <RBadge v-if="p.core" type="warning" title="关闭后会影响核心功能">核心</RBadge>
       </span>
       <RButton size="small" class="plugin-config" v-if="p.enabled && hasSections(p.id)" title="打开该插件的设置" @click="emit('configure', p.id)">
         <SettingsIcon :size="13" /> 设置
@@ -120,16 +119,5 @@ onBeforeUnmount(() => {
   line-height: 1.5;
   white-space: normal;
   overflow-wrap: anywhere;
-}
-.plugin-cap,
-.plugin-core {
-  font-size: 11px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.1);
-  white-space: nowrap;
-}
-.plugin-core {
-  background: rgba(255, 170, 60, 0.22);
 }
 </style>

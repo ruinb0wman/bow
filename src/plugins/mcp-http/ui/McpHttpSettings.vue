@@ -5,7 +5,7 @@
  * 插件的启停由「插件管理」的开关负责(停用即关闭端点),这里只管监听参数与状态:
  * 端口 / 令牌改动即时保存并重启服务;环境变量强制开启的实例会明确标出「插件开关管不了它」。
  */
-import { RButton } from '@ruinb0w/ui'
+import { RButton, RFormRow } from '@ruinb0w/ui'
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { RefreshCw } from '@lucide/vue'
 import type { McpHttpState } from '../shared'
@@ -59,8 +59,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="set-row">
-    <span class="set-label">运行状态</span>
+  <RFormRow label="运行状态">
     <span class="mcp-status">
       <span v-if="state?.status.running" class="mcp-dot on" />
       <span v-else class="mcp-dot" />
@@ -71,13 +70,11 @@ onBeforeUnmount(() => {
       <template v-else>未运行(已停用或启动失败)</template>
       <span v-if="state?.status.forced" class="mcp-badge" title="由 MCP_HTTP 环境变量强制开启">强制</span>
     </span>
-  </div>
-  <div v-if="state?.status.error" class="set-row set-col">
-    <span class="set-label">启动失败</span>
+  </RFormRow>
+  <RFormRow v-if="state?.status.error" label="启动失败" align="start">
     <div class="mcp-error">{{ state.status.error }}</div>
-  </div>
-  <div class="set-row">
-    <span class="set-label">端口</span>
+  </RFormRow>
+  <RFormRow label="端口">
     <input
       v-model="portDraft"
       class="pbm-input mcp-port"
@@ -88,9 +85,8 @@ onBeforeUnmount(() => {
     <RButton size="small" :disabled="busy" title="按当前端口与令牌重启服务" @click="restart">
       <RefreshCw :size="13" /> 重启
     </RButton>
-  </div>
-  <div class="set-row">
-    <span class="set-label">Bearer 令牌</span>
+  </RFormRow>
+  <RFormRow label="Bearer 令牌">
     <input
       :value="state?.settings.token ?? ''"
       class="pbm-input mcp-token"
@@ -98,8 +94,8 @@ onBeforeUnmount(() => {
       @keydown.enter.prevent="saveToken($event)"
       @blur="saveToken"
     />
-  </div>
-  <div class="set-row set-col">
+  </RFormRow>
+  <RFormRow align="start">
     <div class="pbm-tools hint">
       端点默认开启:bow 启动后插件会自动监听上面的地址,AI 工具直接连
       <code>http://127.0.0.1:{{ state?.settings.port ?? state?.defaultPort }}/mcp</code> 即可,
@@ -107,8 +103,8 @@ onBeforeUnmount(() => {
       或直接点地址栏右侧工具栏里的 MCP 状态灯(白=就绪、蓝=正在被调用、灰=已停用)。
       令牌非空时所有请求都必须带 <code>Authorization: Bearer &lt;令牌&gt;</code>。
     </div>
-  </div>
-  <div class="set-row set-col">
+  </RFormRow>
+  <RFormRow align="start">
     <div class="pbm-tools hint">
       接进 pi:在 bow 仓库跑 <code>npm run mcp:install -- --http --direct-core</code> ——
       它写 <code>~/.pi/agent/mcp.json</code> 的 <code>browser</code> 条目(核心 6 个工具为原生工具,其余走 codemode),
@@ -116,7 +112,7 @@ onBeforeUnmount(() => {
       只改配置不装 skill 就加 <code>--no-skill</code>;要删干净用 <code>--remove</code>。
       端口或令牌变了要重跑一次,再重启 pi 才会用新配置。
     </div>
-  </div>
+  </RFormRow>
 </template>
 
 <style scoped>

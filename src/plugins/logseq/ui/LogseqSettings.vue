@@ -166,7 +166,7 @@ onMounted(() => {
 </template>
 
 <style scoped>
-/* 插件分区的公共形态(与其他插件的 `.set-row` 对齐:左右 14px);
+/* 插件分区的公共形态(与 RFormRow 的行内距对齐:左右 14px);
    长列表在自己框内滚,不带动整页 */
 .logseq-settings {
   flex: 1;

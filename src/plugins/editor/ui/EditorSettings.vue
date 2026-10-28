@@ -6,9 +6,10 @@
  * 「有没有注册 / 系统当前把 .txt 交给谁」全部由主进程现算(这里连 `reg query` 都不碰),
  * 注册与撤销也只按键送过去 —— 判定与 I/O 只有一份实现(`../registration.ts`)。
  */
-import { RButton } from '@ruinb0w/ui'
+import { RBadge, RButton, RFormRow } from '@ruinb0w/ui'
 import { computed, onMounted, ref } from 'vue'
 import { CheckCircle2, ExternalLink, FileCode2, Play, Save, XCircle } from '@lucide/vue'
+import { useFlash } from '@renderer/lib/useFlash'
 import { WINDOWS_MANUAL_STEPS, type EditorSettings, type EditorStatus } from '../shared'
 
 const api = window.browserAPI
@@ -16,9 +17,8 @@ const api = window.browserAPI
 const settings = ref<EditorSettings | null>(null)
 const status = ref<EditorStatus | null>(null)
 const log = ref<string[]>([])
-const notice = ref('')
+const { notice, flash } = useFlash(3600)
 const busy = ref(false)
-let noticeTimer: number | undefined
 
 /** 参数与扩展名用「每行一项」编辑:参数里合法地含空格(如 `-lc 'nvim {file}'`),行编辑不用引号转义 */
 const argsText = ref('')
@@ -26,14 +26,6 @@ const extsText = ref('')
 
 const isWindows = computed(() => (status.value?.platform ?? '') === 'win32')
 const extCount = computed(() => parseExts(extsText.value).length)
-
-function flash(text: string, ms = 3600): void {
-  notice.value = text
-  if (noticeTimer) window.clearTimeout(noticeTimer)
-  noticeTimer = window.setTimeout(() => {
-    notice.value = ''
-  }, ms)
-}
 
 function parseExts(text: string): string[] {
   return text
@@ -174,21 +166,21 @@ onMounted(() => {
       </div>
     </div>
 
-    <div class="set-row es-actions">
+    <RFormRow>
       <RButton size="small" @click="test"><Play :size="13" />测试(开一个空编辑器)</RButton>
       <RButton size="small" @click="pickFile"><FileCode2 :size="13" />用编辑器打开…</RButton>
       <span v-if="notice" class="es-notice">{{ notice }}</span>
-    </div>
+    </RFormRow>
 
     <template v-if="isWindows">
       <div class="section-title">Windows 上的注册</div>
-      <div class="set-row es-actions">
+      <RFormRow>
         <RButton size="small" type="primary" :disabled="busy" @click="register"><Save :size="13" />注册</RButton>
         <RButton size="small" type="danger" plain :disabled="busy" @click="unregister">撤销注册</RButton>
         <RButton size="small" @click="openSystemSettings"><ExternalLink :size="13" />打开系统默认应用设置</RButton>
-        <span v-if="status?.registered" class="es-state ok"><CheckCircle2 :size="13" />已注册</span>
-        <span v-else class="es-state bad"><XCircle :size="13" />尚未注册</span>
-      </div>
+        <RBadge v-if="status?.registered" type="success"><CheckCircle2 :size="13" />已注册</RBadge>
+        <RBadge v-else type="warning"><XCircle :size="13" />尚未注册</RBadge>
+      </RFormRow>
       <div v-if="status?.error" class="es-error">{{ status.error }}</div>
       <div v-if="status?.misses.length" class="es-hint">
         自校验没命中(可再点一次注册):{{ status.misses.slice(0, 6).join('、') }}
@@ -202,8 +194,8 @@ onMounted(() => {
           <div class="es-td mono">{{ t.ext }}</div>
           <div class="es-td mono" :title="t.source ?? ''">{{ t.actualExe || t.effective || '—' }}</div>
           <div class="es-td">
-            <span v-if="t.isDefault" class="es-state ok">是</span>
-            <span v-else class="es-state bad" :title="t.fix">否</span>
+            <RBadge v-if="t.isDefault" type="success">是</RBadge>
+            <RBadge v-else type="warning" :title="t.fix">否</RBadge>
           </div>
         </template>
       </div>
@@ -287,30 +279,9 @@ onMounted(() => {
   background: rgba(255, 255, 255, 0.08);
   font-family: ui-monospace, monospace;
 }
-.es-actions {
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
 .es-notice {
   color: var(--accent, #4a8ef7);
   font-size: 12px;
-}
-.es-state {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 1px 8px;
-  border-radius: 999px;
-  font-size: 11px;
-}
-.es-state.ok {
-  background: rgba(80, 200, 120, 0.16);
-  color: #7ec96a;
-}
-.es-state.bad {
-  background: rgba(255, 170, 60, 0.16);
-  color: #ffaa3c;
 }
 .es-error {
   margin: 6px 0;

@@ -5,7 +5,7 @@
  *
  * `data-bridge-*` 是给 E2E(`scripts/e2e-agent-status.mjs`)用的钩子:靠文案选元素太脆。
  */
-import { RButton } from '@ruinb0w/ui'
+import { RButton, RCheckbox, RFormRow } from '@ruinb0w/ui'
 import { computed, onMounted, ref } from 'vue'
 import { Plus, Trash2 } from '@lucide/vue'
 import {
@@ -117,8 +117,7 @@ async function copyBridgeCommand(): Promise<void> {
 
 <template>
   <template v-if="settings">
-    <div class="set-row">
-      <span class="set-label">字体</span>
+    <RFormRow label="字体">
       <input
         v-model="fontFamilyDraft"
         class="pbm-input term-font"
@@ -135,10 +134,9 @@ async function copyBridgeCommand(): Promise<void> {
         <option value="&quot;Fira Code&quot;, Consolas, monospace" />
         <option value="Menlo, Monaco, &quot;Courier New&quot;, monospace" />
       </datalist>
-    </div>
+    </RFormRow>
 
-    <div class="set-row">
-      <span class="set-label">字号</span>
+    <RFormRow label="字号">
       <input
         class="term-range"
         type="range"
@@ -148,10 +146,9 @@ async function copyBridgeCommand(): Promise<void> {
         @change="save({ fontSize: Number(($event.target as HTMLInputElement).value) })"
       />
       <span class="term-value">{{ settings.fontSize }} px</span>
-    </div>
+    </RFormRow>
 
-    <div class="set-row">
-      <span class="set-label">滚动缓冲</span>
+    <RFormRow label="滚动缓冲">
       <input
         class="term-range"
         type="range"
@@ -162,10 +159,9 @@ async function copyBridgeCommand(): Promise<void> {
         @change="save({ scrollback: Number(($event.target as HTMLInputElement).value) })"
       />
       <span class="term-value">{{ settings.scrollback }} 行</span>
-    </div>
+    </RFormRow>
 
-    <div class="set-row set-col">
-      <span class="set-label">shell 配置</span>
+    <RFormRow label="shell 配置" align="start">
       <div class="term-profiles">
         <div
           v-for="profile in profiles"
@@ -233,30 +229,26 @@ async function copyBridgeCommand(): Promise<void> {
           改字号/字体会立刻作用到已打开的终端。
         </div>
       </div>
-    </div>
+    </RFormRow>
 
-    <div class="set-row set-col">
-      <span class="set-label">AI 控制</span>
+    <RFormRow label="AI 控制" align="start">
       <div class="term-mcp">
-        <label class="set-check">
-          <input
-            type="checkbox"
-            :checked="settings.mcpTools"
-            data-term-mcp-tools
-            @change="save({ mcpTools: ($event.target as HTMLInputElement).checked })"
-          />
+        <RCheckbox
+          :model-value="settings.mcpTools"
+          data-term-mcp-tools
+          @change="(v: boolean) => save({ mcpTools: v })"
+        >
           <span>向 AI 暴露终端工具</span>
-        </label>
+        </RCheckbox>
         <div class="pbm-tools hint">
           <code>terminal_list_sessions</code> / <code>terminal_read</code> / <code>terminal_send</code> /
           <code>terminal_run</code> / <code>terminal_close</code>（MCP）。关掉后 AI 调一律报错，终端本身照用 ——
           终端插件属于核心插件、不能停用，这个开关就是「不让 AI 敲键盘」的出口。
         </div>
       </div>
-    </div>
+    </RFormRow>
 
-    <div class="set-row set-col">
-      <span class="set-label">Pi 联动</span>
+    <RFormRow label="Pi 联动" align="start">
       <div class="term-bridge">
         <div class="pbm-tools hint">
           装一个 pi 扩展,拿到两样东西:终端标签上的<strong>状态角标 + 系统通知</strong>
@@ -276,7 +268,7 @@ async function copyBridgeCommand(): Promise<void> {
           <code>terminal.showTerminalProgress</code> 只有「正在执行」角标,没有通知与手机对话。
         </div>
       </div>
-    </div>
+    </RFormRow>
   </template>
 </template>
 

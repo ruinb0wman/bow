@@ -5,7 +5,7 @@
  * 只负责表单与密码生成;保存由父组件调 `plugins.invoke('passwords','save')` ——
  * 站点地址允许填完整 URL,主进程侧统一 `originOf()` 归一化(受信任的校验在那边)。
  */
-import { RButton } from '@ruinb0w/ui'
+import { RButton, RCheckbox, RFormRow } from '@ruinb0w/ui'
 import { reactive, ref, watch } from 'vue'
 import { RefreshCw, Save, X } from '@lucide/vue'
 import {
@@ -57,8 +57,7 @@ function submit(): void {
 
 <template>
   <form class="pe" @submit.prevent="submit">
-    <div class="set-row">
-      <span class="set-label">站点</span>
+    <RFormRow label="站点">
       <input
         v-model="form.origin"
         class="pe-input"
@@ -66,37 +65,33 @@ function submit(): void {
         spellcheck="false"
         autocomplete="off"
       />
-    </div>
-    <div class="set-row">
-      <span class="set-label">名称</span>
+    </RFormRow>
+    <RFormRow label="名称">
       <input v-model="form.title" class="pe-input" placeholder="留空则取站点主机名" autocomplete="off" />
-    </div>
-    <div class="set-row">
-      <span class="set-label">用户名</span>
+    </RFormRow>
+    <RFormRow label="用户名">
       <input v-model="form.username" class="pe-input" spellcheck="false" autocomplete="off" />
-    </div>
-    <div class="set-row">
-      <span class="set-label">密码</span>
+    </RFormRow>
+    <RFormRow label="密码">
       <input v-model="form.password" class="pe-input" spellcheck="false" autocomplete="off" />
       <RButton size="small" title="生成强密码" @click="generate">
         <RefreshCw :size="12" />生成
       </RButton>
-    </div>
+    </RFormRow>
 
     <div class="pe-gen">
       <label class="set-check"><input v-model.number="gen.length" type="range" min="8" max="64" step="1" />长度 {{ gen.length }}</label>
-      <label class="set-check"><input v-model="gen.lower" type="checkbox" />小写</label>
-      <label class="set-check"><input v-model="gen.upper" type="checkbox" />大写</label>
-      <label class="set-check"><input v-model="gen.digits" type="checkbox" />数字</label>
-      <label class="set-check"><input v-model="gen.symbols" type="checkbox" />符号</label>
-      <label class="set-check"><input v-model="gen.avoidAmbiguous" type="checkbox" />避开易混字符</label>
+      <RCheckbox v-model="gen.lower" label="小写" />
+      <RCheckbox v-model="gen.upper" label="大写" />
+      <RCheckbox v-model="gen.digits" label="数字" />
+      <RCheckbox v-model="gen.symbols" label="符号" />
+      <RCheckbox v-model="gen.avoidAmbiguous" label="避开易混字符" />
     </div>
     <div v-if="genError" class="pe-error">{{ genError }}</div>
 
-    <div class="set-row pe-notes">
-      <span class="set-label">备注</span>
+    <RFormRow label="备注" align="start">
       <textarea v-model="form.notes" class="pe-input" rows="2" autocomplete="off" />
-    </div>
+    </RFormRow>
 
     <div v-if="error" class="pe-error">{{ error }}</div>
 
@@ -125,9 +120,6 @@ function submit(): void {
   padding: 4px 14px 8px;
   color: var(--fg-dim);
   font-size: 12px;
-}
-.pe-notes {
-  align-items: flex-start;
 }
 .pe-error {
   padding: 0 14px 6px;

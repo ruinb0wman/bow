@@ -3,9 +3,10 @@
  * 密码插件设置分区:自动锁定 / 剪贴板清除 / 子域匹配 / 修改主密码 / 清空。
  * 「修改主密码」需要已解锁;「清空密码库」在锁定时也能用(它是唯一的逃生口)。
  */
-import { RButton } from '@ruinb0w/ui'
+import { RButton, RCheckbox, RFormRow } from '@ruinb0w/ui'
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { Download, Lock, Trash2, Upload } from '@lucide/vue'
+import { useFlash } from '@renderer/lib/useFlash'
 import {
   AUTO_LOCK_OPTIONS,
   CLIPBOARD_CLEAR_OPTIONS,
@@ -28,18 +29,9 @@ const backupArmed = ref(false)
 const importArmed = ref(false)
 const backupPath = ref('')
 const preimportPath = ref('')
-const notice = ref('')
+const { notice, flash } = useFlash(2600)
 const error = ref('')
 const unsubs: Array<() => void> = []
-let noticeTimer: number | undefined
-
-function flash(text: string): void {
-  notice.value = text
-  if (noticeTimer) window.clearTimeout(noticeTimer)
-  noticeTimer = window.setTimeout(() => {
-    notice.value = ''
-  }, 2600)
-}
 
 async function refresh(): Promise<void> {
   settings.value = normalizeSettings(await api.plugins.invoke<PasswordSettings>('passwords', 'getSettings'))
@@ -139,33 +131,29 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   unsubs.forEach((u) => u())
-  if (noticeTimer) window.clearTimeout(noticeTimer)
 })
 </script>
 
 <template>
   <section class="pw-settings">
     <div class="section-title">密码库</div>
-    <div class="set-row">
-      <span class="set-label">状态</span>
+    <RFormRow label="状态">
       <span class="pw-settings-state">
         {{ !status ? '…' : !status.initialized ? '尚未创建' : status.locked ? `已锁定(共 ${status.count} 条)` : `已解锁(共 ${status.count} 条)` }}
       </span>
       <RButton size="small" v-if="status && !status.locked" @click="lockNow"><Lock :size="12" />立即锁定</RButton>
-    </div>
+    </RFormRow>
 
-    <div class="set-row">
-      <span class="set-label">自动锁定</span>
+    <RFormRow label="自动锁定">
       <select
         :value="settings?.autoLockMinutes ?? 5"
         @change="save({ autoLockMinutes: Number(($event.target as HTMLSelectElement).value) })"
       >
         <option v-for="v in AUTO_LOCK_OPTIONS" :key="v" :value="v">{{ v === 0 ? '不自动锁定' : `${v} 分钟` }}</option>
       </select>
-    </div>
+    </RFormRow>
 
-    <div class="set-row">
-      <span class="set-label">清剪贴板</span>
+    <RFormRow label="清剪贴板">
       <select
         :value="settings?.clipboardClearSeconds ?? 30"
         @change="save({ clipboardClearSeconds: Number(($event.target as HTMLSelectElement).value) })"
@@ -175,35 +163,30 @@ onBeforeUnmount(() => {
         </option>
       </select>
       <span class="pw-settings-hint">只清除「还是那条密码」的剪贴板;你已经复制了别的东西就不动它。</span>
-    </div>
+    </RFormRow>
 
-    <div class="set-row">
-      <span class="set-label">子域匹配</span>
-      <label class="set-check">
-        <input
-          type="checkbox"
-          :checked="settings?.matchSubdomains ?? true"
-          @change="save({ matchSubdomains: ($event.target as HTMLInputElement).checked })"
-        />
+    <RFormRow label="子域匹配">
+      <RCheckbox
+        :model-value="settings?.matchSubdomains ?? true"
+        @change="(v: boolean) => save({ matchSubdomains: v })"
+      >
         让 <code>accounts.example.com</code> 命中条目里的 <code>example.com</code>
-      </label>
-    </div>
+      </RCheckbox>
+    </RFormRow>
 
     <div class="section-title">修改主密码</div>
-    <div class="set-row">
-      <span class="set-label">旧主密码</span>
+    <RFormRow label="旧主密码">
       <input v-model="oldMaster" type="password" autocomplete="current-password" />
       <span class="set-label">新主密码</span>
       <input v-model="newMaster" type="password" autocomplete="new-password" />
       <span class="set-label">再输一次</span>
       <input v-model="confirmMaster" type="password" autocomplete="new-password" />
       <RButton size="small" :disabled="status?.locked ?? true" @click="changeMaster">修改</RButton>
-    </div>
+    </RFormRow>
     <div v-if="status?.locked" class="pw-settings-hint">密码库已锁定,先解锁才能修改主密码。</div>
 
     <div class="section-title">备份</div>
-    <div class="set-row">
-      <span class="set-label">导出加密备份</span>
+    <RFormRow label="导出加密备份">
       <template v-if="backupArmed">
         <span class="pw-settings-hint">
           导出的是整库密文(与 passwords.json 内容一致),不会泄露明文;恢复仍需主密码。
@@ -214,11 +197,10 @@ onBeforeUnmount(() => {
       <RButton size="small" v-else :disabled="!status?.initialized" @click="backupArmed = true">
         <Download :size="12" />导出…
       </RButton>
-    </div>
+    </RFormRow>
     <div v-if="backupPath" class="pw-settings-hint">已导出:<code>{{ backupPath }}</code></div>
 
-    <div class="set-row">
-      <span class="set-label">导入加密备份</span>
+    <RFormRow label="导入加密备份">
       <template v-if="importArmed">
         <span class="pw-settings-hint">
           会<strong>整库替换</strong>当前密码库{{ status?.initialized ? '(已初始化时会先把当前库导出一份到 bow 下载目录)' : '' }};
@@ -228,21 +210,20 @@ onBeforeUnmount(() => {
         <RButton size="small" @click="importArmed = false">取消</RButton>
       </template>
       <RButton size="small" v-else @click="importArmed = true"><Upload :size="12" />导入…</RButton>
-    </div>
+    </RFormRow>
     <div v-if="preimportPath" class="pw-settings-hint">
       导入前的当前库已备份到:<code>{{ preimportPath }}</code>
     </div>
 
     <div class="section-title">危险操作</div>
-    <div class="set-row">
-      <span class="set-label">清空密码库</span>
+    <RFormRow label="清空密码库">
       <template v-if="wipeArmed">
         <span class="pw-settings-hint">真的要删掉全部条目并重置主密码?这一步不可撤销。</span>
         <RButton size="small" type="danger" plain @click="wipe"><Trash2 :size="12" />确认清空</RButton>
         <RButton size="small" @click="wipeArmed = false">取消</RButton>
       </template>
       <RButton size="small" type="danger" plain v-else @click="wipeArmed = true"><Trash2 :size="12" />清空…</RButton>
-    </div>
+    </RFormRow>
 
     <div v-if="error" class="pw-settings-error">{{ error }}</div>
     <div class="pw-settings-hint">

@@ -9,6 +9,7 @@
  * 口令是**明文**存的(mcp-http 的 token 也一样):你需要把它拄到手机上,所以得看得见、能复制。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useFlash } from '@renderer/lib/useFlash'
 import type { TerminalRemoteSettings, TerminalRemoteStatus, TerminalTailscaleStatus } from '../shared'
 import { REMOTE_MIN_PASSWORD, REMOTE_PORT_RANGE } from '../shared'
 
@@ -16,10 +17,9 @@ const api = window.browserAPI
 
 const remote = ref<TerminalRemoteSettings | null>(null)
 const status = ref<TerminalRemoteStatus | null>(null)
-const notice = ref('')
+const { notice, flash } = useFlash(2600)
 const busy = ref(false)
 let unsubscribe: (() => void) | null = null
-let noticeTimer: number | undefined
 
 const url = computed(() => status.value?.lanUrls[0] ?? status.value?.url ?? '')
 const showPassword = ref(false)
@@ -38,14 +38,6 @@ async function checkTailscale(): Promise<void> {
   } finally {
     checking.value = false
   }
-}
-
-function flash(text: string): void {
-  notice.value = text
-  if (noticeTimer) window.clearTimeout(noticeTimer)
-  noticeTimer = window.setTimeout(() => {
-    notice.value = ''
-  }, 2600)
 }
 
 async function refresh(): Promise<void> {
@@ -100,7 +92,6 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   unsubscribe?.()
-  if (noticeTimer) window.clearTimeout(noticeTimer)
 })
 </script>
 

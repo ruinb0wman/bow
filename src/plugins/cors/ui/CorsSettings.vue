@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** CORS 放行插件设置分区(改动即时保存) */
-import { RButton } from '@ruinb0w/ui'
+import { RButton, RCheckbox, RFormRow } from '@ruinb0w/ui'
 import { onMounted, ref } from 'vue'
 import { normalizeCorsEntry } from '@shared/cors'
 import { Plus, Trash2 } from '@lucide/vue'
@@ -49,15 +49,10 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="set-row">
-    <span class="set-label">CORS 放行</span>
-    <label class="set-check">
-      <input v-model="draft.enabled" type="checkbox" @change="save" />
-      放行白名单主机的跨域请求
-    </label>
-  </div>
-  <div class="set-row set-col">
-    <span class="set-label">白名单</span>
+  <RFormRow label="CORS 放行">
+    <RCheckbox v-model="draft.enabled" label="放行白名单主机的跨域请求" @change="save" />
+  </RFormRow>
+  <RFormRow label="白名单" align="start">
     <div class="cors-list">
       <div v-for="(entry, i) in draft.whitelist" :key="entry + i" class="cors-row">
         <span class="cors-entry">{{ entry }}</span>
@@ -79,5 +74,5 @@ onMounted(async () => {
         已支持 WebDAV(PROPFIND / MKCOL 等)非标准方法,并暴露 ETag 等响应头。
       </div>
     </div>
-  </div>
+  </RFormRow>
 </template>

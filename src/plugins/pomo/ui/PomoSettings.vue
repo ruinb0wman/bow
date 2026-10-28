@@ -5,22 +5,15 @@
  *
  * 时长改动只影响**之后**开始的阶段:正在跑的阶段用它的 `endsAt`,不会被改短或拉长。
  */
+import { RCheckbox, RFormRow } from '@ruinb0w/ui'
 import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { useFlash } from '@renderer/lib/useFlash'
 import { POMO_EVENT, MAX_MINUTES, MAX_ROUNDS, MIN_MINUTES, MIN_ROUNDS, type PomoSettings, type PomoSnapshot } from '../shared'
 
 const api = window.browserAPI
 const settings = ref<PomoSettings | null>(null)
-const notice = ref('')
+const { notice, flash } = useFlash(2000)
 const unsubs: Array<() => void> = []
-let noticeTimer: number | undefined
-
-function flash(text: string): void {
-  notice.value = text
-  if (noticeTimer !== undefined) window.clearTimeout(noticeTimer)
-  noticeTimer = window.setTimeout(() => {
-    notice.value = ''
-  }, 2000)
-}
 
 async function load(): Promise<void> {
   const snap = await api.plugins.invoke<PomoSnapshot>('pomo', 'getState')
@@ -39,8 +32,7 @@ function onNumber(key: 'focusMinutes' | 'shortBreakMinutes' | 'longBreakMinutes'
   })
 }
 
-function onToggle(key: 'autoStartNext' | 'notify' | 'sound', e: Event): void {
-  const checked = (e.target as HTMLInputElement).checked
+function onToggle(key: 'autoStartNext' | 'notify' | 'sound', checked: boolean): void {
   void patch({ [key]: checked } as Partial<PomoSettings>)
 }
 
@@ -57,15 +49,13 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   unsubs.forEach((u) => u())
-  if (noticeTimer !== undefined) window.clearTimeout(noticeTimer)
 })
 </script>
 
 <template>
   <section class="pomo-settings">
     <div class="section-title">时长</div>
-    <div class="set-row">
-      <span class="set-label">专注时长</span>
+    <RFormRow label="专注时长">
       <input
         class="pbm-input ps-num"
         type="number"
@@ -75,9 +65,8 @@ onBeforeUnmount(() => {
         @change="onNumber('focusMinutes', $event)"
       />
       <span class="ps-unit">分钟</span>
-    </div>
-    <div class="set-row">
-      <span class="set-label">短休息</span>
+    </RFormRow>
+    <RFormRow label="短休息">
       <input
         class="pbm-input ps-num"
         type="number"
@@ -87,9 +76,8 @@ onBeforeUnmount(() => {
         @change="onNumber('shortBreakMinutes', $event)"
       />
       <span class="ps-unit">分钟</span>
-    </div>
-    <div class="set-row">
-      <span class="set-label">长休息</span>
+    </RFormRow>
+    <RFormRow label="长休息">
       <input
         class="pbm-input ps-num"
         type="number"
@@ -99,9 +87,8 @@ onBeforeUnmount(() => {
         @change="onNumber('longBreakMinutes', $event)"
       />
       <span class="ps-unit">分钟</span>
-    </div>
-    <div class="set-row">
-      <span class="set-label">长休间隔</span>
+    </RFormRow>
+    <RFormRow label="长休间隔">
       <input
         class="pbm-input ps-num"
         type="number"
@@ -112,33 +99,32 @@ onBeforeUnmount(() => {
       />
       <span class="ps-unit">个专注后长休</span>
       <span v-if="notice" class="ps-notice">{{ notice }}</span>
-    </div>
+    </RFormRow>
 
     <div class="section-title">行为</div>
-    <div class="set-row">
-      <label class="set-check">
-        <input
-          type="checkbox"
-          :checked="settings?.autoStartNext ?? false"
-          @change="onToggle('autoStartNext', $event)"
-        />
-        阶段结束后自动开始下一阶段
-      </label>
-    </div>
+    <RFormRow>
+      <RCheckbox
+        :model-value="settings?.autoStartNext ?? false"
+        label="阶段结束后自动开始下一阶段"
+        @change="(v: boolean) => onToggle('autoStartNext', v)"
+      />
+    </RFormRow>
 
     <div class="section-title">提醒</div>
-    <div class="set-row">
-      <label class="set-check">
-        <input type="checkbox" :checked="settings?.notify ?? true" @change="onToggle('notify', $event)" />
-        阶段结束时弹系统通知
-      </label>
-    </div>
-    <div class="set-row">
-      <label class="set-check">
-        <input type="checkbox" :checked="settings?.sound ?? true" @change="onToggle('sound', $event)" />
-        阶段结束时响提示音
-      </label>
-    </div>
+    <RFormRow>
+      <RCheckbox
+        :model-value="settings?.notify ?? true"
+        label="阶段结束时弹系统通知"
+        @change="(v: boolean) => onToggle('notify', v)"
+      />
+    </RFormRow>
+    <RFormRow>
+      <RCheckbox
+        :model-value="settings?.sound ?? true"
+        label="阶段结束时响提示音"
+        @change="(v: boolean) => onToggle('sound', v)"
+      />
+    </RFormRow>
     <div class="ps-hint">
       提示音由浏览器界面播放,所以要在你点过工具栏的番茄按钮之后才会响(系统通知不受影响,但静音)。
       时长改动只影响之后开始的阶段 —— 正在跑的阶段保持原时长。

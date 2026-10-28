@@ -4,8 +4,9 @@
  * - 配置保留条数(默认 500,立即裁剪);
  * - 模糊搜索历史,单条 / 批量删除,清空二次确认。
  */
-import { RButton } from '@ruinb0w/ui'
+import { RBadge, RButton, RCheckbox, RFormRow } from '@ruinb0w/ui'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useFlash } from '@renderer/lib/useFlash'
 import type { HistoryList, HistorySettings } from '@shared/types'
 import {
   HISTORY_CAP,
@@ -28,8 +29,7 @@ const renderLimit = ref(PAGE_SIZE)
 const capInput = ref(String(HISTORY_CAP))
 const capError = ref('')
 const clearConfirm = ref(false)
-const notice = ref('')
-let noticeTimer: number | undefined
+const { notice, flash } = useFlash(2000)
 const unsubs: Array<() => void> = []
 
 const filtered = computed(() => searchHistory(list.value, search.value))
@@ -40,14 +40,6 @@ const allSelected = computed(
   () => filtered.value.length > 0 && filtered.value.every((h) => selected.value.has(h.id))
 )
 const someSelected = computed(() => hasSelection.value && !allSelected.value)
-
-function showNotice(text: string): void {
-  notice.value = text
-  if (noticeTimer) window.clearTimeout(noticeTimer)
-  noticeTimer = window.setTimeout(() => {
-    notice.value = ''
-  }, 2000)
-}
 
 function pruneSelection(): void {
   const alive = new Set(list.value.map((h) => h.id))
@@ -76,7 +68,7 @@ async function saveCap(): Promise<void> {
   capError.value = ''
   const s = await api.plugins.invoke<HistorySettings>('history', 'setSettings', { maxEntries: n })
   capInput.value = String(s.maxEntries)
-  showNotice(`已保留最近 ${s.maxEntries} 条`)
+  flash(`已保留最近 ${s.maxEntries} 条`)
 }
 
 // ---------- 选择 ----------
@@ -98,21 +90,21 @@ function toggleAll(): void {
 // ---------- 删除 ----------
 async function removeOne(id: string): Promise<void> {
   const removed = await api.plugins.invoke<number>('history', 'remove', [id])
-  if (removed > 0) showNotice(`已删除 ${removed} 条`)
+  if (removed > 0) flash(`已删除 ${removed} 条`)
 }
 
 async function removeSelected(): Promise<void> {
   if (!hasSelection.value) return
   const removed = await api.plugins.invoke<number>('history', 'remove', [...selected.value])
   selected.value = new Set()
-  showNotice(`已删除 ${removed} 条`)
+  flash(`已删除 ${removed} 条`)
 }
 
 async function clearAll(): Promise<void> {
   await api.plugins.invoke('history', 'clear')
   clearConfirm.value = false
   selected.value = new Set()
-  showNotice('已清空浏览历史')
+  flash('已清空浏览历史')
 }
 
 function loadMore(): void {
@@ -138,15 +130,13 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   unsubs.forEach((u) => u())
-  if (noticeTimer) window.clearTimeout(noticeTimer)
 })
 </script>
 
 <template>
   <div class="hs">
     <!-- 保留条数 -->
-    <div class="set-row hs-row">
-      <span class="set-label">保留条数</span>
+    <RFormRow label="保留条数">
       <input
         v-model="capInput"
         class="pbm-input hs-cap"
@@ -158,7 +148,7 @@ onBeforeUnmount(() => {
       <span class="hs-unit">条</span>
       <RButton size="small" type="primary" title="保存并立即裁剪" @click="saveCap"><Save :size="13" />保存</RButton>
       <span class="set-hcount">共 {{ list.length }} 条记录</span>
-    </div>
+    </RFormRow>
     <div v-if="capError" class="hs-error">{{ capError }}</div>
 
     <!-- 搜索 -->
@@ -170,10 +160,9 @@ onBeforeUnmount(() => {
 
     <!-- 操作条 -->
     <div class="hs-tools">
-      <label class="set-check">
-        <input type="checkbox" :checked="allSelected" :indeterminate="someSelected" @change="toggleAll" />
+      <RCheckbox :model-value="allSelected" :indeterminate="someSelected" @change="toggleAll">
         全选({{ filtered.length }})
-      </label>
+      </RCheckbox>
       <RButton size="small" type="danger" plain :disabled="!hasSelection" @click="removeSelected">
         <Trash2 :size="13" />删除选中({{ selected.size }})
       </RButton>
@@ -207,7 +196,7 @@ onBeforeUnmount(() => {
             @click.stop
             @change="toggleOne(h.id)"
           />
-          <span class="hs-badge" :class="h.kind">{{ h.kind === 'search' ? '搜索' : '页面' }}</span>
+          <RBadge :type="h.kind === 'search' ? 'info' : 'muted'">{{ h.kind === 'search' ? '搜索' : '页面' }}</RBadge>
           <div class="hs-main">
             <span class="hs-title">{{ h.query ?? h.title }}</span>
             <span class="hs-url">{{ h.url }}</span>
@@ -231,9 +220,6 @@ onBeforeUnmount(() => {
   min-height: 0;
   flex-direction: column;
   min-width: 0;
-}
-.hs-row {
-  flex-wrap: wrap;
 }
 .hs-cap {
   flex: none;
@@ -322,17 +308,6 @@ onBeforeUnmount(() => {
 }
 .hs-item.picked {
   background: color-mix(in srgb, var(--accent) 16%, transparent);
-}
-.hs-badge {
-  flex: none;
-  font-size: 11px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.1);
-  white-space: nowrap;
-}
-.hs-badge.search {
-  background: rgba(80, 160, 255, 0.22);
 }
 .hs-main {
   flex: 1;

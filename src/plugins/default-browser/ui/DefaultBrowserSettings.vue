@@ -4,7 +4,7 @@
  *
  * 只通过 `api.plugins.invoke('default-browser', …)` 与主进程通信,不碰 fs / 注册表。
  */
-import { RButton } from '@ruinb0w/ui'
+import { RButton, RFormRow } from '@ruinb0w/ui'
 import { onMounted, ref } from 'vue'
 import { RefreshCw } from '@lucide/vue'
 import { PLATFORM_LABELS, TARGET_STATE_LABELS, statusBadge, type DesktopActionResult, type DesktopStatus } from '../shared'
@@ -48,32 +48,28 @@ onMounted(() => void load())
 </script>
 
 <template>
-  <div class="set-row">
-    <span class="set-label">当前状态</span>
+  <RFormRow label="当前状态">
     <span class="db-status">
       <span class="db-dot" :class="status ? statusBadge(status).tone : 'idle'" />
       <template v-if="status">{{ statusBadge(status).text }}</template>
       <template v-else>读取中…</template>
       <span v-if="status" class="db-badge">{{ PLATFORM_LABELS[status.platform] }}{{ status.mode === 'dev' ? ' · dev' : '' }}</span>
     </span>
-  </div>
+  </RFormRow>
 
-  <div v-if="status?.error" class="set-row set-col">
-    <span class="set-label">不可用</span>
+  <RFormRow v-if="status?.error" label="不可用" align="start">
     <div class="db-error">{{ status.error }}</div>
-  </div>
+  </RFormRow>
 
-  <div v-if="status && !status.isDefault" class="set-row set-col">
-    <span class="set-label">说明</span>
+  <RFormRow v-if="status && !status.isDefault" label="说明" align="start">
     <div class="pbm-tools hint">
       下面这张表读的是系统<b>当前</b>的默认记录(Windows 是 UserChoice 注册表,Linux 是 mimeapps.list)。
       点上面的「注册」只把 bow 变成<b>候选</b>;系统设置里能看到 bow、或 bow 出现在「按应用」列表里,
       都不等于它已经是默认 —— 以这张表的每一行为准,非默认的行下方直接给了改法。
     </div>
-  </div>
+  </RFormRow>
 
-  <div v-if="status && status.targets.length > 0" class="set-row set-col">
-    <span class="set-label">各类归属</span>
+  <RFormRow v-if="status && status.targets.length > 0" label="各类归属" align="start">
     <div class="db-table">
       <div v-for="t in status.targets" :key="t.id" class="db-row" :title="t.source ?? ''">
         <span class="db-target">{{ t.label }}</span>
@@ -96,10 +92,9 @@ onMounted(() => void load())
         <b>{{ t.label }}</b>:{{ t.fix ?? '参考下方步骤把它改回 bow' }}
       </div>
     </div>
-  </div>
+  </RFormRow>
 
-  <div class="set-row">
-    <span class="set-label">操作</span>
+  <RFormRow label="操作">
     <RButton size="small" :disabled="busy || !status?.canRegister" @click="act('register')">
       {{ status?.registered ? '更新注册' : '注册为默认浏览器' }}
     </RButton>
@@ -108,35 +103,31 @@ onMounted(() => void load())
     <RButton size="small" v-if="status?.platform === 'win32'" :disabled="busy" title="跳到系统「默认应用」设置页逐项选择" @click="openSettings">
       打开系统设置
     </RButton>
-  </div>
+  </RFormRow>
 
-  <div v-if="status" class="set-row set-col">
-    <span class="set-label">注册目标</span>
+  <RFormRow v-if="status" label="注册目标" align="start">
     <div class="db-exec">{{ status.exec }}</div>
-  </div>
+  </RFormRow>
 
-  <div v-if="status && status.notes.length > 0" class="set-row set-col">
-    <span class="set-label">注意</span>
+  <RFormRow v-if="status && status.notes.length > 0" label="注意" align="start">
     <div class="db-notes">
       <div v-for="(n, i) in status.notes" :key="i" class="db-note">{{ n }}</div>
     </div>
-  </div>
+  </RFormRow>
 
-  <div v-if="status && status.manualSteps.length > 0" class="set-row set-col">
-    <span class="set-label">还需你手动点一次</span>
+  <RFormRow v-if="status && status.manualSteps.length > 0" label="还需你手动点一次" align="start">
     <ol class="db-steps">
       <li v-for="(s, i) in status.manualSteps" :key="i">{{ s }}</li>
     </ol>
-  </div>
+  </RFormRow>
 
-  <div v-if="log.length > 0" class="set-row set-col">
-    <span class="set-label">本次操作</span>
+  <RFormRow v-if="log.length > 0" label="本次操作" align="start">
     <div class="db-log">
       <div v-for="(line, i) in log" :key="i">{{ line }}</div>
     </div>
-  </div>
+  </RFormRow>
 
-  <div class="set-row set-col">
+  <RFormRow align="start">
     <button class="db-why-toggle" @click="showWhy = !showWhy">
       {{ showWhy ? '▾' : '▸' }} 为什么注册了还要手动点一次?
     </button>
@@ -160,7 +151,7 @@ onMounted(() => void load())
         electron);打包版会直接指向 bow 二进制,切换后点一次「更新注册」即可纠正。
       </p>
     </div>
-  </div>
+  </RFormRow>
 </template>
 
 <style scoped>
