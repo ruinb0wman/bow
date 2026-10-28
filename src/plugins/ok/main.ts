@@ -139,7 +139,9 @@ function createOkPlugin(): PluginMain {
       phase,
       port,
       url: port === null ? null : `http://127.0.0.1:${port}`,
-      pid: runtime?.child.pid ?? null,
+      // WSL 模式下能拿到的是 wsl.exe 客户端的 Windows pid —— 它不在发行版的进程表里,
+      // 拿去 `ps` 只会让人怀疑服务没跑。真要 pid:`ss -ltnp | grep <port>`（WSL 里）
+      pid: VIA_WSL ? null : (runtime?.child.pid ?? null),
       runtimeVersion,
       error
     }

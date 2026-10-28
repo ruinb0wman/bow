@@ -3,8 +3,8 @@
  * OpenKnowledge 设置分区:项目目录(唯一一个)/ 自启开关 / 运行状态 / 停止。
  *
  * 目录必须是已经 `ok init` 过的 OK 项目;选一个空目录时,先点「初始化」再打开。
- * 服务是 bow 用 Electron 自带的 Node 拉起来的,所以这里显示 `runtimeVersion` ——
- * 它由 bow 里装的 OK 版本决定,可能和你在终端里用的全局 `ok` 不是同一版。
+ * 服务用的是**你自己装的 `ok`**(不是 bow 内置的):`runtimeVersion` 读自它的启动横幅,
+ * 所以永远与你终端里那份一致;Windows 上服务在 WSL 里,`pid` 那边没有可展示的东西。
  */
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { FolderOpen, RefreshCw, Square } from '@lucide/vue'
@@ -123,8 +123,9 @@ onBeforeUnmount(() => {
     <p v-if="message" class="hint">{{ message }}</p>
 
     <p class="hint">
-      服务跑在 Electron 自带的 Node 里(不是终端里的 <code>ok</code> 命令)。空闲 30 分钟、没有标签连着时它会自己退出,
-      下次点工具栏按钮再起。版本由 bow 决定,可能和你全局装的 `ok` 不同。
+      服务用的是你自己装的 <code>ok</code>(空闲 30 分钟、没有标签连着时它会自己退出,下次点工具栏按钮再起)。
+      Windows 上它在 WSL 里跑:终端里用 <code>cd &lt;项目&gt; && ok ps</code> 看,进程名是
+      <code>open-knowledge-server</code>,不是你敲的那个 <code>ok</code>。
     </p>
   </section>
 </template>
