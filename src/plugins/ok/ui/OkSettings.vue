@@ -12,6 +12,8 @@ import { OK_EVENT, type OkState } from '@plugins/ok/shared'
 
 const api = window.browserAPI
 const state = ref<OkState | null>(null)
+/** 输入框里的草稿:改完点「应用」才落盘(边打边重启服务会把人弄疯) */
+const draft = ref('')
 const busy = ref(false)
 const message = ref('')
 let unsubscribe: (() => void) | null = null
@@ -22,6 +24,24 @@ function invoke<T>(method: string, ...args: unknown[]): Promise<T> {
 
 async function refresh(): Promise<void> {
   state.value = await invoke<OkState>('getState')
+  draft.value = state.value.settings.projectPath
+}
+
+/** 直接把路径写进设置 —— WSL 里的目录只能用 Linux 路径填进来,文件对话框选不到 */
+async function applyPath(): Promise<void> {
+  const projectPath = draft.value.trim()
+  if (!projectPath) return
+  busy.value = true
+  message.value = ''
+  try {
+    state.value = await invoke<OkState>('setSettings', { projectPath })
+    draft.value = state.value.settings.projectPath
+    message.value = state.value.error ?? ''
+  } catch (e) {
+    message.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    busy.value = false
+  }
 }
 
 async function pick(): Promise<void> {
@@ -29,6 +49,7 @@ async function pick(): Promise<void> {
   message.value = ''
   try {
     state.value = await invoke<OkState>('pickProject')
+    draft.value = state.value.settings.projectPath
   } catch (e) {
     message.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -89,16 +110,26 @@ onBeforeUnmount(() => {
   <section class="ok-settings">
     <h3 class="section-title">项目目录</h3>
     <p class="row">
-      <code class="path">{{ state?.settings.projectPath || '(还没选)' }}</code>
+      <input
+        v-model="draft"
+        class="path-input"
+        spellcheck="false"
+        placeholder="/home/… (WSL 里的目录直接填)"
+        @keyup.enter="applyPath"
+      />
       <button class="ghost" :disabled="busy" @click="pick"><FolderOpen :size="13" /> 选择…</button>
+      <button class="ghost" :disabled="busy || !draft.trim() || draft.trim() === state?.settings.projectPath" @click="applyPath">
+        应用
+      </button>
       <button class="ghost" :disabled="busy || !state?.settings.projectPath" @click="init">
         <RefreshCw :size="13" /> 初始化
       </button>
     </p>
     <p class="hint">
       OK 一个项目一个服务,这里固定一个目录(必须已经 `ok init` 过)。换目录会先停掉旧服务。
-      服务用的是**你自己装的 `ok`**(`npm i -g @inkeep/open-knowledge`);Windows 上服务跑在 WSL 里
-      (pi 也在那一侧),所以目录是 **Linux 路径**(`/mnt/c/…` 或 `/home/…`)。
+      服务用的是**你自己装的 `ok`**(`npm i -g @inkeep/open-knowledge`);Windows 上它跑在 WSL 里
+      (pi 也在那一侧),目录必须是 **Linux 路径**:填 `/home/…` 最快(`/mnt/c/…` 走 9p,慢一截);
+      「选择…」里手敲 `\\wsl.localhost\<发行版>\home\…` 也行,会自动换算。
     </p>
 
     <h3 class="section-title">行为</h3>
@@ -164,6 +195,18 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.path-input {
+  flex: 1;
+  min-width: 180px;
+  padding: 3px 8px;
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
 }
 
 .phase {

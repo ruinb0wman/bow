@@ -415,6 +415,11 @@ function createOkPlugin(): PluginMain {
         const before = settings.projectPath
         const obj = patch && typeof patch === 'object' ? patch : {}
         settings = normalizeSettings({ ...settings, ...obj })
+        // 粘进来的可能是 Windows 形态(UNC / 盘符):服务在 WSL 里,cwd 只能是 Linux 路径
+        if (VIA_WSL && settings.projectPath) {
+          const posix = toWslPath(settings.projectPath)
+          if (posix !== null) settings = { ...settings, projectPath: posix }
+        }
         persist()
         if (settings.projectPath !== before) {
           await stop()
