@@ -6,7 +6,15 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_SETTINGS, normalizeSettings, parseLock, parsePortFromStdout } from '../src/plugins/ok/shared'
+import {
+  DEFAULT_SETTINGS,
+  normalizeSettings,
+  okRuntime,
+  parseLock,
+  parsePortFromStdout,
+  parseRuntimeVersion,
+  toWslPath
+} from '../src/plugins/ok/shared'
 
 /** OK `start` 的真实横幅(实测 0.88.5),首尾留空行 */
 const BANNER = `
@@ -111,5 +119,48 @@ describe('parseLock', () => {
       url: 'http://127.0.0.1:8080',
       runtimeVersion: null
     })
+  })
+})
+
+/**
+ * Windows 上服务跑在 WSL 里,项目目录必须是 Linux 路径 —— 换算错 = 一启动就报"这不是 OK 项目"。
+ */
+describe('toWslPath', () => {
+  it('盘符路径按默认 automount 换算', () => {
+    expect(toWslPath('C:\\Users\\ruinb\\Documents\\Knowledge')).toBe('/mnt/c/Users/ruinb/Documents/Knowledge')
+    expect(toWslPath('d:/Lab/kb')).toBe('/mnt/d/Lab/kb')
+  })
+
+  it('\\\\wsl.localhost 与 \\\\wsl$ 的 UNC 去掉发行版名', () => {
+    expect(toWslPath('\\\\wsl.localhost\\archlinux\\home\\ruinb0w\\Lab\\my-knowledge-base')).toBe(
+      '/home/ruinb0w/Lab/my-knowledge-base'
+    )
+    expect(toWslPath('\\\\wsl$\\Ubuntu\\home\\me\\kb')).toBe('/home/me/kb')
+  })
+
+  it('已经是 Linux 路径就原样;换算不了给 null', () => {
+    expect(toWslPath('/home/ruinb0w/Lab/my-knowledge-base')).toBe('/home/ruinb0w/Lab/my-knowledge-base')
+    expect(toWslPath('')).toBeNull()
+    expect(toWslPath('  ')).toBeNull()
+    expect(toWslPath('\\\\server\\share\\kb')).toBeNull()
+    expect(toWslPath('relative/dir')).toBeNull()
+  })
+})
+
+describe('parseRuntimeVersion', () => {
+  it('从横幅里认版本', () => {
+    expect(parseRuntimeVersion(BANNER)).toBe('0.88.5')
+  })
+
+  it('没有版本行就是 null(别把端口当版本)', () => {
+    expect(parseRuntimeVersion('Local:   http://127.0.0.1:45167')).toBeNull()
+  })
+})
+
+describe('okRuntime', () => {
+  it('Windows 走 WSL,其它平台在进程内 fork', () => {
+    expect(okRuntime('win32')).toBe('wsl')
+    expect(okRuntime('linux')).toBe('native')
+    expect(okRuntime('darwin')).toBe('native')
   })
 })

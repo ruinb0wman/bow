@@ -97,6 +97,8 @@ onBeforeUnmount(() => {
     </p>
     <p class="hint">
       OK 一个项目一个服务,这里固定一个目录(必须已经 `ok init` 过)。换目录会先停掉旧服务。
+      服务用的是**你自己装的 `ok`**(`npm i -g @inkeep/open-knowledge`);Windows 上服务跑在 WSL 里
+      (pi 也在那一侧),所以目录是 **Linux 路径**(`/mnt/c/…` 或 `/home/…`)。
     </p>
 
     <h3 class="section-title">行为</h3>

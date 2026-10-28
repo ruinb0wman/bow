@@ -1,31 +1,33 @@
 /**
- * 内置 OpenKnowledge(OK)插件:把 OK 的服务跑在 **Electron 自带的 Node** 里,不依赖机器上装没装 `ok`。
+ * 内置 OpenKnowledge(OK)插件:bow 只是**启动器** —— 服务用机器上装的 `ok` 起,不往应用里打一份。
  *
  * 改代码前先看这四条:
- * 1. **只 fork 公开入口** `dist/cli.mjs`(经 `createRequire().resolve('@inkeep/open-knowledge')` 找到)。
- *    不要 import OK 的内部 chunk(`start-<hash>.mjs` 那种):文件名每个版本都变,而且实测在
- *    进程内起会 404 掉前端 shell(要自己补齐 `serverRuntime` 等私有选项),还把整个服务压进
- *    主进程事件循环 —— 它崩了浏览器跟着崩。
- * 2. **Electron 44 自带 Node 24.20**,正好满足 OK 的 `engines: node>=24`;它的两个原生模块
- *    (`@parcel/watcher` / `@napi-rs/keyring`)是 N-API,在 Electron 里能直接 load(实测)。
- * 3. **端口现抓**:OK 每次随机分配,横幅里的 `http://127.0.0.1:<port>` 是唯一来源;起完再读
- *    `.ok/local/server.lock` 交叉校验,避免抓到上一条(重启前的)横幅。
- * 4. **进程归 bow**:退出前先 SIGTERM 让它优雅停机(它会 flush 待写文档),超时才强杀。
+ * 1. **不 import / 不 bundle OK**:命令行自己叫 `ok`,交给你装(npm / bun 全局都行);升级 OK 与
+ *    升级 bow 完全无关。
+ * 2. **必须走用户的登录 shell(`-lic`)+ `exec`**:`ok` 常装在 `~/.local/bin` / `~/.bun/bin`,
+ *    GUI 起来的环境 PATH 里没有;`exec` 让 shell 自己被替换掉,杀子进程时服务跟着退。
+ * 3. **端口现抓**:OK 每次随机分配,横幅里的 `http://127.0.0.1:<port>` 是唯一来源;原生模式
+ *    再读 `.ok/local/server.lock` 交叉校验,避免抓到上一条(重启前的)横幅。
+ * 4. **进程归 bow**:退出前先让它优雅停机(它会 flush 待写文档),超时才强杀。
  *    `--idle-shutdown` 保留它自己的默认 30 分钟兜底 —— 标签关了、bow 崩了,服务会自己退。
+ * 5. **Windows 上起的是 WSL 里的 `ok`**(见 `VIA_WSL` 与 `spawnOk` 的注释):pi 只装在发行版
+ *    里,OK 要驱动它就只能自己也待在那一侧。所以 Windows 上的项目目录是 **Linux 路径**。
  */
 
-import { app, BrowserWindow, dialog, utilityProcess } from 'electron'
-import type { UtilityProcess } from 'electron'
+import { app, BrowserWindow, dialog } from 'electron'
+import { spawn, spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import type { PluginContext, PluginMain, PluginStorage } from '../../main/plugins/types'
 import {
   DEFAULT_SETTINGS,
   OK_EVENT,
   normalizeSettings,
+  okRuntime,
   parseLock,
   parsePortFromStdout,
+  parseRuntimeVersion,
+  toWslPath,
   type OkLock,
   type OkPhase,
   type OkSettings,
@@ -44,15 +46,58 @@ function delay(ms: number): Promise<void> {
   })
 }
 
+/** 这里只用到「能读输出、能 kill、能等退出」这点共性:原生是 utilityProcess,Windows 是 wsl.exe 子进程 */
+interface ChildLike {
+  readonly pid?: number
+  readonly stdout: NodeJS.ReadableStream | null
+  readonly stderr: NodeJS.ReadableStream | null
+  kill(): boolean
+  once(event: 'exit', listener: (code: number | null) => void): unknown
+}
+
+/** Windows 上 OK 服务跑在 WSL 里(理由见 `okRuntime` 的注释) */
+const VIA_WSL = okRuntime(process.platform) === 'wsl'
+
 /**
- * `@inkeep/open-knowledge` 的 CLI 绝对路径。
- *
- * 走公开的 exports(`.` → `dist/index.mjs`),再取同目录的 `cli.mjs`,不碰任何 hash 文件名。
- * 打包后包体在 `app.asar.unpacked` 里(electron-builder 的 asarUnpack),所以要换掉 asar 前缀。
+ * WSL 里 `ok` / `pi` 的 PATH 只写在**交互式** rc(`~/.zshrc`)里:实测 `wsl.exe -e /bin/sh -lc`
+ * 拿不到 `~/.bun/bin`,得用用户的登录 shell 加 `-lic`。探测一次就缓存(约 200ms)。
  */
-function cliPath(): string {
-  const entry = createRequire(__filename).resolve('@inkeep/open-knowledge')
-  return join(dirname(entry.replace(/app\.asar(?=[\\/])/, 'app.asar.unpacked')), 'cli.mjs')
+let cachedWslShell: string | null = null
+function wslShell(): string {
+  if (cachedWslShell !== null) return cachedWslShell
+  const probe = spawnSync('wsl.exe', ['-e', '/bin/sh', '-lc', 'printf %s "$SHELL"'], {
+    encoding: 'utf8',
+    timeout: 5_000
+  })
+  const shell = (probe.stdout ?? '').trim()
+  cachedWslShell = /^\/[\w./-]+$/.test(shell) ? shell : '/bin/bash'
+  return cachedWslShell
+}
+
+/** Linux/mac:GUI 进程的 `SHELL` 一般由 pam 设好;没有就按惯例回落到 bash */
+function posixShell(): string {
+  const shell = (process.env.SHELL ?? '').trim()
+  return /^\/[\w./-]+$/.test(shell) ? shell : '/bin/bash'
+}
+
+/** `ok` 不在 PATH 时的典型输出(各 shell 一句话都不一样,只用来附一句安装提示) */
+const NO_OK_RE = /command not found|not found: ok|exec: ok: not found|不是内部或外部命令/
+
+/**
+ * 起一条 OK 子命令。
+ *
+ * 两边都经用户登录 shell —— `ok` 装在 `~/.local/bin` / `~/.bun/bin` 这种只在交互式 rc 里加进
+ * PATH 的位置;`exec` 让 shell 自己被替换掉,杀掉子进程时服务跟着退(实测:杀 wsl.exe 客户端,
+ * 发行版里的 node 一起消失)。
+ *
+ * Windows 还必须 `--cd` 给项目目录:OK 拿 cwd 当项目根,而 wsl.exe 默认落在 Windows 的路径上。
+ */
+function spawnOk(args: string[], cwd: string): ChildLike {
+  // shortcut: args 全是固定字面量(start --no-open-browser / init),不做引号转义
+  const line = `exec ok ${args.join(' ')}`
+  return VIA_WSL
+    ? spawn('wsl.exe', ['--cd', cwd, '-e', wslShell(), '-lic', line], { stdio: 'pipe', windowsHide: true })
+    : spawn(posixShell(), ['-lic', line], { cwd, stdio: 'pipe' })
 }
 
 /** stderr 尾巴:报错只给最后两行,免得把一个 Node 栈全灌进设置页 */
@@ -67,7 +112,7 @@ function lastLine(text: string): string {
 }
 
 interface OkRuntime {
-  child: UtilityProcess
+  child: ChildLike
   exited: Promise<void>
 }
 
@@ -119,7 +164,9 @@ function createOkPlugin(): PluginMain {
   }
 
   function readLock(): OkLock | null {
-    if (!settings.projectPath) return null
+    // WSL 模式:项目目录是 Linux 路径,Windows 侧的 fs 摸不到(要经 \\wsl.localhost UNC);
+    // lock 只用来交叉校验端口与版本,这两样都能从横幅里拿到,不值得为此再添一条访问路径
+    if (VIA_WSL || !settings.projectPath) return null
     try {
       return parseLock(readFileSync(join(settings.projectPath, '.ok/local/server.lock'), 'utf8'))
     } catch {
@@ -152,12 +199,6 @@ function createOkPlugin(): PluginMain {
   async function start(): Promise<OkState> {
     error = null
     if (!settings.projectPath) return fail('还没设置 OpenKnowledge 项目目录(设置页 → OpenKnowledge)')
-    let cli: string
-    try {
-      cli = cliPath()
-    } catch {
-      return fail('bow 里没装 @inkeep/open-knowledge(在仓库根目录跑 bun install)')
-    }
 
     phase = 'starting'
     stopRequested = false
@@ -165,13 +206,9 @@ function createOkPlugin(): PluginMain {
     stderr = ''
     announce()
 
-    let child: UtilityProcess
+    let child: ChildLike
     try {
-      child = utilityProcess.fork(cli, ['start', '--no-open-browser'], {
-        cwd: settings.projectPath,
-        stdio: 'pipe',
-        serviceName: 'open-knowledge'
-      })
+      child = spawnOk(['start', '--no-open-browser'], settings.projectPath)
     } catch (e) {
       return fail(e instanceof Error ? e.message : String(e))
     }
@@ -218,19 +255,21 @@ function createOkPlugin(): PluginMain {
     }
 
     // 子进程刚退也有可能是「项目里已经有服务」(它打印 already running 后立刻 exit 0):
-    // 再从 lock 探一次,活着就接管状态(不接管进程)
+    // 再从它的输出里找一次端口,活着就接管状态(不接管进程)
     if (childGone) {
-      const lock = readLock()
-      if (lock && (await probe(lock.port))) return adopt(lock.port, null)
+      const found = parsePortFromStdout(stdout)
+      if (found !== null && (await probe(found))) return adopt(found, null)
     }
     if (stopRequested) return state()
 
     await shutdown()
-    return fail(
-      childGone
-        ? `OpenKnowledge 没起来(exit ${exitCode}):${lastLine(stderr) || lastLine(stdout) || '看服务日志'}`
-        : `OpenKnowledge ${STARTUP_TIMEOUT_MS / 1000} 秒内没起来${stderr ? `:${lastLine(stderr)}` : ''}`
-    )
+    if (!childGone) return fail(`OpenKnowledge ${STARTUP_TIMEOUT_MS / 1000} 秒内没起来${stderr ? `:${lastLine(stderr)}` : ''}`)
+    const detail = lastLine(stderr) || lastLine(stdout) || '看服务日志'
+    // 最常见的失败就是没装 ok:它只是一条 “command not found”,用户不会到那里找包名
+    const hint = NO_OK_RE.test(stderr + stdout)
+      ? ' —— 先装 ok(npm i -g @inkeep/open-knowledge;Windows 上装在 WSL 里)'
+      : ''
+    return fail(`OpenKnowledge 没起来(exit ${exitCode}):${detail}${hint}`)
   }
 
   /**
@@ -239,10 +278,10 @@ function createOkPlugin(): PluginMain {
    * `owner` 传 null 或「lock 里的 pid 与我们 fork 的不一致」时**不接管进程** ——
    * 那是别人(终端里 `ok start`)起的服务,我们不该去停它。
    */
-  function adopt(found: number, owner: UtilityProcess | null): OkState {
+  function adopt(found: number, owner: ChildLike | null): OkState {
     const lock = readLock()
     port = found
-    runtimeVersion = lock?.runtimeVersion ?? null
+    runtimeVersion = lock?.runtimeVersion ?? parseRuntimeVersion(stdout)
     if (owner === null || (lock !== null && lock.pid !== owner.pid)) runtime = null
     phase = 'running'
     error = null
@@ -264,14 +303,8 @@ function createOkPlugin(): PluginMain {
     stopRequested = true
     if (starting) await starting.catch(() => undefined)
     if (!runtime) {
-      // 服务不是 bow 起的:只把状态同步回来,绝不去动别人的进程
-      const lock = readLock()
-      if (lock && (await probe(lock.port))) {
-        port = lock.port
-        runtimeVersion = lock.runtimeVersion
-        phase = 'running'
-        return announce()
-      }
+      // 服务不是 bow 起的(比如终端里 `ok start`):只把状态同步回来,绝不去动别人的进程
+      if (port !== null && (await probe(port))) return announce()
       phase = 'stopped'
       port = null
       runtimeVersion = null
@@ -290,8 +323,13 @@ function createOkPlugin(): PluginMain {
    * shortcut: OK 的 init 在部分情况下会问交互式问题,这里没有 stdin —— 用 30s 超时兜住,
    * 真卡住就当失败报给设置页,要精细控制就改成给 stdin 喂应答。
    */
-  async function runOnce(cli: string, args: string[], cwd: string): Promise<{ code: number; output: string }> {
-    const child = utilityProcess.fork(cli, args, { cwd, stdio: 'pipe', serviceName: 'open-knowledge-init' })
+  async function runOnce(args: string[], cwd: string): Promise<{ code: number; output: string }> {
+    let child: ChildLike
+    try {
+      child = spawnOk(args, cwd)
+    } catch (e) {
+      return { code: -1, output: e instanceof Error ? e.message : String(e) }
+    }
     let output = ''
     child.stdout?.on('data', (chunk: Buffer | string) => {
       output = (output + String(chunk)).slice(-4000)
@@ -306,7 +344,7 @@ function createOkPlugin(): PluginMain {
       }, 30_000)
       child.once('exit', (exitCode) => {
         clearTimeout(timer)
-        resolve(exitCode)
+        resolve(exitCode ?? -1)
       })
     })
     return { code, output }
@@ -314,14 +352,11 @@ function createOkPlugin(): PluginMain {
 
   async function initProject(): Promise<{ ok: boolean; error?: string }> {
     if (!settings.projectPath) return { ok: false, error: '先选一个目录' }
-    let cli: string
-    try {
-      cli = cliPath()
-    } catch {
-      return { ok: false, error: 'bow 里没装 @inkeep/open-knowledge' }
+    const res = await runOnce(['init'], settings.projectPath)
+    if (res.code !== 0) {
+      const detail = lastLine(res.output) || `ok init 失败(exit ${res.code})`
+      return { ok: false, error: NO_OK_RE.test(res.output) ? `${detail} —— 先装 ok` : detail }
     }
-    const res = await runOnce(cli, ['init'], settings.projectPath)
-    if (res.code !== 0) return { ok: false, error: lastLine(res.output) || `ok init 失败(exit ${res.code})` }
     return { ok: true }
   }
 
@@ -329,7 +364,7 @@ function createOkPlugin(): PluginMain {
     manifest: {
       id: 'ok',
       name: 'OpenKnowledge',
-      description: '内置的 OpenKnowledge 知识库:随 bow 启动服务,工具栏一键打开它的 web 前端',
+      description: 'OpenKnowledge 知识库(用你自己装的 ok):随 bow 启动服务,工具栏一键打开它的 web 前端',
       version: '1.0.0'
     },
     capabilities: ['ui', 'service'],
@@ -341,6 +376,12 @@ function createOkPlugin(): PluginMain {
         defaults: { settings: { ...DEFAULT_SETTINGS } }
       })
       settings = normalizeSettings(store.get().settings)
+      // 老设置里存的是 Windows 路径(那时服务跑在 bow 里):换成同一批文件的 Linux 路径,
+      // 否则升级后目录变成「不是 OK 项目」
+      if (VIA_WSL) {
+        const migrated = toWslPath(settings.projectPath)
+        if (migrated !== null) settings = { ...settings, projectPath: migrated }
+      }
       persist()
 
       ctx.ipc.handle('getState', (): OkState => state())
@@ -354,7 +395,14 @@ function createOkPlugin(): PluginMain {
         const parent = BrowserWindow.getFocusedWindow()
         const result = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options)
         if (result.canceled || result.filePaths.length === 0) return state()
-        settings = { ...settings, projectPath: result.filePaths[0] }
+        // 服务在 WSL 里,`cwd` 只能是 Linux 路径
+        const projectPath = VIA_WSL ? toWslPath(result.filePaths[0]) : result.filePaths[0]
+        if (projectPath === null) {
+          error = `这个目录换算不到 WSL 里的路径:${result.filePaths[0]}(只认盘符路径 C:\\… 或 Linux 路径 /home/…)`
+          return announce()
+        }
+        settings = { ...settings, projectPath }
+        error = null
         persist()
         await stop()
         if (settings.autoStart) void ensure()
