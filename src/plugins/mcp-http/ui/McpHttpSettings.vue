@@ -105,8 +105,16 @@ onBeforeUnmount(() => {
       <code>http://127.0.0.1:{{ state?.settings.port ?? state?.defaultPort }}/mcp</code> 即可,
       不需要先跑 <code>npm run mcp:http</code>。想彻底关闭就停用「MCP HTTP 服务」插件,
       或直接点地址栏右侧工具栏里的 MCP 状态灯(白=就绪、蓝=正在被调用、灰=已停用)。
-      改了端口或令牌后,AI 侧配置要同步改并重连。令牌非空时所有请求都必须带
-      <code>Authorization: Bearer &lt;令牌&gt;</code>。
+      令牌非空时所有请求都必须带 <code>Authorization: Bearer &lt;令牌&gt;</code>。
+    </div>
+  </div>
+  <div class="set-row set-col">
+    <div class="pbm-tools hint">
+      接进 pi:在 bow 仓库跑 <code>npm run mcp:install -- --http --direct-core</code> ——
+      它写 <code>~/.pi/agent/mcp.json</code> 的 <code>browser</code> 条目(核心 6 个工具为原生工具,其余走 codemode),
+      并把 <code>bow-browser</code> skill 装到 <code>~/.pi/agent/skills/</code>(工具怎么用、怎么选看那份 skill)。
+      只改配置不装 skill 就加 <code>--no-skill</code>;要删干净用 <code>--remove</code>。
+      端口或令牌变了要重跑一次,再重启 pi 才会用新配置。
     </div>
   </div>
 </template>
