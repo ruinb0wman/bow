@@ -15,6 +15,7 @@ import { onTabActivated as onFindTabActivated, onTabClosed as onFindTabClosed, o
 import { loadRendererEntry } from './rendererEntry'
 import { startMcpServer, CORE_MCP_TOOL_NAMES } from './mcp'
 import { createTabTargets } from './tabTarget'
+import { applyProxy } from './proxy'
 import { applyBrowserIdentity } from './ua'
 import { acquireSingletonLock } from './singleInstance'
 import { collectOpenTargets, defaultOpenTargetDeps } from './openArgs'
@@ -195,6 +196,13 @@ function wireWindowContext(ctx: WindowContext, targets: string[], mode: LocalFil
   // 窗口缩放 → 页面视图重新布局(几何由 TabManager 统一算)
   win.on('resize', () => tabs.layout())
 
+  // chrome UI 自己崩了(渲染进程被杀):重新加载它。标签是**独立的 WebContentsView**,
+  // 不受影响 —— 不重载的话用户看到的就是一整片空白/“窗口没了”。
+  win.webContents.on('render-process-gone', (_e, details) => {
+    logError('chrome UI 渲染进程异常退出,重新加载', details.reason, details.exitCode)
+    if (!win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.reload()
+  })
+
   // 标签页 webContents → 内核内容注入宿主
   tabs.setPageTracker({ track: (wc) => kernel.trackPage(wc) })
 
@@ -257,6 +265,8 @@ app.whenReady().then(async () => {
   // 先于一切窗口/视图/存储:显示名 → bow、userData 钉旧路径、UA 全局签名
   applyBrowserIdentity()
   initStores()
+  // 代理必须在任何页面/网络请求之前生效（网页与 net.fetch 都靠它）
+  await applyProxy()
   // 先于任何窗口/视图创建:保证 DevTools / Tab 快捷键监听覆盖全部 webContents
   setupDevTools()
 
@@ -394,6 +404,22 @@ app.on('window-all-closed', () => {
   app.quit()
 })
 
+// ---------- 崩溃/异常留痕 ----------
+// 双击启动的 bow 没有终端，窗口“说没就没”时只能靠这几行日志定位（browser.log 现在任何模式都写）。
+// 子进程（GPU / utility / 网络服务）掉线不会带走主进程，但会让功能莫名失效，所以一并记下来。
+app.on('child-process-gone', (_e, details) => {
+  logError('子进程异常退出', { type: details.type, reason: details.reason, code: details.exitCode })
+})
+app.on('render-process-gone', (_e, wc, details) => {
+  logError('渲染进程异常退出', { reason: details.reason, code: details.exitCode, url: wc?.getURL?.() })
+})
+// 正常退出时也留一行：日志停在“应用已启动”而没这一行 = 进程是被硬杀的
+process.on('exit', (code) => {
+  log('主进程退出', { code })
+})
 process.on('uncaughtException', (e) => {
   logError('未捕获异常', e)
+})
+process.on('unhandledRejection', (reason) => {
+  logError('未处理的 Promise 拒绝', reason)
 })

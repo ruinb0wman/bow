@@ -10,6 +10,7 @@ import type { PluginKernel } from './plugins/kernel'
 import type { WindowContext, WindowManager } from './windows'
 import { getLayoutsStore, getSettingsStore } from './stores'
 import { CLOSE_CONFIRM_OVERLAY_ID, confirmWindowClose } from './closeConfirm'
+import { applyProxy, currentProxy, envProxy, resolvedProxy, testProxy } from './proxy'
 import { focusAddressBar } from './tabShortcuts'
 import { handleFindEvent } from './findBar'
 import { log } from './logger'
@@ -224,12 +225,23 @@ export function registerIpc(windows: WindowManager, kernel: PluginKernel): void 
 
   // 设置(核心:搜索引擎 / 主页;插件设置由各插件自管)
   ipcMain.handle('settings:get', () => getSettingsStore().get())
-  ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
+  ipcMain.handle('settings:set', async (_e, patch: Partial<Settings>) => {
     const store = getSettingsStore()
     const settings = store.set(patch)
     sendSettings(settings)
+    // 代理改一下就要立即生效(网页与 net.fetch 共用一个 session 代理)
+    if ('proxyMode' in patch || 'proxyServer' in patch) await applyProxy()
     return settings
   })
+
+  // ---------- 网络代理(设置页「网络」分区) ----------
+  ipcMain.handle('proxy:info', async () => ({
+    decision: currentProxy(),
+    env: envProxy() ? '已设置' : '',
+    // Chromium 真正用的代理:设置对了但它还是 DIRECT,说明别处(系统/命令行)在覆盖
+    resolved: await resolvedProxy()
+  }))
+  ipcMain.handle('proxy:test', () => testProxy())
 
   // 通用顶层浮层开关(chrome 侧下发内容描述;overlay 页面按 id 渲染注册表组件)。
   // 多窗口:浮层开在**发起请求的那个窗口**(每个窗口一套 OverlayManager)。

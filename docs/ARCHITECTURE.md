@@ -41,6 +41,9 @@ src/
     devtools.ts                  DevTools 永远 detach + 全局快捷键拦截
     tabShortcuts.ts              标签/分屏/历史快捷键(Ctrl+T/W/L/R/,/数字/Shift+T/Shift+E + Ctrl+←/→ + Ctrl+Shift+方向/Alt+Shift+方向)全局拦截(终端页里 Ctrl+L/Ctrl+R/Ctrl+←/→ 放行给 shell;分屏键在终端页也由主进程接管)
     tabManager.ts                TabManager:每标签一个 WebContentsView + 内部页面标签 + 标签组/嵌套分屏 + 布局
+                                标签页内容注入登记口:`setPageTracker()`(插件规则注入)
+    proxy.ts                     代理的唯一落点:resolveProxy(设置 > 环境变量 > 系统) → session.setProxy,
+                                  网页与 net.fetch 同吃这一份;testProxy() 供设置页「测试连接」
     overlay.ts                   OverlayManager:常驻透明顶层视图,按 placement 布局
     agentNotify.ts               AgentNotify:代理(终端里的 pi)状态信号 → 标签角标 + 系统通知的**时机**
                                  (角标定时器 / `blocked` 通知的撤回;不 import electron,可单测)
@@ -94,6 +97,10 @@ src/
                                           注册计划(ProgID + OpenWithProgids + SystemFileAssociations 动词 +
                                           Capabilities)/ 注册编排。**不做编辑器本体**:把文件翻译成
                                           `terminal:run` 交给终端插件 spawn(见 §5.9)
+    services/                           本地服务插件(dev server 启动器):`main.ts` 按 id 管 N 条子进程
+                                          (命令作为单个 argv 交给用户的登录 shell、探活、只停自己起的进程),
+                                          `shared.ts` 是设置归一 / check 判定 / 标签页归属的纯逻辑,
+                                          `ui/icons.ts` 是图标名 → lucide 的静态映射(别改成 `import *`)
   preload/index.ts              contextBridge 暴露 window.browserAPI
   renderer/
     index.html + src/App.vue            chrome UI:标签栏/工具栏/地址栏/插件插槽
@@ -574,7 +581,6 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `passwords` | — / — | ui, shortcut | `status` `setup` `unlock` `lock` `list` `getEntry` `save` `remove` `copy` `readPageFields` `fillEntry` `beginFill` `changeMaster` `getSettings` `setSettings` `wipe` `exportBackup` `importBackup` | —(刻意不贡献 MCP 工具:与 AI 隔离) | — | —(按需 `pages.execute` 注入探测 / 下拉 / 填入脚本,不注入常驻脚本) | — | `Ctrl/Cmd+Shift+P` | emit `state-changed` `settings-changed` `open-panel` | `passwords.json`(AES-256-GCM 密文)+ `passwords-settings.json`(自动锁定 / 剪贴板 / 子域匹配);`exportBackup` 只写**密文副本**到 bow 下载目录;`importBackup` 校验形状后**整库替换**(已初始化时先把当前库导出一份再覆盖,导入后强制锁定) |
 | `pomo` | — / — | ui, mcp, shortcut | `getState` `getSettings` `setSettings` `start` `pause` `skip` `reset` `toggle` | `browser_pomo_status` `browser_pomo_start` `browser_pomo_pause` `browser_pomo_skip` | — | — | — | `Ctrl/Cmd+Shift+O` | emit `state` `phase-end` | `pomo.json`(设置 + 运行状态:阶段 / `endsAt` / 本轮计数 / 今日完成数;**只在状态转换时写盘**) |
 | `editor` | — / — | ui | `getSettings` `setSettings` `status` `register` `unregister` `openSystemSettings` `test` `pickFile` | — | — | — | — | — | 认领本地文件(`ctx.fileOpeners`);emit `terminal:run`(让终端插件在指定标签里跑 `wsl.exe -e nvim <file>`) | `editor.json`(命令模板 / 路径写法 / 扩展名白名单 + `lastRegistered`)。Windows 注册:ProgID `bowEditor`(open/edit 都指向 `--edit "%1"`)、`OpenWithProgids`、`SystemFileAssociations\.<ext>\shell\bow-edit`、`Capabilities\FileAssociations`(与 `default-browser` 共用,值名不重叠);**不写** `Classes\.<ext>` 默认值 |
-| `ok` | — / — | ui, service | `getState` `ensure` `stop` `pickProject` `initProject` `setSettings` | — | — | — | — | — | emit `changed` | `ok.json`(唯一的项目目录 + 自启开关)。**不打包 OK**:一律用系统里的 `ok`(Linux/mac 直接起,Windows 走 WSL),所以升级 OK 与升级 bow 无关,没装就在设置页报“先装 ok”。两侧都经用户登录 shell + `exec` —— 命令:`<shell> -lic 'exec ok start --no-open-browser'`(Windows 在它前面套 `wsl.exe --cd <Linux 项目> -e <shell>`)。端口从横幅现抓(原生再读 `.ok/local/server.lock` 交叉校验),退出前停止让它优雅停机(超时才强杀) |
 
 
 **渲染层侧**(`registry.ts` / 各插件 `ui.ts`)
@@ -592,14 +598,13 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `passwords` | — | `PasswordsButton` | `plugin:passwords:panel`(full,`PasswordsPanel`) | `PasswordsSettings` |
 | `pomo` | — | `PomoButton`(显示倒计时) | `plugin:pomo:panel`(below-chrome,`PomoPanel`;锚定在按钮右下方) | `PomoSettings` |
 | `editor` | — | `EditorButton`(用编辑器打开…) | —(编辑器是终端页里的 nvim,本插件没有自己的页面) | `EditorSettings`(命令模板 / 路径写法 / 扩展名白名单 / Windows 注册) |
-| `ok` | — | `OkButton`(知识库) | —(OK 是自带 web 前端的独立服务,只能当普通 http 标签打开) | `OkSettings`(项目目录 / 自启开关 / 运行状态 / 初始化 / 停止) |
 
 
 ⚠️ 终端插件的 `ui/TerminalView.vue` **不在**注册表里 —— 它是 `bow://terminal` 页面的主体,
 由 `renderer/src/<entry>/main.ts` 直接引用。
 插槽/浮层注册表面向的是 chrome 与 overlay 两个宿主。
 
-`SLOT_PLUGIN_ORDER.toolbar = ['bookmarks','downloads','mcp-http','terminal','editor','passwords','pomo','ok']`;
+`SLOT_PLUGIN_ORDER.toolbar = ['bookmarks','downloads','mcp-http','terminal','editor','passwords','pomo']`;
 `addressbar-trailing` 为空(保持注册顺序)。未列出的插件排在已列出者之后。
 
 ### 5.9 内核事件总线(全部事件名)

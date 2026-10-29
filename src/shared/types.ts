@@ -209,6 +209,8 @@ export interface Suggestion {
   visitedAt?: number
 }
 
+import type { ProxyMode } from './proxy'
+
 export interface Settings {
   searchEngine: SearchEngineId
   homepage: string
@@ -220,6 +222,16 @@ export interface Settings {
   toolbarOrder: string[]
   /** 工具栏里隐藏的插件按钮(插件 id) */
   toolbarHidden: string[]
+  /**
+   * 代理模式(见 @shared/proxy):
+   * - `manual`:用 `proxyServer`;
+   * - `direct`:直连;
+   * - `system`:跟随系统(Windows 的系统代理、Linux 上通常等于直连);
+   * - **未设置**:自动 —— 先看环境变量(`HTTPS_PROXY` 等),没有就跟随系统。
+   */
+  proxyMode?: ProxyMode
+  /** 代理地址,形如 `http://127.0.0.1:7890`(账号密码不支持,会被丢掉) */
+  proxyServer?: string
 }
 
 export interface FlatBookmark {

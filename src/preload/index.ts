@@ -12,6 +12,7 @@ import type {
   TabInfo
 } from '../shared/types'
 import type { PluginInfo } from '../shared/plugins'
+import type { ProxyDecision, ProxyMode } from '../shared/proxy'
 import type { TabGroupInfo } from '../shared/types'
 import type { LayoutPreset, PaneDir } from '../shared/split'
 
@@ -101,6 +102,11 @@ export interface BrowserAPI {
     onChanged: (cb: (list: PluginInfo[]) => void) => () => void
     onEvent: (cb: (ev: PluginHostEvent) => void) => () => void
   }
+  // 网络代理
+  proxy: {
+    info: () => Promise<{ decision: ProxyDecision; env: string; resolved: string }>
+    test: () => Promise<{ ok: boolean; detail: string }>
+  }
   // 事件订阅(返回取消订阅函数)
   onTabUpdated: (cb: (tab: TabInfo) => void) => () => void
   onTabsChanged: (cb: (tabs: TabInfo[]) => void) => () => void
@@ -161,6 +167,10 @@ const api: BrowserAPI = {
     suggest: (input) => ipcRenderer.invoke('plugins:suggest', input),
     onChanged: (cb) => subscribe('plugins:changed', cb),
     onEvent: (cb) => subscribe('plugin:event', cb)
+  },
+  proxy: {
+    info: () => ipcRenderer.invoke('proxy:info'),
+    test: () => ipcRenderer.invoke('proxy:test')
   },
   onTabUpdated: (cb) => subscribe('tab:updated', cb),
   onTabsChanged: (cb) => subscribe('tab:list-changed', cb),

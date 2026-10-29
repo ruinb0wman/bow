@@ -14,7 +14,7 @@ export default defineConfig({
       }
     }
   },
-  preload: {}, 
+  preload: {},
   renderer: {
     plugins: [vue()],
     resolve: {

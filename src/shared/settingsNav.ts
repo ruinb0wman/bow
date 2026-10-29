@@ -1,10 +1,11 @@
 /**
  * 设置页侧栏导航模型(纯函数,可单测):
- * 固定顺序 = [常规, 工具栏, 快捷键, 插件管理] + 「已启用且贡献了设置分区」的插件各一项(保持注册顺序)。
+ * 固定顺序 = [常规, 网络, 工具栏, 快捷键, 插件管理] + 「已启用且贡献了设置分区」的插件各一项(保持注册顺序)。
  * 渲染层负责把 PLUGIN_UI 注册表 + PluginInfo 映射成输入项,本模块只做分组/过滤/排序。
  */
 
 export const SETTINGS_GENERAL_ID = 'general'
+export const SETTINGS_NETWORK_ID = 'network'
 export const SETTINGS_TOOLBAR_ID = 'toolbar'
 export const SETTINGS_SHORTCUTS_ID = 'shortcuts'
 export const SETTINGS_PLUGINS_ID = 'plugins'
@@ -26,6 +27,7 @@ export interface SettingsNavInput {
 
 export type SettingsNavItem =
   | { id: typeof SETTINGS_GENERAL_ID; label: '常规'; kind: 'general' }
+  | { id: typeof SETTINGS_NETWORK_ID; label: '网络'; kind: 'network' }
   | { id: typeof SETTINGS_TOOLBAR_ID; label: '工具栏'; kind: 'toolbar' }
   | { id: typeof SETTINGS_SHORTCUTS_ID; label: '快捷键'; kind: 'shortcuts' }
   | { id: typeof SETTINGS_PLUGINS_ID; label: '插件管理'; kind: 'manage' }
@@ -35,6 +37,8 @@ export type SettingsNavItem =
 export function buildSettingsNav(items: SettingsNavInput[]): SettingsNavItem[] {
   const nav: SettingsNavItem[] = [
     { id: SETTINGS_GENERAL_ID, label: '常规', kind: 'general' },
+    // 网络(代理)紧跟常规:它影响一切联网行为,排查「装不上扩展 / 网页打不开」时第一个要找的地方
+    { id: SETTINGS_NETWORK_ID, label: '网络', kind: 'network' },
     // 外观偏好,挨着常规最好找
     { id: SETTINGS_TOOLBAR_ID, label: '工具栏', kind: 'toolbar' },
     // 参考型内容,放在常用项旁边最容易找
