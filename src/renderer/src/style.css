@@ -485,6 +485,12 @@ select:focus {
   font-weight: 600;
 }
 
+/* 目录视图里「返回」条兼作根目录落点 */
+.la-nav.drop-root {
+  background: var(--bg3);
+  border-radius: 8px;
+}
+
 .la-body {
   flex: 1;
   overflow-y: auto;

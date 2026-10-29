@@ -91,22 +91,23 @@ const plugin: PluginMain = {
       }
       return res
     })
-    ctx.ipc.handle('move', (id: string, targetFolderId: string | null) => {
+    // index(可选)= 目标列表里的最终下标,缺省追加末尾;面板内的拖动排序/移入目录都走这一条
+    ctx.ipc.handle('move', (id: string, targetFolderId: string | null, index?: number) => {
       const tree = store.get()
       const node = findNode(tree, id)
       if (!node) return { ok: false, error: '书签不存在' }
       // 一级目录不变量:目录恒在根;书签目标仅限根或根级目录
       const rootFolderIds = new Set<string>()
       for (const n of tree) if (n.type === 'folder') rootFolderIds.add(n.id)
-      if (node.type === 'folder') {
-        if (targetFolderId !== null) return { ok: false, error: '目录只能位于根目录' }
-        return { ok: true }
+      if (node.type === 'folder' && targetFolderId !== null) {
+        return { ok: false, error: '目录只能位于根目录' }
       }
       if (targetFolderId !== null && !rootFolderIds.has(targetFolderId)) {
         return { ok: false, error: '目标必须是根级目录' }
       }
-      const moved = moveNode(tree, id, targetFolderId)
+      const moved = moveNode(tree, id, targetFolderId, index)
       if (!moved) return { ok: false, error: '移动失败(目标文件夹不存在或形成循环)' }
+      if (moved === tree) return { ok: true } // 位置没变:不写盘、不广播
       store.setRaw(moved)
       emitChanged()
       return { ok: true }

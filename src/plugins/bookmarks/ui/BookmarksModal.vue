@@ -199,6 +199,110 @@ async function moveTo(node: BookmarkNode, target: string): Promise<void> {
   moving.value = null
 }
 
+// ---------- 拖动排序 / 拖进目录 ----------
+/**
+ * 指针手势,与标签栏拖动(`App.vue`)同一套骨架:4px 阈值、`setPointerCapture`、window 四监听。
+ * 但书签是网格 + 两种落点(缝隙 = 改顺序,目录磁贴 = 移入),所以落点计算自己写;
+ * 且**松手才提交一次 IPC**(网格里实时让位会让被拖的磁贴在鼠标下滑走)。
+ */
+const gridEl = ref<HTMLElement | null>(null)
+const navEl = ref<HTMLElement | null>(null)
+const draggingId = ref<string | null>(null)
+/** 当前高亮的落点:落进哪个目录磁贴 / 插在哪个磁贴之前(两者互斥) */
+const drop = ref<{ into: string | null; before: string | null; index: number | null } | null>(null)
+let dragMoved = false // 本次手势是否真的拖动过:松手后浏览器补的那次 click 要靠它吞掉
+let dragStartX = 0
+let dragStartY = 0
+const DRAG_THRESHOLD = 4
+
+function onTilePointerdown(node: BookmarkNode, e: PointerEvent): void {
+  if (e.button !== 0) return
+  if ((e.target as HTMLElement).closest('.la-actions')) return // 编辑/移动/删除按钮优先
+  if (search.value.trim()) return // 过滤后的下标映射不回全集,搜索时先不给拖
+  draggingId.value = node.id
+  dragMoved = false
+  drop.value = null
+  dragStartX = e.clientX
+  dragStartY = e.clientY
+  // 接管指针:拖到面板外也能收到 pointerup,不至于留下拖拽态
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  window.addEventListener('pointermove', onDragMove)
+  window.addEventListener('pointerup', endDrag)
+  window.addEventListener('pointercancel', endDrag)
+  window.addEventListener('blur', endDrag)
+}
+
+function onDragMove(e: PointerEvent): void {
+  if (draggingId.value == null) return
+  if (!dragMoved && Math.abs(e.clientX - dragStartX) < DRAG_THRESHOLD && Math.abs(e.clientY - dragStartY) < DRAG_THRESHOLD) return
+  dragMoved = true
+  document.body.classList.add('la-dragging')
+  computeDrop(e.clientX, e.clientY)
+}
+
+/**
+ * 指针 → 落点。走到「返回」条 = 移出到根末尾;命中目录磁贴(拖的不是目录)= 移入该目录;
+ * 否则算插入位 = 中心点排在指针之前的磁贴数(行优先:整行在上方,或同一行且中心在左)。
+ */
+function computeDrop(x: number, y: number): void {
+  const nav = navEl.value?.getBoundingClientRect()
+  if (nav && x >= nav.left && x <= nav.right && y >= nav.top && y <= nav.bottom) {
+    drop.value = { into: null, before: null, index: null }
+    return
+  }
+  const dragged = viewItems.value.find((n) => n.id === draggingId.value)
+  const others = viewItems.value.filter((n) => n.id !== draggingId.value)
+  const tiles = Array.from(gridEl.value?.querySelectorAll<HTMLElement>('.la-tile') ?? [])
+  let k = 0
+  let into: string | null = null
+  tiles.forEach((el, i) => {
+    const node = viewItems.value[i]
+    if (!node || node.id === draggingId.value) return
+    const r = el.getBoundingClientRect()
+    if (
+      node.type === 'folder' &&
+      dragged?.type !== 'folder' &&
+      x >= r.left &&
+      x <= r.right &&
+      y >= r.top &&
+      y <= r.bottom
+    ) {
+      into = node.id
+      return
+    }
+    // 整块在指针上方 = 这一行都排在指针之前;指针落在本行竖直区间内 = 比水平中心
+    if (y > r.bottom) k += 1
+    else if (y >= r.top && x > r.left + r.width / 2) k += 1
+  })
+  drop.value = into
+    ? { into, before: null, index: null } // 移入目录:追加到该目录末尾
+    : // `k` 已经排除被拖项 ⇒ 它直接就是「移出后的最终下标」;高亮那把插到 others[k] 之前
+      { into: null, before: others[k]?.id ?? null, index: k }
+}
+
+function endDrag(): void {
+  window.removeEventListener('pointermove', onDragMove)
+  window.removeEventListener('pointerup', endDrag)
+  window.removeEventListener('pointercancel', endDrag)
+  window.removeEventListener('blur', endDrag)
+  document.body.classList.remove('la-dragging')
+  // 不清 dragMoved:紧随其后的那次 click 要靠它吞掉(下一个 pointerdown 才复位)
+  const id = draggingId.value
+  const target = drop.value
+  draggingId.value = null
+  drop.value = null
+  if (!dragMoved || id == null || !target) return
+  // `index` 已是「移出被拖项之后」的最终下标(计算时排除了它),不用再减一
+  void api.plugins.invoke('bookmarks', 'move', id, target.into ?? viewFolderId.value, target.index ?? undefined)
+}
+
+/** 拖过之后浏览器仍会补一次 click:吞掉它,否则松手会进入目录 / 打开书签 */
+function onTileClick(node: BookmarkNode, e: MouseEvent): void {
+  if (dragMoved) return
+  if (node.type === 'folder') onFolderClick(node, e)
+  else openBookmark(node, e)
+}
+
 // ---------- 生命周期 ----------
 const unsubs: Array<() => void> = []
 onMounted(async () => {
@@ -243,7 +347,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- 目录视图返回条 -->
-      <div v-if="viewFolderId !== null" class="la-nav">
+      <div v-if="viewFolderId !== null" class="la-nav" ref="navEl" :class="{ 'drop-root': drop?.into === null && drop?.index === null }">
         <RButton size="small" @click="back"><ArrowLeft :size="13" /> 返回</RButton>
         <span class="la-nav-title">{{ viewTitle }}</span>
       </div>
@@ -259,14 +363,20 @@ onBeforeUnmount(() => {
                 : '该目录还没有书签'
           }}
         </div>
-        <div v-else class="la-grid">
+        <div v-else class="la-grid" ref="gridEl">
           <div
             v-for="node in viewItems"
             :key="node.id"
             class="la-tile"
-            :class="{ folder: node.type === 'folder' }"
+            :class="{
+              folder: node.type === 'folder',
+              dragging: draggingId === node.id,
+              'drop-into': drop?.into === node.id,
+              'drop-before': drop?.before === node.id
+            }"
             :title="tileTitle(node)"
-            @click="node.type === 'folder' ? onFolderClick(node, $event) : openBookmark(node, $event)"
+            @pointerdown="onTilePointerdown(node, $event)"
+            @click="onTileClick(node, $event)"
             @auxclick="(e) => { if (node.type === 'bookmark' && (e as MouseEvent).button === 1) openBookmarkBackground(api, node.url) }"
           >
             <div
@@ -336,7 +446,7 @@ onBeforeUnmount(() => {
       <div class="la-foot">
         <RButton size="small" @click="startAddBookmark"><Plus :size="13" /> 新建书签</RButton>
         <RButton size="small" @click="startAddFolder"><Plus :size="13" /> 新建文件夹</RButton>
-        <span class="la-hint">单击目录进入; Ctrl+点击目录后台打开全部页面</span>
+        <span class="la-hint">单击目录进入; Ctrl+点击目录后台打开全部页面; 拖动磁贴排序,拖到目录上移入</span>
         <span v-if="notice" class="la-notice">{{ notice }}</span>
       </div>
     </div>

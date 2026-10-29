@@ -111,6 +111,63 @@ describe('书签树操作', () => {
   })
 })
 
+describe('moveNode 指定位置(拖动排序)', () => {
+  const titles = (t: BookmarkTree): string[] => t.map((n) => n.title)
+  function tree3(): { tree: BookmarkTree; ids: string[] } {
+    const a = addBookmark([], { title: 'a', url: 'https://a.com' })
+    const b = addBookmark(a.tree, { title: 'b', url: 'https://b.com' })
+    const c = addBookmark(b.tree, { title: 'c', url: 'https://c.com' })
+    return { tree: c.tree, ids: [a.node.id, b.node.id, c.node.id] }
+  }
+  const folderTitles = (t: BookmarkTree, id: string): string[] => {
+    const n = findNode(t, id)
+    return n && n.type === 'folder' ? n.children.map((c) => c.title) : []
+  }
+
+  it('同列表后移', () => {
+    const { tree, ids } = tree3()
+    expect(titles(moveNode(tree, ids[0], null, 2)!)).toEqual(['b', 'c', 'a'])
+  })
+
+  it('同列表前移', () => {
+    const { tree, ids } = tree3()
+    expect(titles(moveNode(tree, ids[2], null, 0)!)).toEqual(['c', 'a', 'b'])
+  })
+
+  it('index 越界夹取', () => {
+    const { tree, ids } = tree3()
+    expect(titles(moveNode(tree, ids[0], null, -5)!)).toEqual(['a', 'b', 'c'])
+    expect(titles(moveNode(tree, ids[0], null, 99)!)).toEqual(['b', 'c', 'a'])
+  })
+
+  it('位置没变时返回原引用(调用方据此跳过写盘)', () => {
+    const { tree, ids } = tree3()
+    expect(moveNode(tree, ids[1], null, 1)).toBe(tree)
+  })
+
+  it('缺省 index 追加到目标目录末尾', () => {
+    let t = addFolder([], { title: 'F' }).tree
+    const fid = t[0].id
+    t = addBookmark(t, { title: 'a', url: 'https://a.com' }).tree
+    t = addBookmark(t, { title: 'b', url: 'https://b.com' }).tree
+    const [a, b] = t.filter((n) => n.type === 'bookmark')
+    t = moveNode(t, a.id, fid)!
+    t = moveNode(t, b.id, fid)!
+    expect(folderTitles(t, fid)).toEqual(['a', 'b'])
+  })
+
+  it('跨目录插到指定位置', () => {
+    let t = addFolder([], { title: 'F' }).tree
+    const fid = t[0].id
+    t = addBookmark(t, { title: 'a', url: 'https://a.com' }).tree
+    t = addBookmark(t, { title: 'b', url: 'https://b.com' }).tree
+    const [a, b] = t.filter((n) => n.type === 'bookmark')
+    t = moveNode(t, b.id, fid)! // 目录里先只有 b
+    t = moveNode(t, a.id, fid, 0)! // a 插到 b 之前
+    expect(folderTitles(t, fid)).toEqual(['a', 'b'])
+  })
+})
+
 describe('一级目录迁移 flattenToSingleLevel', () => {
   it('深层书签并入最近根级目录,嵌套目录删除', () => {
     const tree: BookmarkTree = [

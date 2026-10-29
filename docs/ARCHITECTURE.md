@@ -564,7 +564,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | id | core / alwaysOn | capabilities | IPC 方法 | MCP 工具 | net | content | suggest | shortcut | events | 存储 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `history` | ✓ / — | ui, suggest | `list` `count` `remove(ids[])` `clear` `getSettings` `setSettings` | — | — | — | priority 10 | — | on `tab:navigated` `search:performed`;emit `changed` | `history.json` `history-settings.json` |
-| `bookmarks` | ✓ / — | ui, suggest, mcp | `list` `add` `addFolder` `update` `remove` `move` `findByUrl` `export` `import` | `browser_add_bookmark` `browser_list_bookmarks` | — | — | priority 20 | — | emit `changed` | `bookmarks.json`(`import` = 选一个 JSON → 校验归一 → **整树替换**) |
+| `bookmarks` | ✓ / — | ui, suggest, mcp | `list` `add` `addFolder` `update` `remove` `move(id, folderId, index?)` `findByUrl` `export` `import` | `browser_add_bookmark` `browser_list_bookmarks` | — | — | priority 20 | — | emit `changed` | `bookmarks.json`(`import` = 选一个 JSON → 校验归一 → **整树替换**;`move` 的 `index` = 目标列表里的最终下标,缺省追加末尾,位置没变时不写盘) |
 | `cors` | — / — | ui, net | `getSettings` `setSettings` | — | `onBeforeSendHeaders`(记预检 id)+ `onHeadersReceived`(注入 ACAO/ACAM/ACAH,预检覆盖 statusLine) | — | — | — | emit `changed` | `cors.json` |
 | `mcp-http` | ✓ / — | ui, service | `getState` `setSettings` `restart` `toggle` | — | — | — | — | — | on `mcp-http:ready`(经 `service.onMcpHttpReady`)+ `mcpActivity.onChange`;emit `changed` | `mcp-http.json` |
 | `default-browser` | — / — | ui | `status` `register` `unregister` `openSettings` | — | — | — | — | — | — | 无(状态现读系统:Linux 读 `mimeapps.list`;Windows 先按 UserChoice 主键→备用键→`Software\Classes` 默认值读“记录”,再用 PowerShell 调 shell 的 `AssocQueryString` 拿“**实际生效者**”,两者不一致时以实际为准并标注记录已失效) |
@@ -1153,7 +1153,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
   ⚠️ 给主进程加新的 `tabs.*` / `wc.*` 调用时**必须同步补假实现**,否则测试会红得莫名其妙。
 - `tests/mcpServer.test.ts`(861 行)用 `InMemoryTransport` + 真实 `McpServer`/`Client` 握手,
   覆盖 instructions 下发、工具面与 schema、`waitUntil` 语义、失败一律 `isError`、内部页面边界、插件工具错误传播。
-- **当前基线(2026-10-27 复测)**:`bun run test` → **81 个文件 / 1396 个用例全绿**,约 6s。
+- **当前基线(2026-10-29 复测)**:`bun run test` → **81 个文件 / 1402 个用例全绿**,约 6s。
   (2026-10-27:整体删除「笔记」插件 —— 5 个测试文件 / 186 例随之删除,另 `internalPages` 少 2 例。)
   (2026-10-05:图谱布局换成 `force-graph`,删 `logseqGraphLayout.test.ts`(−10 例)、新增 `logseqGraphForce.test.ts`(+9 例:节点/边映射、`title` 字段、跨刷新复用同一批节点对象、标签可见性与盒子几何)。
   更早一次 +1 文件 / +18 例:`logseqGraphLayout.test.ts` 10 例钉布局的确定性 / 收敛 / 规模保护,`logseqGraph.test.ts` +6 例钉 `graphOf` / `localGraph`,`logseqPlugin.test.ts` +2 例钉 `graph` IPC 与新 MCP 工具 `browser_logseq_graph`。)
@@ -1176,7 +1176,7 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `mcpHttpService.test.ts` | 184 | 7 | `mcpHttp.test.ts` | 214 | 11 |
 | `url.test.ts` | 105 | 11 | `history.test.ts` | 218 | 23 |
 | `singleInstance.test.ts` | 70 | 6 | `shortcuts.test.ts` | 315 | 43 |
-| `pluginUiSlots.test.ts` | 58 | 6 | `bookmarkTree.test.ts` | 198 | 14 |
+| `pluginUiSlots.test.ts` | 58 | 6 | `bookmarkTree.test.ts` | 333 | 27 |
 | `internalPages.test.ts` | 97 | 13 | `pluginBoundaries.test.ts` | 47 | 3 |
 
 其余:`ua`(5)、`pluginMatch`(13)、`settingsNav`(4)、`shortcutCatalog`(6)、`modalStack`(3)、`bundleScan`(6)、

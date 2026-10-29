@@ -705,7 +705,9 @@ npm run test:mcp:http
 
 ## 数据存储
 
-- 书签(「书签」插件):`<userData>/bookmarks.json`;「设置页 → 书签」可把整棵树导出成 JSON / 从 JSON **整树替换**导入
+- 书签(「书签」插件):`<userData>/bookmarks.json`;「设置页 → 书签」可把整棵树导出成 JSON / 从 JSON **整树替换**导入。
+  收藏面板(工具栏的书签按钮)里可以**拖动磁贴排序**(顺序就是 `bookmarks.json` 的数组顺序)、
+  **拖到目录磁贴上移入**该目录、在目录视图里**拖到「返回」条移出到根**;拖过之后浏览器补的那次点击会被吞掉,不会顺带打开书签。搜索框有内容时不允许拖(滤后的下标映射不回全集)
 - 浏览历史(「浏览历史」插件,默认保留最近 500 条,可在「设置页 → 浏览历史」调整,按 URL 去重):`<userData>/history.json`;保留条数配置:`<userData>/history-settings.json`
 - CORS 放行配置(「CORS 放行」插件,首次启动从 `settings.json` 迁移):`<userData>/cors.json`
 - 设备检查(「设备检查」插件):`<userData>/device-inspect.json` —— 只存 adb 命令、前端来源策略与**端口转发记录**(转发登记在 adb server 里,bow 被强杀后靠这份记录在下次启动时回收)

@@ -86,8 +86,18 @@ export function removeNode(tree: BookmarkTree, id: string): { tree: BookmarkTree
   return { tree: next, removed: false }
 }
 
-/** targetFolderId: null 表示移动到根 */
-export function moveNode(tree: BookmarkTree, id: string, targetFolderId: string | null): BookmarkTree | null {
+/**
+ * 把节点移到 `targetFolderId`(null = 根)的第 `index` 位。
+ *
+ * `index` = **从源列表移出之后**的最终下标;越界夹取、非整数当作「追加到末尾」(= 旧行为)。
+ * 源与目标是同一个数组且位置没变 ⇒ **返回原引用**(调用方据此跳过写盘与广播)。
+ */
+export function moveNode(
+  tree: BookmarkTree,
+  id: string,
+  targetFolderId: string | null,
+  index?: number
+): BookmarkTree | null {
   const next = cloneTree(tree)
   const source = findIn(next, id)
   if (!source || !source.parent) return null
@@ -102,10 +112,17 @@ export function moveNode(tree: BookmarkTree, id: string, targetFolderId: string 
     if (source.node.type === 'folder' && isDescendant(source.node, targetFolderId)) return null
   }
 
-  const idx = source.parent.findIndex((n) => n.id === id)
-  const [moved] = source.parent.splice(idx, 1)
-  if (targetFolder) targetFolder.children.push(moved)
-  else next.push(moved)
+  const src = source.parent
+  const from = src.findIndex((n) => n.id === id)
+  const [moved] = src.splice(from, 1)
+  const dest = targetFolder ? targetFolder.children : next
+  const at = Number.isInteger(index) ? Math.max(0, Math.min(dest.length, index as number)) : dest.length
+  if (dest === src && at === from) {
+    // 同列表、落点即原位:放回去并返回原引用,不制造一次无意义的写盘
+    src.splice(from, 0, moved)
+    return tree
+  }
+  dest.splice(at, 0, moved)
   return next
 }
 
