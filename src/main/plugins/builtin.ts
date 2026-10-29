@@ -12,7 +12,7 @@ import downloads from '@plugins/downloads/main'
 import passwords from '@plugins/passwords/main'
 import pomo from '@plugins/pomo/main'
 import editor from '@plugins/editor/main'
-import ok from '@plugins/ok/main'
+import services from '@plugins/services/main'
 
 export const BUILTIN_PLUGINS: PluginMain[] = [
   history,
@@ -33,6 +33,6 @@ export const BUILTIN_PLUGINS: PluginMain[] = [
   // 同上(只贡献 UI + 一个「认领本地文件」的注册:它把启动参数里的 file:// 目标换成终端里的 nvim,
   // 不参与网络钩子与建议源顺序;需要终端插件在场才能真的跑起来)
   editor,
-  // 同上(只贡献 UI + 一个后台服务:用 Electron 自带的 Node 跑内置的 OpenKnowledge)
-  ok
+  // 同上(只贡献 UI:用户自己配的 dev server —— 命令 + 图标 + 前端地址,进程归插件自己管)
+  services
 ]

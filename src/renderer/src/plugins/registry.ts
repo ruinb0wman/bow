@@ -16,7 +16,7 @@ import downloadsUi from '@plugins/downloads/ui'
 import passwordsUi from '@plugins/passwords/ui'
 import pomoUi from '@plugins/pomo/ui'
 import editorUi from '@plugins/editor/ui'
-import okUi from '@plugins/ok/ui'
+import servicesUi from '@plugins/services/ui'
 
 export const PLUGIN_UI: PluginUiContribution[] = [
   bookmarksUi,
@@ -30,7 +30,7 @@ export const PLUGIN_UI: PluginUiContribution[] = [
   passwordsUi,
   pomoUi,
   editorUi,
-  okUi
+  servicesUi
 ]
 
 /**
@@ -47,7 +47,7 @@ export const SLOT_PLUGIN_ORDER: Record<PluginSlot, readonly string[]> = {
     'editor',
     'passwords',
     'pomo',
-    'ok'
+    'services'
   ]
 }
 
