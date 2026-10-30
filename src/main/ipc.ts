@@ -7,6 +7,7 @@ import type { OverlayContent, OverlayEvent, Settings, TabInfo } from '@shared/ty
 import { nextLayoutName, nextLayoutPresetId, normalizeLayoutPresets, paneCount, shapeOf } from '@shared/split'
 import type { LayoutPreset, PaneDir } from '@shared/split'
 import type { PluginKernel } from './plugins/kernel'
+import type { FloatRequest, FloatState } from './floatWindow'
 import type { WindowContext, WindowManager } from './windows'
 import { getLayoutsStore, getSettingsStore } from './stores'
 import { CLOSE_CONFIRM_OVERLAY_ID, confirmWindowClose } from './closeConfirm'
@@ -304,6 +305,13 @@ export function registerIpc(windows: WindowManager, kernel: PluginKernel): void 
   })
   ipcMain.handle('window:close', (e) => ctxOf(e)?.window.close())
 
+  // 浮动窗口:工具栏「本地服务」的小窗,内容是服务自己的页面(见 main/floatWindow.ts)。
+  // 只有设置里配了浮窗的服务才会调到这里;开关状态的权威在主进程,点完按返回值刷新图标。
+  const NO_FLOAT: FloatState = { open: false, url: null }
+  ipcMain.handle('float:state', (e) => ctxOf(e)?.float.state ?? NO_FLOAT)
+  ipcMain.handle('float:toggle', (e, req: FloatRequest) => ctxOf(e)?.float.toggle(req) ?? NO_FLOAT)
+  ipcMain.handle('float:hide', (e) => ctxOf(e)?.float.hide() ?? NO_FLOAT)
+
   // chrome 高度(渲染层实测)→ 页面视图布局 + overlay 条带定位
   ipcMain.handle('ui:chrome-height', (e, height: number) => {
     const ctx = ctxOf(e)
@@ -311,6 +319,7 @@ export function registerIpc(windows: WindowManager, kernel: PluginKernel): void 
     log('chrome 高度上报', height)
     ctx.tabs.setChromeHeight(Math.max(0, Math.round(height)))
     ctx.overlay.layout()
+    ctx.float.layout()
     return true
   })
 

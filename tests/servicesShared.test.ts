@@ -39,6 +39,22 @@ describe('服务设置归一', () => {
     )
   })
 
+  it('浮窗:没配就不写这个键;配了原样保留;写脏了回落默认', () => {
+    expect('float' in normalizeSettings({ services: [make()] }).services[0]).toBe(false)
+    expect(
+      normalizeSettings({ services: [make({ float: { placement: 'left', width: 640, height: 480 } })] }).services[0]
+        .float
+    ).toEqual({ placement: 'left', width: 640, height: 480 })
+    // 配了但值不可用 = 用户要浮窗,回落默认而不是当成没配
+    expect(normalizeSettings({ services: [make({ float: { placement: 'nope' } })] }).services[0].float).toEqual({
+      placement: 'center',
+      width: 800,
+      height: 600
+    })
+    // 关掉开关的写法:键还在但值是 undefined → 等价于没配
+    expect('float' in normalizeSettings({ services: [make({ float: undefined })] }).services[0]).toBe(false)
+  })
+
   it('非 http(s) 的地址归一成空:行还在,起来时由 start() 报原因', () => {
     const settings = normalizeSettings({ services: [make({ url: 'ftp://x' }), make({ url: 'http://a' })] })
     expect(settings.services).toHaveLength(2)

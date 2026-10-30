@@ -15,6 +15,7 @@ import type { PluginInfo } from '../shared/plugins'
 import type { ProxyDecision, ProxyMode } from '../shared/proxy'
 import type { TabGroupInfo } from '../shared/types'
 import type { LayoutPreset, PaneDir } from '../shared/split'
+import type { FloatRequest, FloatState } from '../shared/floatWindow'
 
 export interface PluginHostEvent {
   id: string
@@ -50,6 +51,16 @@ export interface BrowserAPI {
   maximize: () => Promise<void>
   closeWindow: () => Promise<void>
   reportChromeHeight: (height: number) => Promise<boolean>
+  /**
+   * 浮动窗口(工具栏「本地服务」的小窗):只给设置里配了浮窗的服务用。
+   * 开关状态的权威在主进程:点击用 `toggle` 的返回值,并订阅 `onState` 跟上 Esc 关闭 / 崩溃重建。
+   */
+  float: {
+    state: () => Promise<FloatState>
+    toggle: (req: FloatRequest) => Promise<FloatState>
+    hide: () => Promise<FloatState>
+    onState: (cb: (state: FloatState) => void) => () => void
+  }
   // 标签组(标签栏一项 = 一个组;组里是嵌套分屏树)
   getGroups: () => Promise<TabGroupInfo[]>
   groupsActivate: (groupId: number) => Promise<TabGroupInfo[]>
@@ -144,6 +155,12 @@ const api: BrowserAPI = {
   maximize: () => ipcRenderer.invoke('window:maximize'),
   closeWindow: () => ipcRenderer.invoke('window:close'),
   reportChromeHeight: (height) => ipcRenderer.invoke('ui:chrome-height', height),
+  float: {
+    state: () => ipcRenderer.invoke('float:state'),
+    toggle: (req) => ipcRenderer.invoke('float:toggle', req),
+    hide: () => ipcRenderer.invoke('float:hide'),
+    onState: (cb) => subscribe('float:state', cb)
+  },
   getGroups: () => ipcRenderer.invoke('groups:get'),
   groupsActivate: (groupId) => ipcRenderer.invoke('groups:activate', groupId),
   splitPane: (dir) => ipcRenderer.invoke('groups:split', dir),

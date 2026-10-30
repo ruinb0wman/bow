@@ -3,11 +3,12 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { TabManager } from './tabManager'
 import { OverlayManager } from './overlay'
+import { FloatWindowManager } from './floatWindow'
 import { installCloseConfirm } from './closeConfirm'
 import { AgentNotify } from './agentNotify'
 import { activateAgentTab } from './agentActivate'
 import { createSystemNotifier } from './systemNotify'
-import { registerIpc, wireWindowIpc } from './ipc'
+import { registerIpc, sendToChrome, wireWindowIpc } from './ipc'
 import { initStores, getSettingsStore } from './stores'
 import { setupDevTools } from './devtools'
 import { setupTabShortcuts } from './tabShortcuts'
@@ -149,12 +150,13 @@ function openLaunchTarget(tabs: TabManager, target: string, mode: LocalFileMode)
   tabs.create(target)
 }
 
-/** 建一个窗口 + 它的 TabManager / OverlayManager,登记进注册表并接线 */
+/** 建一个窗口 + 它的 TabManager / OverlayManager / FloatWindowManager,登记进注册表并接线 */
 function createWindowContext(targets: string[], role: WindowRole = 'user', mode: LocalFileMode = 'open'): WindowContext {
   const win = createWindow(role)
   const tabs = new TabManager(win, windows!.ids)
   const overlay = new OverlayManager(win, tabs)
-  const ctx = windows!.register(win, tabs, overlay, role)
+  const float = new FloatWindowManager(win, tabs)
+  const ctx = windows!.register(win, tabs, overlay, float, role)
   wireWindowContext(ctx, targets, mode)
   log('创建窗口', ctx.id, role, targets.length > 0 ? `目标 ${targets.length} 个` : '(主页)')
   return ctx
@@ -165,7 +167,10 @@ function createWindowContext(targets: string[], role: WindowRole = 'user', mode:
  * 之外的每一条约束都只有一处实现。
  */
 function wireWindowContext(ctx: WindowContext, targets: string[], mode: LocalFileMode = 'open'): void {
-  const { window: win, tabs, overlay } = ctx
+  const { window: win, tabs, overlay, float } = ctx
+
+  // 浮窗的开/关状态回灌 chrome:工具栏要据此点亮图标(Esc 关闭与崩溃重建都不经点击路径)
+  float.onStateChange((state) => sendToChrome(ctx, 'float:state', state))
 
   // agent 窗口的轻标识:标题固定带后缀。chrome 页面的 document.title(index.html 的 <title>Bow</title>)
   // 会同步到窗口标题,不拦掉的话 setTitle 会被覆盖 —— 所以只对 agent 窗口 preventDefault。

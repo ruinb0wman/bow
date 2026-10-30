@@ -18,6 +18,7 @@ import type { WebContents } from 'electron'
 import type { TabInfo } from '@shared/types'
 import type { TabIdAllocator, TabManager, TabRecord } from './tabManager'
 import type { OverlayManager } from './overlay'
+import type { FloatWindowManager } from './floatWindow'
 
 /**
  * 窗口角色。
@@ -37,6 +38,8 @@ export interface WindowContext {
   window: BrowserWindow
   tabs: TabManager
   overlay: OverlayManager
+  /** 工具栏「本地服务」的浮动窗口(每窗口一个,见 main/floatWindow.ts) */
+  float: FloatWindowManager
 }
 
 /** tabId → 所属窗口 + 该标签记录 */
@@ -120,9 +123,10 @@ export class WindowManager implements WindowRegistry {
     window: BrowserWindow,
     tabs: TabManager,
     overlay: OverlayManager,
+    float: FloatWindowManager,
     role: WindowRole = 'user'
   ): WindowContext {
-    const ctx: WindowContext = { id: this.nextWindowId++, role, window, tabs, overlay }
+    const ctx: WindowContext = { id: this.nextWindowId++, role, window, tabs, overlay, float }
     this.contexts.push(ctx)
     this.lastFocusedId = ctx.id
     window.on('focus', () => {
@@ -144,6 +148,7 @@ export class WindowManager implements WindowRegistry {
       if (ctx.window.isDestroyed()) continue
       if (ctx.window.webContents === wc) return ctx
       if (ctx.overlay.hasWebContents(wc)) return ctx
+      if (ctx.float.hasWebContents(wc)) return ctx
       if (ctx.tabs.findTabIdByWebContents(wc) != null) return ctx
     }
     return null

@@ -23,7 +23,8 @@ export function fakeWindows(tabs: FakeTabs, opts: FakeWindowsOptions = {}): Wind
     role,
     window: { isDestroyed: () => false, focus: () => {} } as never,
     tabs: tabs as never,
-    overlay: {} as never
+    overlay: {} as never,
+    float: {} as never
   }
   let activeId = id
   return {

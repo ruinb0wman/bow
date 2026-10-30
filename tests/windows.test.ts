@@ -37,7 +37,7 @@ function makeCtx(
   const overlay = {
     hasWebContents: (wc: unknown) => overlayWc != null && wc === overlayWc
   }
-  const ctx = manager.register(win as never, tabs as never, overlay as never, role)
+  const ctx = manager.register(win as never, tabs as never, overlay as never, { hasWebContents: () => false } as never, role)
   return { ctx, win }
 }
 
@@ -134,7 +134,7 @@ describe('WindowManager:窗口角色与 MCP 专属窗口', () => {
     const tabs = new FakeTabs()
     const m = new WindowManager({
       createWindow: (_targets, role) =>
-        m.register(new FakeWin() as never, tabs as never, { hasWebContents: () => false } as never, role)
+        m.register(new FakeWin() as never, tabs as never, { hasWebContents: () => false } as never, { hasWebContents: () => false } as never, role)
     })
     makeCtx(m, new FakeTabs()) // 用户窗口 id=1
     const ctx = m.createAgentWindow(['https://x.example/'])

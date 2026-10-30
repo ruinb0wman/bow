@@ -5,6 +5,8 @@
  * 探活就能判定「该起 / 该开」,所以不需要任何端口解析。别把 ok 的嗅探逻辑往这搬。
  */
 
+import { normalizeFloatPrefs, type FloatPrefs } from '@shared/floatWindow'
+
 export interface ServiceConfig {
   /** 内部标识:IPC 参数、状态表的 key、工具栏的 `:key`。用户不可见,归一化时保证唯一 */
   id: string
@@ -22,6 +24,11 @@ export interface ServiceConfig {
   check: string
   /** bow 启动就拉起来。默认 false —— 别把一堆 dev server 一起拎起来 */
   autoStart: boolean
+  /**
+   * 配了才用浮窗打开(位置 + 尺寸);**没这个字段 = 点图标照旧开标签**。
+   * 缺席与「脏值」的差别由 `normalizeFloatPrefs` 决定(见那个函数的注释)。
+   */
+  float?: FloatPrefs
 }
 
 export interface ServicesSettings {
@@ -108,6 +115,8 @@ export function normalizeSettings(raw: unknown): ServicesSettings {
     usedIds.add(id)
 
     const icon = asString(entry.icon)
+    // 没配浮窗时**不写这个键**:落盘 JSON 里也就不会出现,老配置与新装的完全等价
+    const float = normalizeFloatPrefs(entry.float)
     services.push({
       id,
       name: asString(entry.name) || url.replace(/^https?:\/\//i, ''),
@@ -115,7 +124,8 @@ export function normalizeSettings(raw: unknown): ServicesSettings {
       command,
       url,
       check: asString(entry.check),
-      autoStart: entry.autoStart === true
+      autoStart: entry.autoStart === true,
+      ...(float ? { float } : {})
     })
     if (services.length >= MAX_SERVICES) break
   }

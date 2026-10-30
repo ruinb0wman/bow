@@ -45,6 +45,9 @@ src/
     proxy.ts                     代理的唯一落点:resolveProxy(设置 > 环境变量 > 系统) → session.setProxy,
                                   网页与 net.fetch 同吃这一份;testProxy() 供设置页「测试连接」
     overlay.ts                   OverlayManager:常驻透明顶层视图,按 placement 布局
+    floatWindow.ts               FloatWindowManager:工具栏「本地服务」的浮窗(每窗口一个 WebContentsView,
+                                 内容是服务自己的页面)。**为什么不用 overlay 装 iframe**:overlay 是全窗视图、
+                                 没有点击穿透,而且 X-Frame-Options / CSP 拦下时是静默白屏(见文件头)
     agentNotify.ts               AgentNotify:代理(终端里的 pi)状态信号 → 标签角标 + 系统通知的**时机**
                                  (角标定时器 / `blocked` 通知的撤回;不 import electron,可单测)
     systemNotify.ts              系统通知的 Electron 薄壳(`Notification` + click 接线 + 失败不上抛;
@@ -100,7 +103,8 @@ src/
     services/                           本地服务插件(dev server 启动器):`main.ts` 按 id 管 N 条子进程
                                           (命令作为单个 argv 交给用户的登录 shell、探活、只停自己起的进程),
                                           `shared.ts` 是设置归一 / check 判定 / 标签页归属的纯逻辑,
-                                          `ui/icons.ts` 是图标名 → lucide 的静态映射(别改成 `import *`)
+                                          `ui/icons.ts` 是图标名 → lucide 的静态映射(别改成 `import *`);
+                                          `float` 字段配了才走浮窗(位置/尺寸),没配 = 点图标照旧开标签
   preload/index.ts              contextBridge 暴露 window.browserAPI
   renderer/
     index.html + src/App.vue            chrome UI:标签栏/工具栏/地址栏/插件插槽
@@ -121,6 +125,7 @@ src/
     url.ts          地址栏输入解析 + 搜索引擎表 + DEFAULT_SETTINGS
     groups.ts       标签组记账(标签栏一项 = 一个组:分屏/摘窗格/塌缩/焦点/拆组;纯函数)
     split.ts        嵌套分屏树(LayoutNode)+ 几何(computeLayout)+ 布局形状/预设归一化
+    floatWindow.ts  浮窗几何(center/left/right/top/bottom + 宽高夹取)+ 设置归一(`null` = 不用浮窗)
     localFile.ts    本地路径形态判定(isFileUrl / looksLikeLocalPath / expandHome / windowsPathToWsl)
     internalPages.ts bow:// 内部页面标识与 parse(settings 单例 / terminal 可多开 + `openIn:'pane'` 顶替聚焦窗格,见 singleton / openIn 两轴)
     settingsNav.ts  设置页侧栏导航模型

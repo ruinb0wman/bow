@@ -17,6 +17,7 @@ import {
   type ServicesState,
   type ServiceStatus
 } from '../shared'
+import { DEFAULT_FLOAT, FLOAT_PLACEMENTS } from '@shared/floatWindow'
 import { SERVICE_ICON_NAMES, serviceIcon } from './icons'
 
 const api = window.browserAPI
@@ -100,6 +101,15 @@ async function move(index: number, delta: number): Promise<void> {
   await save()
 }
 
+/**
+ * 「用浮窗打开」开关:打开时写入默认 center/800x600(之后可改),关掉时**删掉**这个字段 ——
+ * 没有 `float` = 点图标照旧开标签(与从没配过的老服务完全等价)。
+ */
+async function toggleFloat(service: ServiceConfig, on: boolean): Promise<void> {
+  service.float = on ? { ...DEFAULT_FLOAT } : undefined
+  await save()
+}
+
 /** 启动并打开:与工具栏点击同一个语义(设置页里点完就能看到效果) */
 async function start(service: ServiceConfig): Promise<void> {
   busy.value = true
@@ -165,8 +175,9 @@ onBeforeUnmount(() => {
     <p class="hint">
       一行一条:命令经你的登录 shell 执行(`bun` / `ok` 装在 `~/.bun/bin`,GUI 的 PATH 里没有),
       所以可以写 <code>cd ~/Workspace/exp1 && bun dev</code>;Windows 上命令跑在 WSL 里。
-      工具栏每条服务一个图标:没起就起、起了就打开它的前端地址。bow 退出时会停掉它自己起的进程,
-      你在终端里手动起的它不碰。
+      工具栏每条服务一个图标:没起就起、起了就打开它的前端地址;Ctrl+点击强制开标签,
+      右键复制地址。勾了「用浮窗打开」的服务改走窗口内的浮窗(默认居中 800×600,再点一次关掉,
+      浮窗里按 Esc 也能关)。bow 退出时会停掉它自己起的进程,你在终端里手动起的它不碰。
     </p>
 
     <p v-if="message" class="hint warn">{{ message }}</p>
@@ -236,6 +247,41 @@ onBeforeUnmount(() => {
         <input v-model="service.autoStart" type="checkbox" @change="save" />
         bow 启动就把这条拉起来
       </label>
+      <div class="svc-row float-row">
+        <label class="check no-top">
+          <input
+            type="checkbox"
+            :checked="service.float !== undefined"
+            @change="toggleFloat(service, ($event.target as HTMLInputElement).checked)"
+          />
+          用浮窗打开(不勾 = 照旧开标签)
+        </label>
+        <template v-if="service.float">
+          <select v-model="service.float.placement" class="icon-select" title="浮窗位置" @change="save">
+            <option v-for="placement in FLOAT_PLACEMENTS" :key="placement" :value="placement">
+              {{ placement }}
+            </option>
+          </select>
+          <input
+            v-model.number="service.float.width"
+            class="icon-select num"
+            type="number"
+            min="320"
+            step="20"
+            title="浮窗宽(px)"
+            @change="save"
+          />
+          <input
+            v-model.number="service.float.height"
+            class="icon-select num"
+            type="number"
+            min="200"
+            step="20"
+            title="浮窗高(px)"
+            @change="save"
+          />
+        </template>
+      </div>
       <p v-if="statusOf(service.id)?.error" class="hint warn">{{ statusOf(service.id)?.error }}</p>
       <pre v-if="openLogs.includes(service.id)" class="log">{{ logs[service.id] || '(还没有输出)' }}</pre>
     </div>
@@ -337,6 +383,19 @@ onBeforeUnmount(() => {
 .grow {
   flex: 1;
   min-width: 0;
+}
+
+.float-row {
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.no-top {
+  margin-top: 0;
+}
+
+.num {
+  width: 72px;
 }
 
 .check {
