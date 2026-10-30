@@ -89,8 +89,7 @@ src/
     main.ts                     主进程侧:manifest + capabilities + activate(ctx)
     ui.ts                       渲染层侧:slots / overlays / settingsSections
     ui/*.vue                    该插件的 UI 组件(终端插件的 `ui/TerminalView.vue` 例外:它是 bow://terminal
-                                页面的主体,由 renderer/src/terminal 直接挂载,不经渲染层注册表;
-                                终端插件的 `ui/HerdButton.vue`+`HerdPanel.vue` 是常规的工具栏按钮 + full 浮层)
+                                页面的主体,由 renderer/src/terminal 直接挂载,不经渲染层注册表)
     shared.ts | picker.ts | scripts.ts   同构纯逻辑或注入脚本字符串(便于单测)
     adb.ts | targets.ts | cdp.ts          设备检查插件的 I/O 层(spawn / 转发池 / CDP 客户端:含事件订阅与 Input.* 操作;新文件名须登记到 tsconfig.node.json 的 include)
     scripts.ts                            设备检查插件的注入脚本(点定位 / 聚焦全选;纯字符串)
@@ -111,8 +110,6 @@ src/
     overlay.html + src/overlay/         Overlay 宿主(注册表组件渲染)
     settings.html + src/settings/       设置页(bow://settings 内部标签页)
     terminal.html + src/terminal/       终端页(bow://terminal 内部标签页;xterm 视图在终端插件的 ui/ 里)
-    remote/                             手机远程页(独立 vite 构建 → `out/remote/`,由终端插件的 remote 服务静态提供;
-                                        不经 preload、不依赖渲染层 IPC。页内只有登录 + 会话列表 + 对话)
     src/plugins/registry.ts             PLUGIN_UI 注册表 + SLOT_PLUGIN_ORDER(渲染层唯一登记点)
     src/plugins/slots.ts                collectSlot 纯函数(插槽合并顺序,可单测)
     src/components/                     SuggestPanel(地址栏下拉)/ SplitMenu(分屏面板)/ CloseConfirmModal(关闭窗口确认)/ ModalShell(弹层壳,ESC/焦点/层号走库的 useOverlayLayer)
@@ -150,8 +147,8 @@ docs/             本文件 + opencode-session-header.md
 ### 样式与组件库
 
 - 颜色与尺度**唯一真源**是 `@ruinb0w/ui`(`~/Workspace/ui`,node_modules 里是 `link:../ui` 软链,
-  消费的是它的 `dist/`)。各入口 html 上写死 `data-theme="bow-dark"` + `data-density="compact"`
-  (远程页是 `touch`),切主题/密度就改这两个属性,不要在项目里发明新的色值或档位。
+  消费的是它的 `dist/`)。各入口 html 上写死 `data-theme="bow-dark"` + `data-density="compact"`,
+  切主题/密度就改这两个属性,不要在项目里发明新的色值或档位。
 - `src/renderer/src/style.css` 顶部的 `:root` 只是**旧变量名 → 库语义变量**的别名
   (`--bg → --bg-page`、`--bg3 → --bg-elevated` …),存量 scoped 样式继续用旧名字。
 - 按钮/输入/弹层壳等基础件用库组件(`RButton` / `ModalShell` 内的 `useOverlayLayer` …),
@@ -424,7 +421,7 @@ interface PluginUiContribution {
 | `content.inject` | `(spec) => void` | 移除规则并 `removeInsertedCSS` 所有已注入 key |
 | `content.refresh` | `(tabId?) => void` | 只重跑 CSS(不重跑 JS),用于规则变更后的即时反馈 |
 | `pages.activeTabId/focus/execute` | `execute(tabId, code, {timeoutMs=10000})` | 不回收(内核持有) |
-| `pages.activate` | `(tabId) => boolean` | 不回收(内核持有)。「把某个标签带到眼前」:切标签 + 页面视图焦点 + 窗口提前台,与**点系统通知**同一条实现(`main/agentActivate.ts`)。与 `focus` 的区别是它真会切过去 —— `focus` 只把键盘焦点交给那个 webContents,后台标签 / 别的分屏窗格 / 最小化的窗口都不生效。返回 false = 标签不存在。调用方:终端插件的 `focusSession`(牧群面板的「点一行」) |
+| `pages.activate` | `(tabId) => boolean` | 不回收(内核持有)。「把某个标签带到眼前」:切标签 + 页面视图焦点 + 窗口提前台,与**点系统通知**同一条实现(`main/agentActivate.ts`)。与 `focus` 的区别是它真会切过去 —— `focus` 只把键盘焦点交给那个 webContents,后台标签 / 别的分屏窗格 / 最小化的窗口都不生效。返回 false = 标签不存在。调用方:终端插件点系统通知那条路(`main/agentActivate.ts`) |
 | `pages.openDevToolsTab` | `(frontendUrl, title?, activate?, windowId?) => number` | 不回收(内核持有)。把 CDP 前端接进标签页(设备检查插件用);`windowId` 缺省=聚焦窗口。参数是**已拼好的前端地址**:可能是 `@shared/devtools` 拼的 bow 自带那份,也可能是设备指定的 `https://…`(见 `device-inspect/shared.effectiveStrategy`);标签只允许 `devtools://` 或与入口同源的导航 |
 | `tabs.list/getActive` | `() => TabInfo[] / TabInfo \| null` | 只读;`list` 数据源是 `WindowManager.allTabs()`(**跨窗口**,每条带 `windowId`),`getActive` 是**聚焦窗口**的 `TabManager` |
 | `tabs.openInternal` | `(page: InternalPageId, { windowId? }) => number \| null` | 不回收(内核持有)。**插件唯一的建标签入口**,且只允许内部页(settings/terminal)—— 插件仍不能导航用户的浏览标签、不能开任意 URL。宿主未注入(窗口还没建好)或宿主抛错时**返回 null 而不是抛**。与 `pages.openDevToolsTab` 同一条分工:核心建资源,插件只做决策。唯一调用方是编辑器插件 |
@@ -598,7 +595,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | `mcp-http` | — | `McpStatusBadge` | — | `McpHttpSettings` |
 | `default-browser` | — | — | — | `DefaultBrowserSettings` |
 | `device-inspect` | — | `DeviceInspectButton` | `plugin:device-inspect:panel`(full,`DeviceInspectPanel`) | —(adb 设置放在面板内的折叠区,不占设置页侧栏) |
-| `terminal` | — | `TerminalButton` `HerdButton` | `plugin:terminal:herd`(牧群面板,`full`) | `TerminalSettings` |
+| `terminal` | — | `TerminalButton` | — | `TerminalSettings` |
 | `downloads` | — | `DownloadsButton` | `plugin:downloads:panel`(full,`DownloadsPanel`) | `DownloadsSettings` |
 | `passwords` | — | `PasswordsButton` | `plugin:passwords:panel`(full,`PasswordsPanel`) | `PasswordsSettings` |
 | `pomo` | — | `PomoButton`(显示倒计时) | `plugin:pomo:panel`(below-chrome,`PomoPanel`;锚定在按钮右下方) | `PomoSettings` |
@@ -1131,7 +1128,6 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
 | `e2e-device-inspect.mjs` + `fixtures/fake-phone-{,adb,device}.mjs` | 设备检查插件的假手机 E2E:`fake-phone-adb.mjs` 仿 adb 输出并在 `forward` 时拉起 `fake-phone-device.mjs`(HTTP `/json` + WS CDP,并把收到的每条命令写进 `cdp-log.jsonl`),驱动脚本用 MCP 客户端跑 11 个 `device_*` 工具,并用 bow 自己的 `--remote-debugging-port` 往手机 DevTools 前端 target 发 `Ctrl+Shift+→` 验分屏 |
 | `install-pi-agent-state.mjs` | 写 pi 的状态桥扩展;源是 **pi 插件包**里的 `packages/pi-bow/extensions/bow-agent-state.ts`(单文件、无运行时依赖、jiti 直接跑;它必须**自包含** —— 会被单独复制到 `~/.pi/agent/extensions/`,这条不变式由 `tests/piBridgeExtension.test.ts` 钉住)。整包接入走 `pi install ./packages/pi-bow`(`npm run pi:install-plugin`),那样还顺带拿到 MCP 自动注册(`pi.registerMcpServer`,不写 `mcp.json`)与 `/bow` 命令。未安装时的降级:只有「正在执行」角标(靠 pi 内建的 `terminal.showTerminalProgress`)。**这是安装状态的唯一入口** —— 应用内不写文件,设置页只显示这条命令(打包版里既没有 `scripts/` 也没有 node,替用户写进一个它验证不了的位置只会装错地方)。行为(幂等 / 归属标记 / 卸载只删自己那个)由 `tests/installPiAgentState.test.ts` 跑真脚本钉住 |
 | `e2e-agent-status.mjs` | 代理状态 E2E:不装 MCP、不用真 pi,全程 CDP —— chrome target 开终端页、终端页 `window.__bowTerminal.send` 敲命令、主进程 inspector target 驱动 `__bowNotifyClick` 并读 `BOW_NOTIFY_LOG`、设置页 target 断言 Pi 联动那条安装命令与复制按钮 |
-| `e2e-herd.mjs` | 牧群面板 E2E:真 Electron + 真 pty + 真台账(代理是假的,一条 `printf` 把 OSC 打进 pty)。验 `window.browserAPI.plugins.invoke('terminal', …)` 的六个新方法与面板:按钮计数/高亮 → 浮层里的行与注意力排序 → 点一行走 `pages.activate` 并关面板 → 关会话后列表/计数跟着变。⚠️ 认 chrome target 必须**正面**匹配 `/renderer/index.html`:标签页也是 `type: 'page'`,黑名单式过滤会选中普通网页(那边的 `window.browserAPI` 是 undefined) |
 | `e2e-tab-id-reveal.mjs` | 长按 Shift 的 tabId 徽标 E2E(见上表);几何常量**独立写死**在脚本里(真机断言不该跟 `@shared/tabIdBadge` 共用一份数) |
 | `e2e-terminal-cwd.mjs` | 终端工作目录全链路 E2E(见上表);与 `e2e-tab-id-reveal.mjs` 一样只在 chrome target 上取数,认 target 必须**正面**匹配 `/renderer/index.html`(内部页面也挂 `browserAPI`) |
 | `cors-test-server.mjs` / `cors-probe.html` | CORS 插件的人工验证环境 |

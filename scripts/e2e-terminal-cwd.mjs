@@ -115,7 +115,7 @@ async function cleanup() {
 
 async function main() {
   // chrome target:必须**正面**匹配 `/renderer/index.html` —— 普通标签页也是 `type: 'page'`,
-  // 内部页面(终端页等)也挂 `window.browserAPI`,黑名单式过滤会选错(见 `e2e-herd.mjs` 的注)
+  // 内部页面(终端页等)也挂 `window.browserAPI`,黑名单式过滤会选错
   const chromeTarget = await waitFor(async () => {
     for (const t of await targets()) {
       if (!t.webSocketDebuggerUrl || !String(t.url).includes('/renderer/index.html')) continue

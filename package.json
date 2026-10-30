@@ -53,7 +53,7 @@
   "scripts": {
     "dev": "electron-vite dev",
     "postinstall": "node scripts/ensure-electron.mjs",
-    "build": "electron-vite build && npm run build:remote",
+    "build": "electron-vite build",
     "dist": "node scripts/dist.mjs",
     "start": "electron-vite preview",
     "mcp": "npm run build && node scripts/open-bow.mjs stdio",
@@ -70,13 +70,7 @@
     "test:e2e:agent": "node scripts/e2e-agent-status.mjs",
     "test:e2e:tabid": "node scripts/e2e-tab-id-reveal.mjs",
     "test:e2e:termcwd": "node scripts/e2e-terminal-cwd.mjs",
-    "test:e2e:editor": "node scripts/e2e-editor-open.mjs",
-    "test:e2e:herd": "node scripts/e2e-herd.mjs",
-    "test:e2e:remote": "node scripts/e2e-remote.mjs",
-    "build:remote": "vite build --config vite.remote.config.ts",
-    "test:pi:chat": "node scripts/pi-chat-smoke.mjs",
-    "test:pi:ask": "node scripts/pi-ask-smoke.mjs",
-    "dev:remote": "vite build --config vite.remote.config.ts --watch"
+    "test:e2e:editor": "node scripts/e2e-editor-open.mjs"
   },
   "dependencies": {
     "@lucide/vue": "^1.21.0",
@@ -86,11 +80,9 @@
     "@xterm/xterm": "^6.0.0",
     "node-pty": "^1.1.0",
     "vue": "^3.5.13",
-    "ws": "^8.22.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {
-    "@types/ws": "^8.18.2",
     "@vitejs/plugin-vue": "^6.0.8",
     "electron": "^44.3.0",
     "electron-builder": "^26.15.3",

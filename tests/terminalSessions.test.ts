@@ -6,13 +6,12 @@
  * ① 投影内容:一个刚 attach 的会话该有什么(cwd/pid/尺寸/createdAt,`lastOutputAt` 与 `agent` 初始为 null);
  * ② 节流与去重:输出很密时**不能**每个 chunk 都广播 —— 合并窗口 + 指纹分桶两层都要生效;
  * ③ 代理状态:OSC 信号 → 台账里的结构化 `agent` + 报给内核(角标/通知那条路);
- * ⑤ 面板要用的展示函数:注意力排序(等用户的排最前)、「多久前」、路径缩略。
+ * ⑤ 终端标题要用的路径缩略。
  *
  * 用假时钟(`vi.setSystemTime` 钉死起点)是为了让分桶边界确定 —— 否则「桶内不广播」这条断言会随机翻车。
  */
 
 import { homedir } from 'node:os'
-import { localRequest } from './localHttp'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('electron', async () => ({
@@ -20,7 +19,6 @@ vi.mock('electron', async () => ({
     on: () => {},
     removeListener: () => {},
     getPath: () => '/tmp',
-    // 远程服务会拿它拼静态页目录(out/remote);这个 harness 不验静态页,给个临时路径即可
     getAppPath: () => '/tmp/bow-harness-app',
     getVersion: () => '0.0.0'
   }
@@ -31,12 +29,9 @@ const {
   SESSION_ACTIVITY_BUCKET_MS,
   SESSIONS_THROTTLE_MS,
   TERMINAL_EVENTS,
-  attentionRank,
   defaultSettings,
-  formatAgo,
   sessionSignature,
   shortPath,
-  sortSessionsByAttention,
   withWindowsExeSuffix,
   isWslPath,
   wslWrap
@@ -103,8 +98,6 @@ async function harness(platform = 'win32'): Promise<Harness> {
   const eventSubs = new Map<string, Array<(payload: unknown) => void>>()
   const tools = new Map<string, (args: Record<string, unknown>) => unknown>()
   // 存储按 **文件名** 隔离:真实 JsonStore 就是这么做的(同 filename 复用实例、不同 filename 互不影响)。
-  // 早先这里所有文件名共用一个对象,结果插件写 `terminal-remote.json` 的签名密钥时把设置冲掉了 ——
-  // 表现是「远程服务启动后又被自己关掉」,查了很久。
   const files = new Map<string, unknown>()
   const storage = (opts: { file: string; defaults: unknown }) => {
     if (!files.has(opts.file)) files.set(opts.file, opts.defaults)
@@ -369,84 +362,22 @@ describe('终端会话台账', () => {
   })
 })
 
-// ---------- 会话操作 ----------
+// ---------- 会话操作(MCP 面就是唯一入口,IPC 那几条已随面板移除) ----------
 
-describe('会话操作(本地面板 / 远程 / MCP 共用的那一批)', () => {
-  it('readTail 只给尾部,未知会话给错误而不是空串', async () => {
+describe('会话操作的失败路径', () => {
+  const textOf = (result: unknown) => (result as { content: [{ text: string }] }).content[0].text
+
+  it('terminal_run 的 cwd 不存在 / 不是目录 → 直接拒(不开标签、不发 terminal:run)', async () => {
     const h = await harness()
-    await h.attach(7)
-    h.ptys[0]!.onDataCb?.('abcdefghij')
-
-    expect(await h.invoke<{ ok: boolean; text?: string }>('readTail', 7, 4)).toEqual({ ok: true, text: 'ghij' })
-    expect(await h.invoke<{ ok: boolean; text?: string }>('readTail', 7, 99)).toEqual({ ok: true, text: 'abcdefghij' })
-    expect(await h.invoke<{ ok: boolean; error?: string }>('readTail', 999)).toMatchObject({ ok: false })
-  })
-
-  it('sendText 真的写进 pty;未知会话返回 false', async () => {
-    const h = await harness()
-    await h.attach(7)
-    expect(await h.invoke<boolean>('sendText', 7, 'echo hi\r')).toBe(true)
-    expect(h.ptys[0]!.written).toEqual(['echo hi\r'])
-    expect(await h.invoke<boolean>('sendText', 999, 'x')).toBe(false)
-    expect(await h.invoke<boolean>('sendText', 7, 42)).toBe(false)
-  })
-
-  it('focusSession 走内核 activate(后台标签/其它窗格也能跳过去),不是 focus', async () => {
-    const h = await harness()
-    await h.attach(7)
-    expect(await h.invoke<boolean>('focusSession', 7)).toBe(true)
-    expect(h.activated).toEqual([7])
-    expect(await h.invoke<boolean>('focusSession', 999)).toBe(false)
-    expect(h.activated).toEqual([7])
-  })
-
-  it('closeSession 杀掉进程并把它移出台账', async () => {
-    const h = await harness()
-    await h.attach(7)
-    settle()
-    const before = h.emitted(TERMINAL_EVENTS.sessionsChanged).length
-    expect(await h.invoke<boolean>('closeSession', 7)).toBe(true)
-    expect(h.ptys[0]!.killed).toBe(true)
-    expect(await h.invoke<SessionInfo[]>('listSessions')).toEqual([])
-    settle()
-    expect(h.emitted(TERMINAL_EVENTS.sessionsChanged)).toHaveLength(before + 1)
-    expect(h.emitted(TERMINAL_EVENTS.sessionsChanged).at(-1)).toEqual([])
-    expect(await h.invoke<boolean>('closeSession', 7)).toBe(false)
-  })
-
-  it('createSession 不带命令:只开一个终端标签,不发 terminal:run', async () => {
-    const h = await harness()
-    expect(await h.invoke('createSession', {})).toEqual({ ok: true, tabId: 101 })
-    expect(h.opened).toEqual(['terminal'])
-    expect(h.runRequests).toEqual([])
-    // 不带命令时 cwd 被忽略(v1 不扩展 TerminalRunRequest,见 createSession 的注释)
-    expect(await h.invoke('createSession', { cwd: '/tmp/p' })).toEqual({ ok: true, tabId: 101 })
-    expect(h.runRequests).toEqual([])
-  })
-
-  it('createSession 带命令:发 terminal:run,并带上 cwd / name', async () => {
-    const h = await harness()
-    // cwd 会先校验(不存在就不开标签),所以这里用真目录
-    await h.invoke('createSession', { command: 'pi', args: ['--print'], cwd: '/tmp', name: 'pi(print)' })
-    expect(h.runRequests).toEqual([{ tabId: 101, file: 'pi', args: ['--print'], cwd: '/tmp', name: 'pi(print)' }])
-  })
-
-  it('createSession 的 cwd 不存在 / 不是目录 → 直接拒(不开标签、不发 terminal:run)', async () => {
-    const h = await harness()
-    const missing = await h.invoke<{ ok: boolean; error?: string }>('createSession', {
-      command: 'pi',
-      cwd: '/definitely/not/here'
-    })
-    expect(missing.ok).toBe(false)
-    expect(String(missing.error)).toContain('目录不存在')
+    const missing = textOf(await h.tools.get('terminal_run')!({ command: 'pi', cwd: '/definitely/not/here' }))
+    expect(missing).toContain('目录不存在')
     expect(h.opened).toEqual([])
     expect(h.runRequests).toEqual([])
   })
 
-  it('createSession 的非法 args 被拒,且不产生 terminal:run', async () => {
+  it('terminal_run 的非法 args 被 schema 拒,且不产生 terminal:run', async () => {
     const h = await harness()
-    expect(await h.invoke<{ ok: boolean }>('createSession', { command: 'pi', args: [1] })).toMatchObject({ ok: false })
-    expect(await h.invoke<{ ok: boolean }>('createSession', { command: 'pi', args: 'x' })).toMatchObject({ ok: false })
+    expect(textOf(await h.tools.get('terminal_run')!({ command: 'pi', args: [1] }))).toContain('args')
     expect(h.runRequests).toEqual([])
   })
 
@@ -461,6 +392,7 @@ describe('会话操作(本地面板 / 远程 / MCP 共用的那一批)', () => {
     expect(h.emitted(TERMINAL_EVENTS.sessionsChanged)).toHaveLength(before)
   })
 })
+
 
 // ---------- MCP 工具 ----------
 
@@ -597,139 +529,11 @@ describe('withWindowsExeSuffix', () => {
   })
 })
 
-// ---------- 远程服务启停(插件接线)----------
 
-describe('远程服务跟着设置启停', () => {
-  /** 先占一个端口再放掉:拿到一个「现在大概没人用」的号(端口 0 会被设置规范化夹掉) */
-  async function freePort(): Promise<number> {
-    const { createServer } = await import('node:net')
-    const srv = createServer()
-    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()))
-    const port = (srv.address() as { port: number }).port
-    await new Promise<void>((r) => srv.close(() => r()))
-    return port
-  }
+// ---------- 终端标题要用的展示函数 ----------
 
-  it('默认不启动;开了能连,/healthz 通;关了端口就释放', async () => {
-    vi.useRealTimers()
-    const h = await harness()
-    expect(await h.invoke<{ running: boolean }>('remoteStatus')).toMatchObject({ running: false })
-
-    const port = await freePort()
-    await h.invoke('setSettings', {
-      remote: { enabled: true, bind: 'loopback', port, password: 'test-password-123' }
-    })
-    const on = await h.invoke<{ running: boolean; url: string | null; port: number }>('applyRemote')
-    expect(on).toMatchObject({ running: true, port })
-    const health = await localRequest(`${on.url}/healthz`)
-    expect(health.status).toBe(200)
-
-    await h.invoke('setSettings', { remote: { enabled: false } })
-    const off = await h.invoke<{ running: boolean; enabled: boolean }>('applyRemote')
-    expect(off).toMatchObject({ running: false, enabled: false })
-    // 端口真的放了:再绑一次不报错
-    const { startRemoteServer } = await import('../src/plugins/terminal/remote/server')
-    const again = await startRemoteServer({ port, bind: 'loopback', hub: undefined as never, listAddresses: () => [] })
-    await again.close()
-  })
-
-  it('端口被占时只落到 status.error,不抛(插件照常工作)', async () => {
-    vi.useRealTimers()
-    const { createServer } = await import('node:net')
-    const blocker = createServer()
-    const port = await new Promise<number>((r) =>
-      blocker.listen(0, '127.0.0.1', () => r((blocker.address() as { port: number }).port))
-    )
-    try {
-      const h = await harness()
-      await h.invoke('setSettings', {
-        remote: { enabled: true, bind: 'loopback', port, password: 'test-password-123' }
-      })
-      const status = await h.invoke<{ running: boolean; error: string | null }>('applyRemote')
-      expect(status.running).toBe(false)
-      expect(String(status.error)).toContain('EADDRINUSE')
-      // 插件本体不受影响:台账面照旧
-      expect(await h.invoke('listSessions')).toEqual([])
-    } finally {
-      await new Promise<void>((r) => blocker.close(() => r()))
-    }
-  })
-
-  it('没设口令(或太短)时拒绝启动,并把原因说出来', async () => {
-    vi.useRealTimers()
-    const h = await harness()
-    await h.invoke('setSettings', { remote: { enabled: true, bind: 'loopback', port: 8799, password: '123' } })
-    const status = await h.invoke<{ running: boolean; error: string | null }>('applyRemote')
-    expect(status.running).toBe(false)
-    expect(String(status.error)).toContain('口令至少')
-  })
-
-  it('停用插件会把监听一起关掉', async () => {
-    vi.useRealTimers()
-    const h = await harness()
-    const port = await freePort()
-    await h.invoke('setSettings', {
-      remote: { enabled: true, bind: 'loopback', port, password: 'test-password-123' }
-    })
-    expect((await h.invoke<{ running: boolean }>('applyRemote')).running).toBe(true)
-
-    await h.plugin.deactivate?.(h.ctx)
-    const { startRemoteServer } = await import('../src/plugins/terminal/remote/server')
-    const again = await startRemoteServer({ port, bind: 'loopback', hub: undefined as never, listAddresses: () => [] })
-    await again.close()
-  })
-})
-
-// ---------- 面板要用的展示函数 ----------
-
-describe('面板展示(排序 / 时间 / 路径)', () => {
-  const info = (over: Partial<SessionInfo> & { id: number }): SessionInfo => ({
-    title: `t${over.id}`,
-    profileId: 'bash',
-    cwd: '/tmp',
-    pid: 1,
-    cols: 80,
-    rows: 24,
-    createdAt: T0,
-    lastOutputAt: null,
-    agent: null,
-    ...over
-  })
-
-  it('排序:等用户的 → 在跑的 → 刚跑完的 → 空着的 → 没代理的', () => {
-    const blocked = info({ id: 5, agent: { state: 'blocked', at: T0 } })
-    const working = info({ id: 4, agent: { state: 'working', at: T0 } })
-    const done = info({ id: 3, agent: { state: 'idle', done: true, at: T0 } })
-    const idle = info({ id: 2, agent: { state: 'idle', at: T0 } })
-    const plain = info({ id: 1 })
-    expect([plain, idle, done, working, blocked].map(attentionRank)).toEqual([4, 3, 2, 1, 0])
-    expect(sortSessionsByAttention([plain, idle, done, working, blocked]).map((s) => s.id)).toEqual([5, 4, 3, 2, 1])
-  })
-
-  it('同级按「最后活跃」新→旧;完全一样时按 id,保证排序稳定', () => {
-    const older = info({ id: 9, lastOutputAt: T0 })
-    const newer = info({ id: 8, lastOutputAt: T0 + 60_000 })
-    expect(sortSessionsByAttention([older, newer]).map((s) => s.id)).toEqual([8, 9])
-    expect(sortSessionsByAttention([info({ id: 21 }), info({ id: 20 })]).map((s) => s.id)).toEqual([20, 21])
-    // 代理状态的时刻优先于 pty 输出(代理在跑但输出安静时不该假陈旧)
-    const agentOlder = info({ id: 1, lastOutputAt: T0 + 999_999, agent: { state: 'working', at: T0 } })
-    const agentNewer = info({ id: 2, lastOutputAt: T0, agent: { state: 'working', at: T0 + 1000 } })
-    expect(sortSessionsByAttention([agentOlder, agentNewer]).map((s) => s.id)).toEqual([2, 1])
-  })
-
-  it('formatAgo:只到「天」粒度,负值与极短一律「刚刚」', () => {
-    expect(formatAgo(-5000)).toBe('刚刚')
-    expect(formatAgo(0)).toBe('刚刚')
-    expect(formatAgo(4999)).toBe('刚刚')
-    expect(formatAgo(5000)).toBe('5 秒前')
-    expect(formatAgo(59_999)).toBe('59 秒前')
-    expect(formatAgo(60_000)).toBe('1 分钟前')
-    expect(formatAgo(3_599_999)).toBe('59 分钟前')
-    expect(formatAgo(3_600_000)).toBe('1 小时前')
-    expect(formatAgo(86_400_000 * 3 + 5)).toBe('3 天前')
-  })
-
-  it('shortPath:够短就不动,太长只留尾部且至少留一段;反斜杠路径不被改成正斜杠', () => {
+describe('shortPath(标题里的路径缩略)', () => {
+  it('够短就不动,太长只留尾部且至少留一段;反斜杠路径不被改成正斜杠', () => {
     expect(shortPath('/home/u/p')).toBe('/home/u/p')
     expect(shortPath('  ')).toBe('')
     expect(shortPath('/home/u/very/deep/nested/project-abc', 20)).toBe('…/nested/project-abc')

@@ -1,13 +1,12 @@
 # pi-bow
 
-在 [pi](https://pi.dev) 里接入本地 [bow](../../) 浏览器的插件包。装一次拿到四件事:
+在 [pi](https://pi.dev) 里接入本地 [bow](../../) 浏览器的插件包。装一次拿到这几件事:
 
 | 能力 | 扩展 | 依赖 |
 | --- | --- | --- |
 | 终端里的 pi 把「正在执行 / 等待确认 / 已完成」写成 OSC,bow 的终端标签显示角标、弹系统通知 | `extensions/bow-agent-state.ts` | 只在 bow 的终端里工作(`BOW_TERMINAL=1` 门禁) |
 | bow 的 MCP 服务器注册进 pi(不用改 `mcp.json`、不用重启) | `extensions/bow-mcp.ts` | bow 正在跑(HTTP 端点可达) |
 | `/bow` 命令:看注册状态、临时开/关、重连 | `extensions/bow-command.ts` | — |
-| 手机对话页发 `/bow-new` 新建会话、`/bow-reload` 重载扩展/技能/模板(pi 的内置同名命令不通过 prompt 执行,所以另建一条) | `extensions/bow-agent-state.ts` | 只在 bow 的对话页里有意义(`BOW_TERMINAL=1` 门禁) |
 | 能力索引 skill(工具的选型表与反模式) | `skills/bow-browser/SKILL.md` | — |
 
 ## 安装

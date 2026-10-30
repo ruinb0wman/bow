@@ -82,7 +82,7 @@ export interface AgentSignal {
   text?: string
   /**
    * 代理自己的目录(`process.cwd()`)。**不是** pty 的启动目录:wsl.exe 那个壳的 cwd 是
-   * `C:\Users\…`,而 pi 实际在 `/home/…` —— 手机要显示后者。
+   * `C:\Users\…`,而 pi 实际在 `/home/…` —— 台账要的是后者。
    */
   cwd?: string
 }
@@ -218,7 +218,7 @@ function readOsc(input: string, start: number): { body: string; end: number } | 
  * - **OSC 9;9** `C:\dir` —— Windows Terminal 用的形态。
  *
  * 为什么在**主进程**剥而不是只让渲染层的 xterm 解析:目录是会话台账的字段
- * (`SessionInfo.cwd`,Herd 面板 / MCP / 手机远程页都读它)。只在渲染层解析的话,
+ * (`SessionInfo.cwd`,MCP 工具与终端标题都读它)。只在渲染层解析的话,
  * 那些消费者永远显示过期目录(默认 shell 的台账 cwd 就是 spawn 时的目录)。
  * 序列本身对终端是隐形的,吃掉它不会影响任何可显示内容。
  */

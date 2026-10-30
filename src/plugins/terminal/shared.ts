@@ -33,55 +33,12 @@ export interface TerminalSettings {
   scrollback: number
   /** 至少一条 */
   profiles: TerminalProfile[]
-  /** 远程控制服务(S5 起;默认关闭、只绑回环) */
-  remote: TerminalRemoteSettings
   /**
    * 是否把 5 个 `terminal_*` 工具暴露给 AI(MCP),默认开。
    * 插件已是不可停用的核心插件(`manifest.alwaysOn`),所以这是「不想让 AI 敲键盘」的出口:
    * 关掉后终端照用,AI 调这些工具一律回错误。
    */
   mcpTools: boolean
-}
-
-/**
- * 远程服务的对外状态(设置页 / `remote-changed` 的负载)。
- * 只含「怎么连」与「是否在跑」——**绝不含口令或 cookie**。
- */
-export interface TerminalRemoteStatus {
-  enabled: boolean
-  bind: 'loopback' | 'lan'
-  port: number
-  running: boolean
-  /** 本机访问地址;没在跑时为 null */
-  url: string | null
-  /** 局域网访问地址(仅 lan 模式非空) */
-  lanUrls: string[]
-  /** 最近一次启动失败的原因 */
-  error: string | null
-}
-
-/**
- * 「异地访问(Tailscale)」自检结果(设置页 → 终端 → 远程)。由主进程 spawn CLI 得到,
- * **只走本地 IPC** —— 不进 `/healthz`、不进远程页:那里是给还没登录的人看的。
- */
-export interface TerminalTailscaleStatus {
-  /** 找到 tailscale 二进制了吗 */
-  found: boolean
-  /** 实际用的那个二进制(路径或裸名字) */
-  bin: string | null
-  state: 'running' | 'needs-login' | 'stopped' | 'missing' | 'unknown'
-  /** MagicDNS 名字(`albedo.tail36b860.ts.net`),没登录时为 null */
-  host: string | null
-  /** tailnet IPv4(100.64/10) */
-  ip4: string | null
-  /** tailnet 里其它设备数 */
-  peers: number
-  /** 其中手机(android / ios)几台 —— 判断「手机到底在不在网里」 */
-  phones: number
-  /** 已把 **本端口** 代理出去的那条 serve 地址;没配或配到别的端口时为 null */
-  serve: { url: string; port: number } | null
-  error: string | null
-  checkedAt: number
 }
 
 /** 发给终端页的渲染参数(设置页改动后经 `settings-changed` 广播的就是这个形状) */
@@ -91,48 +48,6 @@ export interface TerminalRenderSettings {
   scrollback: number
 }
 
-/**
- * 远程控制服务(局域网)的设置。
- *
- * `bind` 默认 `loopback`:局域网模式是**显式开关** —— 绑 0.0.0.0 等于把一台机器的交互式 shell
- * 摆给同网段所有人试口令(鉴权在 remote/auth.ts,但“默认不开”仍然是第一条防线)。
- */
-export interface TerminalRemoteSettings {
-  enabled: boolean
-  /** `loopback` = 只本机;`lan` = 监听 0.0.0.0(同网段设备可连) */
-  bind: 'loopback' | 'lan'
-  port: number
-  /**
-   * 访问口令(明文存在 `terminal.json`)。
-   * 为什么不明文:① 你需要把它拄到手机上,设置页得能显示它;② 能读这个文件的人已经能读你的
-   * 整个用户目录(也就拿到了这台机器的 shell),存哈希并不提高安全边界——与 `mcp-http` 的
-   * `token` 同姿态。空串 = 不允许启动(**不允许无口令开远程**)。
-   */
-  password: string
-}
-
-export const REMOTE_DEFAULT_PORT = 8770
-/** 低于 1024 需要特权(Windows 上又会被 Hyper-V 保留段抢),不提供 */
-export const REMOTE_PORT_RANGE = { min: 1024, max: 65535 } as const
-/** 口令最短长度:这是打到局域网的唯一口子,太短等于没设 */
-export const REMOTE_MIN_PASSWORD = 8
-
-export function defaultRemoteSettings(): TerminalRemoteSettings {
-  return { enabled: false, bind: 'loopback', port: REMOTE_DEFAULT_PORT, password: '' }
-}
-
-/** 磁盘上可能没有这个字段(老设置文件),坏值一律回落到 fallback */
-export function normalizeRemote(input: unknown, fallback: TerminalRemoteSettings): TerminalRemoteSettings {
-  const raw = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
-  const bind = raw.bind === 'lan' ? 'lan' : raw.bind === 'loopback' ? 'loopback' : fallback.bind
-  return {
-    enabled: typeof raw.enabled === 'boolean' ? raw.enabled : fallback.enabled,
-    bind,
-    port: clampInt(raw.port, REMOTE_PORT_RANGE.min, REMOTE_PORT_RANGE.max, fallback.port),
-    // 不做长度夹取:太短的口令应该被**拒绝启用**而不是静默改掉(用户得知道自己设了什么)
-    password: typeof raw.password === 'string' ? raw.password.slice(0, 200) : fallback.password
-  }
-}
 
 export const SETTINGS_VERSION = 1
 export const FONT_SIZE_RANGE = { min: 8, max: 32 } as const
@@ -210,7 +125,6 @@ export function defaultSettings(platform: string, loginShell?: string): Terminal
     fontSize: DEFAULT_FONT_SIZE,
     scrollback: DEFAULT_SCROLLBACK,
     profiles,
-    remote: defaultRemoteSettings(),
     mcpTools: true
   }
 }
@@ -277,7 +191,6 @@ export function normalizeSettings(input: unknown, fallback: TerminalSettings): T
     fontSize: clampInt(raw.fontSize, FONT_SIZE_RANGE.min, FONT_SIZE_RANGE.max, fallback.fontSize),
     scrollback: clampInt(raw.scrollback, SCROLLBACK_RANGE.min, SCROLLBACK_RANGE.max, fallback.scrollback),
     profiles,
-    remote: normalizeRemote(raw.remote, fallback.remote),
     mcpTools: typeof raw.mcpTools === 'boolean' ? raw.mcpTools : fallback.mcpTools
   }
 }
@@ -379,14 +292,10 @@ export function isWslShell(shell: string): boolean {
  * 不带 flag 的条目是「原样共享」(带 `/p` 会做路径翻译;我们的值是 `1`,不需要)。
  * 不是 wsl.exe 的 profile 一律原样返回(同一个对象引用),不引入任何额外变量。
  */
-export function withBowTerminalEnv(
-  env: Record<string, string>,
-  shell: string,
-  extra: Record<string, string> = {}
-): Record<string, string> {
-  const vars: Record<string, string> = { [BOW_TERMINAL_ENV]: env[BOW_TERMINAL_ENV] ?? '1', ...extra }
-  // 没有额外变量时保持原样(与旧行为一致:非 WSL 的 shell 不动环境)
-  if (!isWslShell(shell)) return Object.keys(extra).length === 0 ? env : { ...env, ...vars }
+export function withBowTerminalEnv(env: Record<string, string>, shell: string): Record<string, string> {
+  const vars: Record<string, string> = { [BOW_TERMINAL_ENV]: env[BOW_TERMINAL_ENV] ?? '1' }
+  // 非 WSL 的 shell 不动环境(标记已经在了)
+  if (!isWslShell(shell)) return env
   const entries = (env.WSLENV ?? '')
     .split(':')
     .filter(Boolean)
@@ -434,10 +343,10 @@ export function replayText(buffer: ReplayBuffer): string {
  * 一个会话的对外投影:`listSessions` 的返回值、`sessions-changed` 广播的负载。
  *
  * 为什么不让调用方直接看 `Session`:那是主进程内部结构(pty 句柄、解析器、回放缓冲、合批队列),
- * 而面板 / 远程页 / MCP 工具要的只是「能渲染出来的最小集合」。
+ * 而 MCP 工具与终端页要的只是「能渲染出来的最小集合」。
  *
  * `id` 现在**就是 tabId**(会话与标签 1:1,见 plans/2026-10-16-herder-remote 的 D1);
- * 将来若要解耦成「服务端持有的会话」,改这一处投影即可,三个调用方都不必动。
+ * 将来若要解耦成「服务端持有的会话」,改这一处投影即可,调用方都不必动。
  */
 export interface SessionInfo {
   id: number
@@ -459,7 +368,7 @@ export interface SessionInfo {
   agent: SessionAgentState | null
 }
 
-/** 会话上的代理状态:协议字段 + 收到时刻(面板要展示「多久前」) */
+/** 会话上的代理状态:协议字段 + 收到时刻 */
 export interface SessionAgentState {
   state: AgentState
   done?: boolean
@@ -553,62 +462,15 @@ export interface WslWrap {
  */
 export function wslWrap(command: string, args: readonly string[], cwd: string, platform: string = process.platform): WslWrap | null {
   if (!isWslPath(cwd, platform)) return null
-  // shortcut: 参数按空格拼(不转义),手机只会发 `pi`;要传带空格的参数时改成 shell 引号
+  // shortcut: 参数按空格拼(不转义),目前只会发 `pi`;要传带空格的参数时改成 shell 引号
   const line = [command.trim(), ...args].join(' ').trim()
   if (!line) return null
   return { args: ['--cd', cwd.trim()], type: `${line}\r` }
 }
 
 /**
- * 面板排序用的「注意力等级」:越小越该被先看到。
- * 这是 herder 那个东西的全部意义 —— 「一眼看出谁在等我」,而不是按开场顺序排。
- */
-export function attentionRank(info: SessionInfo): number {
-  switch (info.agent?.state) {
-    case 'blocked':
-      return 0
-    case 'working':
-      return 1
-    case 'idle':
-      return info.agent.done ? 2 : 3
-    default:
-      return 4
-  }
-}
-
-/** 最后活跃时刻(排序与展示共用):代理状态优先,其次 pty 输出,都没有就看创建时间 */
-export function lastActiveAt(info: SessionInfo): number {
-  return info.agent?.at ?? info.lastOutputAt ?? info.createdAt
-}
-
-/** 排序:等用户的 → 在跑的 → 刚跑完的 → 空着的 → 没跑代理的;同级按最后活跃新→旧,再按 id */
-export function sortSessionsByAttention(infos: readonly SessionInfo[]): SessionInfo[] {
-  return [...infos].sort((a, b) => {
-    const rank = attentionRank(a) - attentionRank(b)
-    if (rank !== 0) return rank
-    const byTime = lastActiveAt(b) - lastActiveAt(a)
-    return byTime !== 0 ? byTime : a.id - b.id
-  })
-}
-
-/**
- * 「多久前」文案。负值(时钟回拨、或信号比本地时钟还新)一律说「刚刚」—— 显示 `-3 秒前` 很傻。
- * 粒度只到「天」:面板上没有人关心 37 小时还是 38 小时。
- */
-export function formatAgo(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 5000) return '刚刚'
-  const seconds = Math.floor(ms / 1000)
-  if (seconds < 60) return `${seconds} 秒前`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes} 分钟前`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours} 小时前`
-  return `${Math.floor(hours / 24)} 天前`
-}
-
-/**
  * 路径缩略:只留给尾部足够的信息量(`/home/u/very/long/project` → `…/long/project`)。
- * 面板上把整条 cwd 铺出来会把其它列挤没 —— 完整路径放 `title`。
+ * 终端标题里放不下整条 cwd,缩成「…/尾/两段」;完整路径放 `title`。
  */
 export function shortPath(path: string, max = 32): string {
   const trimmed = path.trim()
@@ -814,9 +676,7 @@ export const TERMINAL_EVENTS = {
   settingsChanged: 'settings-changed',
   sessionClosed: 'session-closed',
   /** 台账变化(负载 = 完整的 SessionInfo[]);见 SessionInfo 与 sessionSignature */
-  sessionsChanged: 'sessions-changed',
-  /** 远程服务的启停/端口/地址变化(负载 = RemoteStatus) */
-  remoteChanged: 'remote-changed'
+  sessionsChanged: 'sessions-changed'
 } as const
 
 export interface TerminalDataMessage {

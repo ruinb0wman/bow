@@ -599,10 +599,6 @@ npm run test:mcp:http
   两条已知边界:① AltGr 布局(德语/法语/波兰语…)里 Chromium 会给 `Ctrl+Alt` 组合置上 AltGraph,
   真组合仍分不出来(维持现状);② macOS 的 `Ctrl+Option+字母` 是另一处原因(`evaluateKeyboardEvent`
   在 mac 上就不产出 key),本次未修。
-- 四五个终端开着时,不用逐个标签去翻:**工具栏的「牧群」按钮**一眼看住全部会话 —— 有代理在等用户时按钮变红底并显示**待办数**
-  (否则是暗色的总数,总数始终在 tooltip 里);点开是一张表,**按注意力排序**(等用户的 → 在跑的 → 刚跑完的 → 空着的 → 没跑代理的),
-  每行给出状态点 / 标题 / 代理在问什么 / 工作目录 / 尺寸与 pid / 最后活跃时间;**点一行 = 跳到那个终端并关面板**,
-  行尾的 × 直接结束那个会话,底部「新终端」开一个。这张表与 AI 的 `terminal_*` 工具、以及后续的远程页读的是**同一份**会话台账。
 - **AI 也能管终端**:`terminal_list_sessions` / `terminal_read` / `terminal_send` / `terminal_run` / `terminal_close`
   由「终端」插件提供(见「MCP 工具一览」)。`terminal_send` 是**无确认的键盘注入**,能敲开任意会话;
   `terminal_close` 会连进程树一起收 —— 终端插件属于**核心插件、不能停用**,要收回这几个工具请去
@@ -610,42 +606,6 @@ npm run test:mcp:http
   **Windows 上两个已知限制**:① 裸命令名会自动补 `.exe`(node-pty 自己不补,`node` 会报 `File not found`);
   ② `.cmd` / `.bat` shim 不能直接跑(npm 全局装的 `pi.cmd` 就是这类),要包一层 `cmd.exe /c`,
   或者直接用 `wsl.exe -e pi`(pi 在 WSL 里时,这才是正路)。
-- **手机上看/回 pi(对话,不是终端)**:设置页 → 终端 → 远程控制(默认关、只绑回环;要在手机上用得先设口令并切 `lan`)。
-  **离家(4G/异地)怎么访问**:见 [`docs/REMOTE-ACCESS.md`](docs/REMOTE-ACCESS.md) —— Tailscale 方案,Windows 侧装一份,`tailscale serve` 一条命令。
-  手机页打开是**会话列表**(与牧群面板同一套注意力排序),点进去是**对话**:用户/pi 气泡、工具调用一行(点开看参数与结果)、
-  `发送` / `插话`(不等这一轮结束)/ `停止`。顶栏只有四项:**返回 · 项目名称 · 状态 · 停止**
-  (状态把三态与排队合成一句:`在跑` / `在跑 · 排队2` / `空闲` / `没通道`)。
-  - 手机读的是 **pi 的消息对象**,不是终端字节 —— 所以 `working` 动画不会重复、宽度改变不会把历史画乱
-    (这两件事都是 TUI 字节流的性质,不是渲染的问题);
-  - 底层是 pi 扩展连过来的控制通道:bow 在 pty 里注入 `BOW_SESSION_ID` / `BOW_REMOTE_URL` / `BOW_CONTROL_TOKEN`
-    (+ `BOW_TERMINAL=1`),扩展用**本会话的令牌**连 WS 的 `role=pi` —— 同机别的进程冒充不了某个会话;
-  - **队列不自己造**:忙的时候发出去的话按 `followUp` 交给 pi 排队(点「插话」则 `steer` 立刻插话),
-    「停止」是 `ctx.abort()`(顺带清空队列);
-  - ⚠️ 本次升级**之前**就开着的终端没有这三个变量 → 手机上会显示「没有控制通道」,重开一下终端即可;
-  - ⚠️ **Windows 的 bow + WSL 里的 pi**:`127.0.0.1` 在发行版里是它自己的回环,所以要 `remote.bind = lan`
-    (扩展会自己从 `/proc/net/route` 取网关再连一次);Windows 原生的 pi 则 loopback 就够;
-  - **pi 的提问手机上也能答**:权限询问 / `ask_user_question` / plan 批准会变成输入框上方的一张卡片
-    (允许·拒绝 / 选项按钮 / 输入框);卡片出现时终端里那个框**同时还在**,谁先答用谁 ——
-    手机先答,终端那个框会被程序化关掉(`opts.signal`),不用再跑回电脑;
-    卡片右上角「×」只是本地收起,答还是得在电脑上;
-  - **输入框右边的 ⌃ 是「信息 + 功能」抽屉**(不占顶栏):信息区是 pi 的各项数字 —— 模型 · provider ·
-    思考等级 / 上下文(tokens · 窗口 · 百分比)/ ↑输入 ↓输出 / 缓存读·写 / 会话 id 与名称 / 通道与排队;
-    **目录单独一行**给完整路径(不缩写、长了换行、可长按复制)。数字与桌面 footer 同一口径(整会话累计、
-    不含缓存读写;`contextTokens` 是估算值),compact 刚做完 pi 自己也不知道 token 数,那时显示 `?/200k`
-    而不是 0%;超过 70% 变黄、90% 变红。数据来自扩展的 `ctx.model` / `ctx.getContextUsage()` /
-    `sessionManager.getEntries()`,旧版扩展不发就说一句「这个 pi 没上报状态」(不影响其它功能);
-  - **手机上也能用 `/` 命令**:抽屉里「功能 → `/ 命令`」弹出补全面板(搜索框自动聚焦),按 `fuzzyScore`
-    模糊匹配(子序列即可,`bw` 能命中 `/bow`);点一条只把 `/name ` **填进输入框**、不发送,参数自己接着写。
-    命令表来自 pi 的 `getCommands()`(扩展命令 / prompt 模板 / 技能),随对话快照下发;
-    **内置命令(`/compact` `/model` `/reload` …)不在里面也不列** —— 它们只能在 TUI 里执行,列出来就是点了没反应。
-    发出去的话走 pi 的 `expandPromptTemplates`,所以扩展命令会**真的执行**;手打不存在的 `/xxx` 会被拦下并回一句提示
-    (否则它会变成一句普通 prompt 喂给模型);命令的反馈(`ctx.ui.notify`)也会以一行提示回到手机;
-  - **自定义组件(`ctx.ui.custom`)在 bow 里改走标准对话框**:那种浮层是任意 TUI 组件,搬不到手机上。
-    `ask_user_question` 自带一条 RPC 回退(它发现 `custom()` 返回 `undefined` 就用 `select`/`input`
-    逐个问),所以 bow 里默认让 `custom()` 返回 `undefined` —— 于是手机能答。
-    代价:终端里不再渲染这种自定义浮层;想保留浮层就在终端环境里设 `BOW_PI_CUSTOM_UI=native`。
-  - 已知边界:历史只回最近 60 条;`hasPendingMessages()` 只有布尔值,所以只显示「有排队」不显条数;
-    自定义组件弹框(`ctx.ui.custom`)不接管,只能在电脑上点。
 - **AI 代理状态联动**:终端里的 **pi** 会把「在跑 / 等你确认 / 跑完了」写成一条自定义 OSC
   (`ESC]1337;bow;{…}BEL`),终端插件在 pty 输出里把它剥掉(不会漏进 xterm),于是:
   - **正在执行** → 那个标签亮一个蓝色呼吸点(标签栏一项 = 一个组,分屏时按 blocked > working > done 取优先级);
@@ -691,15 +651,7 @@ npm run test:mcp:http
      `会话已创建` / `系统通知不可用(平台不支持),丢弃` / `代理状态信号落到不存在的标签,忽略`。
      注意这条命令**本身不会打印任何东西**,是正常的 —— 它写的是零宽控制序列,效果在标签栏。
 - 同时最多 12 个会话(超了会提示);终端页是内部页面标签,MCP 的页面类工具不会拿它做操作目标。
-- **改手机页 / 远程控制时怎么调试(不用每次 `bun dist`)**:
-  打包出来的 `bow.exe` 只在你想双击用时才需要;开发时用两条命令就够 ——
-  ```bash
-  npm run dev            # bow 从源码跑(electron-vite dev),手机页从仓库的 out/remote 提供
-  npm run dev:remote     # 另开一个终端:改手机页的源码自动重建(out/remote)
-  ```
-  手机打开**这个 dev 实例**的局域网地址(设置页 → 终端 → 远程控制里那条),页面刷新即生效。
-  ⚠️ 同一个端口上只能有一个 bow:dev 实例起来前先关掉打包版,否则远程服务会占不到端口
-  (表现是「手机连上了一个"没有 pi"的旧实例」)。改主进程/插件代码时 electron-vite 会自己重启;
+- **改扩展时怎么调试**:改主进程/插件代码 `npm run dev` 会自己重启;
   改**扩展**(`packages/pi-bow/extensions/`)后仍然要把文件复制进 pi 的扩展目录并 `/reload`。
 - node-pty 的预编译二进制只覆盖 Windows / macOS —— 这套终端主要在 Windows 侧的 bow.exe 上用。
 
@@ -1039,17 +991,6 @@ BOW_E2E_BIN=dist/linux-unpacked/bow npm run test:e2e:agent                      
 > ```
 > 然后用 `LD_LIBRARY_PATH=$HOME/.cache/bow-alsa/usr/lib npm run test:e2e:agent`。
 > `test:mcp` / `test:e2e:device` 同理(那个脚本自己认 `SMOKE_LD_LIBRARY_PATH`)。
-
-## 牧群面板 E2E
-
-```bash
-npm run build && npm run test:e2e:herd
-```
-
-真 Electron + 真终端 + 真会话台账(只有「代理」是假的:一条 `printf` 把 OSC 打进 pty),验证工具栏按钮的计数/高亮、
-浮层里的行与**注意力排序**、「点一行跳到那个标签并关面板」、关会话后列表与计数跟着变。
-这些事单元测试看不到:浮层 id 要在渲染层注册表与内核事件路由两处对齐,「跳过去」走的是
-`ctx.pages.activate`(后台标签 / 别的分屏窗格也能切)而不是 `focus`。
 
 ## 无需显示环境的部分
 
