@@ -8,6 +8,7 @@
  */
 import type { Component } from 'vue'
 import {
+  Bitcoin,
   BookOpen,
   Bot,
   Boxes,
@@ -17,6 +18,7 @@ import {
   FlaskConical,
   Globe,
   Grid2x2,
+  Languages,
   LayoutGrid,
   NotebookPen,
   Play,
@@ -30,9 +32,11 @@ export const SERVICE_ICONS: Record<string, Component> = {
   Globe,
   Database,
   Coins,
+  Bitcoin,
   Bot,
   BookOpen,
   NotebookPen,
+  Languages,
   LayoutGrid,
   Grid2x2,
   FlaskConical,
