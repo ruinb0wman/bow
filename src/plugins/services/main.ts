@@ -14,6 +14,7 @@
 
 import { app } from 'electron'
 import { spawn, spawnSync } from 'node:child_process'
+import { userInfo } from 'node:os'
 import type { PluginContext, PluginMain, PluginStorage } from '../../main/plugins/types'
 import {
   DEFAULT_SETTINGS,
@@ -53,25 +54,44 @@ interface ChildLike {
 const VIA_WSL = process.platform === 'win32'
 
 /**
- * WSL 里 bun / ok 的 PATH 只写在**交互式** rc(`~/.zshrc`)里:实测 `wsl.exe -e /bin/sh -lc`
- * 拿不到 `~/.bun/bin`,得用用户的登录 shell 加 `-lic`。探测一次就缓存(约 200ms)。
+ * WSL 里 bun / ok / pnpm 的 PATH 只写在**交互式** rc(`~/.zshrc`)里:`/bin/sh -lc` 读不到,
+ * 得用用户的登录 shell 加 `-lic`。
+ *
+ * 哪个是登录 shell 一律从 `/etc/passwd` 读,**别问 `$SHELL`**:`/bin/sh -lc` 起来时它还没设
+ * (在 rc 里设),WSL 冷启动时探测还会超时,拿到空就回落 bash —— 而 bash 的登录 rc 不读
+ * `~/.zshrc`,表现是 `ok: command not found`、`bun dev` 里 exit 127(bow 从 Windows 快捷方式
+ * 启动时踩过)。
+ *
+ * 只有探到合法 shell 才缓存:探失败就下次重试,别把坏值钉死一整个进程生命周期。
  */
 let cachedWslShell: string | null = null
 function wslShell(): string {
   if (cachedWslShell !== null) return cachedWslShell
-  const probe = spawnSync('wsl.exe', ['-e', '/bin/sh', '-lc', 'printf %s "$SHELL"'], {
-    encoding: 'utf8',
-    timeout: 5_000
-  })
-  const shell = (probe.stdout ?? '').trim()
-  cachedWslShell = /^\/[\w./-]+$/.test(shell) ? shell : '/bin/bash'
-  return cachedWslShell
+  const probe = spawnSync(
+    'wsl.exe',
+    ['-e', '/bin/sh', '-c', "awk -F: -v u=$(id -u) '$3==u{print $7}' /etc/passwd"],
+    { encoding: 'utf8', timeout: 15_000 }
+  )
+  // 取最后一行:wsl.exe 偶尔在前头插一行警告
+  const shell = (probe.stdout ?? '').trim().split('\n').pop()?.trim() ?? ''
+  if (/^\/[\w./-]+$/.test(shell)) cachedWslShell = shell
+  return cachedWslShell ?? '/bin/bash'
 }
 
-/** Linux/mac:GUI 进程的 `SHELL` 一般由 pam 设好;没有就按惯例回落到 bash */
+/**
+ * Linux/mac:同样优先 `/etc/passwd` 里的登录 shell —— `SHELL` 由 pam 给,双击/launcher 启动的
+ * GUI 进程可能没有,或不是用户真正在用的那个(回落 bash 就丢了 `~/.zshrc` 的 PATH)。
+ */
 function posixShell(): string {
-  const shell = (process.env.SHELL ?? '').trim()
-  return /^\/[\w./-]+$/.test(shell) ? shell : '/bin/bash'
+  const fromPasswd = (() => {
+    try {
+      return (userInfo().shell ?? '').trim()
+    } catch {
+      return ''
+    }
+  })()
+  const candidates = [fromPasswd, (process.env.SHELL ?? '').trim()]
+  return candidates.find((shell) => /^\/[\w./-]+$/.test(shell)) ?? '/bin/bash'
 }
 
 function delay(ms: number): Promise<void> {
@@ -109,7 +129,7 @@ function lastLine(text: string): string {
     .slice(0, 300)
 }
 
-const NO_COMMAND_RE = /command not found|not found:|不是内部或外部命令/
+const NO_COMMAND_RE = /command not found|: not found|不是内部或外部命令/
 
 interface Runtime {
   child: ChildLike
