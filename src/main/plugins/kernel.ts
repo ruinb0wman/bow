@@ -407,6 +407,16 @@ export class PluginKernel {
     return store as PluginStorage<T>
   }
 
+  /**
+   * 已注册的数据文件名(只读快照)。
+   * 用途:统一备份的**交叉校验** —— 备份清单是静态的(`@shared/backup` 的 `PLUGIN_DATA_FILES`),
+   * 这里能发现「新插件加了 `ctx.storage` 却忘了登记」。⚠️ 别拿它当备份清单:插件被停用就不会
+   * activate,它的文件也就永远不会出现在这个缓存里。
+   */
+  storageFiles(): string[] {
+    return [...this.storageCache.keys()]
+  }
+
   addNetHook(pluginId: string, phase: NetPhase, hook: NetHook): () => void {
     return this.net.add(pluginId, phase, hook)
   }

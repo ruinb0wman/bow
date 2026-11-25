@@ -54,11 +54,11 @@ async function save(): Promise<void> {
   busy.value = true
   message.value = ''
   try {
-    // 必须摊平成普通对象:`rows.value` 是 Vue 的深层 Proxy,V8 序列化直接拒收
-    // ("could not be cloned"),那样整条设置根本到不了主进程,磁盘上一直是空的。
-    const state = await invoke<ServicesState>('setSettings', {
-      services: rows.value.map((service) => ({ ...service }))
-    })
+    // 必须**深**拷贝成普通对象:`rows.value` 是 Vue 的深层 Proxy,V8 序列化对任何一层的
+    // Proxy 都拒收("could not be cloned")。浅拷贝(`{...service}`)挡不住嵌套的 `float` ——
+    // 它被 reactive 重新包了一层,后果是勾了「用浮窗打开」之后整页设置都存不进去。
+    const services = JSON.parse(JSON.stringify(rows.value)) as ServiceConfig[]
+    const state = await invoke<ServicesState>('setSettings', { services })
     rows.value = state.settings.services.map((service) => ({ ...service }))
     statuses.value = state.statuses
   } catch (e) {
@@ -110,7 +110,7 @@ async function toggleFloat(service: ServiceConfig, on: boolean): Promise<void> {
   await save()
 }
 
-/** 启动并打开:与工具栏点击同一个语义(设置页里点完就能看到效果) */
+/** 启动并打开:与工具栏点击同一个语义(配了浮窗就开浮窗,设置页里点完就能看到效果) */
 async function start(service: ServiceConfig): Promise<void> {
   busy.value = true
   message.value = ''
@@ -121,9 +121,14 @@ async function start(service: ServiceConfig): Promise<void> {
       return
     }
     const url = res.url
-    const existing = (await api.listTabs()).find((tab) => serviceUrlMatches(tab.url, url))
-    if (existing) await api.activateTab(existing.id)
-    else await api.createTab(url)
+    if (service.float) {
+      // 与工具栏同一条路径;`{...}` 甩掉 Vue 的 Proxy(见 save() 里那条注释)
+      await api.float.toggle({ url, prefs: { ...service.float } })
+    } else {
+      const existing = (await api.listTabs()).find((tab) => serviceUrlMatches(tab.url, url))
+      if (existing) await api.activateTab(existing.id)
+      else await api.createTab(url)
+    }
     const state = await invoke<ServicesState>('getState')
     statuses.value = state.statuses
   } catch (e) {

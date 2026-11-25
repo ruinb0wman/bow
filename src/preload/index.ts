@@ -16,6 +16,7 @@ import type { ProxyDecision, ProxyMode } from '../shared/proxy'
 import type { TabGroupInfo } from '../shared/types'
 import type { LayoutPreset, PaneDir } from '../shared/split'
 import type { FloatRequest, FloatState } from '../shared/floatWindow'
+import type { BackupExportResult, BackupRestoreResult } from '../shared/backup'
 
 export interface PluginHostEvent {
   id: string
@@ -118,6 +119,15 @@ export interface BrowserAPI {
     info: () => Promise<{ decision: ProxyDecision; env: string; resolved: string }>
     test: () => Promise<{ ok: boolean; detail: string }>
   }
+  /**
+   * 统一备份 / 还原(核心,设置页「备份」分区)。
+   * 两个调用**都在主进程里弹对话框**:导出时让用户指定存放目录,还原时先选包再弹覆盖确认。
+   * 还原成功后主进程会自己重启,所以渲染层拿到 `ok:true` 就只需显示提示。
+   */
+  backup: {
+    export: () => Promise<BackupExportResult>
+    restore: () => Promise<BackupRestoreResult>
+  }
   // 事件订阅(返回取消订阅函数)
   onTabUpdated: (cb: (tab: TabInfo) => void) => () => void
   onTabsChanged: (cb: (tabs: TabInfo[]) => void) => () => void
@@ -188,6 +198,10 @@ const api: BrowserAPI = {
   proxy: {
     info: () => ipcRenderer.invoke('proxy:info'),
     test: () => ipcRenderer.invoke('proxy:test')
+  },
+  backup: {
+    export: () => ipcRenderer.invoke('backup:export'),
+    restore: () => ipcRenderer.invoke('backup:restore')
   },
   onTabUpdated: (cb) => subscribe('tab:updated', cb),
   onTabsChanged: (cb) => subscribe('tab:list-changed', cb),

@@ -13,6 +13,20 @@ import { DEFAULT_SETTINGS } from '@shared/url'
 import type { LayoutPreset } from '@shared/split'
 import { log, logError } from './logger'
 
+/**
+ * 还原期间的落盘闸门(见 `main/backup.ts`)。
+ *
+ * 所有数据文件都经 `JsonStore.save()` 落盘,所以一个模块级标志就够:还原把新内容写进磁盘后、
+ * 进程重启之前,活着的实例仍持有**旧的内存快照**,任何一个事件(tab:navigated 写 history、
+ * 番茄钟状态迁移、下载进度节流)都会把旧内容盖回去 —— 表现就是「还原了但没生效」。
+ */
+let frozen = false
+
+export function freezeStores(value: boolean): void {
+  frozen = value
+  log(value ? '存储已冻结(还原中,不再落盘)' : '存储已解冻')
+}
+
 export class JsonStore<T> {
   private file: string
   private data: T
@@ -60,6 +74,7 @@ export class JsonStore<T> {
   }
 
   private save(): void {
+    if (frozen) return
     try {
       mkdirSync(app.getPath('userData'), { recursive: true })
       const tmp = this.file + '.tmp'

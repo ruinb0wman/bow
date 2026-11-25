@@ -1,5 +1,9 @@
 # 书签 / 密码插件导出功能
 
+> ⚠️ **已作废(2026-11-05)**:本方案的产物(书签 JSON 导出/导入、密码库加密备份导出/导入、`writeToDownloads`、
+> `normalizeImportedTree`、`parseVaultFile`)已随统一备份上线整体删除 —— 见
+> `.pi/plans/2026-11-05-backup-restore/plan.md`。留档只为追历史决策,不要照着它恢复代码。
+
 日期：2026-10-04　模式：plan（只读调查）→ build
 
 ## 1. 目标与假设

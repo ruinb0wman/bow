@@ -10,6 +10,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Component } from 'vue'
 import type { PluginInfo } from '@shared/plugins'
 import {
+  SETTINGS_BACKUP_ID,
   SETTINGS_GENERAL_ID,
   SETTINGS_NETWORK_ID,
   SETTINGS_PLUGINS_ID,
@@ -19,6 +20,7 @@ import {
   settingsSectionId
 } from '@shared/settingsNav'
 import { PLUGIN_UI } from '../plugins/registry'
+import BackupSettings from './BackupSettings.vue'
 import GeneralSettings from './GeneralSettings.vue'
 import NetworkSettings from './NetworkSettings.vue'
 import PluginManager from './PluginManager.vue'
@@ -114,6 +116,7 @@ onBeforeUnmount(() => {
           <template v-else-if="activeId === SETTINGS_NETWORK_ID">网络</template>
           <template v-else-if="activeId === SETTINGS_TOOLBAR_ID">工具栏</template>
           <template v-else-if="activeId === SETTINGS_SHORTCUTS_ID">快捷键</template>
+          <template v-else-if="activeId === SETTINGS_BACKUP_ID">备份</template>
           <template v-else-if="activeId === SETTINGS_PLUGINS_ID">插件管理</template>
           <template v-else>{{ activePluginName }}</template>
         </h1>
@@ -125,6 +128,7 @@ onBeforeUnmount(() => {
         <NetworkSettings v-else-if="activeId === SETTINGS_NETWORK_ID" />
         <ToolbarSettings v-else-if="activeId === SETTINGS_TOOLBAR_ID" />
         <ShortcutsHelp v-else-if="activeId === SETTINGS_SHORTCUTS_ID" />
+        <BackupSettings v-else-if="activeId === SETTINGS_BACKUP_ID" />
         <PluginManager v-else-if="activeId === SETTINGS_PLUGINS_ID" @configure="configurePlugin" />
         <template v-else>
           <component v-for="(C, i) in activeSections" :is="C" :key="`section-${i}`" />

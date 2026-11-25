@@ -1,12 +1,11 @@
 /**
- * 导出工具(书签 / 密码共用)的目录解析与落盘契约。
+ * 「bow 下载目录」的解析契约(统一备份默认存到这里,文件白名单也用它)。
  *
- * 这里钉的是两条容易静默漂移的约定:
- * - 「bow 下载目录」= `downloads-settings.json` 的 downloadDir(空串 → 系统下载目录);
- * - 同名文件不覆盖,落成 ` (1)`(与下载插件同一份 `uniqueFileName`)。
+ * 钉的是一条容易静默漂移的约定:
+ * 「bow 下载目录」= `downloads-settings.json` 的 downloadDir(空串 → 系统下载目录)。
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -21,7 +20,7 @@ vi.mock('electron', () => ({
   }
 }))
 
-const { dateStamp, resolveDownloadsDir, writeToDownloads } = await import('../src/main/plugins/exportFile')
+const { dateStamp, resolveDownloadsDir } = await import('../src/main/plugins/exportFile')
 
 const created: string[] = []
 
@@ -70,37 +69,5 @@ describe('dateStamp', () => {
   it('本地日期补零', () => {
     expect(dateStamp(new Date(2026, 9, 4))).toBe('2026-10-04')
     expect(dateStamp(new Date(2026, 0, 5))).toBe('2026-01-05')
-  })
-})
-
-describe('writeToDownloads', () => {
-  it('写入内容并返回绝对路径', () => {
-    const res = writeToDownloads('a.json', '{"x":1}')
-    expect(res.ok).toBe(true)
-    expect(res.path).toBe(join(downloadsDir, 'a.json'))
-    expect(readFileSync(res.path!, 'utf-8')).toBe('{"x":1}')
-  })
-
-  it('POSIX 上收紧为 0o600(Windows 忽略)', () => {
-    if (process.platform === 'win32') return
-    const res = writeToDownloads('perm.json', '{}')
-    expect(statSync(res.path!).mode & 0o777).toBe(0o600)
-  })
-
-  it('目标目录不存在时自动创建', () => {
-    const missing = join(created[0], 'missing', 'nested')
-    seedSettings({ downloadDir: missing })
-    const res = writeToDownloads('a.json', '{}')
-    expect(res.ok).toBe(true)
-    expect(res.path).toBe(join(missing, 'a.json'))
-    expect(existsSync(res.path!)).toBe(true)
-  })
-
-  it('同名文件不覆盖,落成 (1)', () => {
-    writeToDownloads('a.json', 'first')
-    const second = writeToDownloads('a.json', 'second')
-    expect(second.path).toBe(join(downloadsDir, 'a (1).json'))
-    expect(readFileSync(join(downloadsDir, 'a.json'), 'utf-8')).toBe('first')
-    expect(readFileSync(second.path!, 'utf-8')).toBe('second')
   })
 })

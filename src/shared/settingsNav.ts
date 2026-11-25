@@ -1,6 +1,6 @@
 /**
  * 设置页侧栏导航模型(纯函数,可单测):
- * 固定顺序 = [常规, 网络, 工具栏, 快捷键, 插件管理] + 「已启用且贡献了设置分区」的插件各一项(保持注册顺序)。
+ * 固定顺序 = [常规, 网络, 工具栏, 快捷键, 备份, 插件管理] + 「已启用且贡献了设置分区」的插件各一项(保持注册顺序)。
  * 渲染层负责把 PLUGIN_UI 注册表 + PluginInfo 映射成输入项,本模块只做分组/过滤/排序。
  */
 
@@ -8,6 +8,7 @@ export const SETTINGS_GENERAL_ID = 'general'
 export const SETTINGS_NETWORK_ID = 'network'
 export const SETTINGS_TOOLBAR_ID = 'toolbar'
 export const SETTINGS_SHORTCUTS_ID = 'shortcuts'
+export const SETTINGS_BACKUP_ID = 'backup'
 export const SETTINGS_PLUGINS_ID = 'plugins'
 
 /** 插件设置分区 id 约定:与插件浮层 id 同风格 */
@@ -30,6 +31,7 @@ export type SettingsNavItem =
   | { id: typeof SETTINGS_NETWORK_ID; label: '网络'; kind: 'network' }
   | { id: typeof SETTINGS_TOOLBAR_ID; label: '工具栏'; kind: 'toolbar' }
   | { id: typeof SETTINGS_SHORTCUTS_ID; label: '快捷键'; kind: 'shortcuts' }
+  | { id: typeof SETTINGS_BACKUP_ID; label: '备份'; kind: 'backup' }
   | { id: typeof SETTINGS_PLUGINS_ID; label: '插件管理'; kind: 'manage' }
   | { id: string; label: string; kind: 'plugin'; pluginId: string; core: boolean }
 
@@ -43,6 +45,8 @@ export function buildSettingsNav(items: SettingsNavInput[]): SettingsNavItem[] {
     { id: SETTINGS_TOOLBAR_ID, label: '工具栏', kind: 'toolbar' },
     // 参考型内容,放在常用项旁边最容易找
     { id: SETTINGS_SHORTCUTS_ID, label: '快捷键', kind: 'shortcuts' },
+    // 数据管理:挨着插件管理(两者都是「一整个应用的状态」),但插件管理保持最后
+    { id: SETTINGS_BACKUP_ID, label: '备份', kind: 'backup' },
     { id: SETTINGS_PLUGINS_ID, label: '插件管理', kind: 'manage' }
   ]
   for (const it of items) {

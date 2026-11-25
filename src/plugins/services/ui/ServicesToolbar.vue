@@ -47,7 +47,8 @@ const PHASE_LABELS: Record<string, string> = {
 function titleOf(service: ServiceConfig): string {
   if (copiedId.value === service.id) return `已复制 ${service.url}`
   const status = snapshot.value?.statuses.find((s) => s.id === service.id)
-  const base = messages.value[service.id] ?? service.name
+  // 用 `||`:成功打开后 messages 写的是空串,`??` 会把它当成结果,title 变成空的
+  const base = messages.value[service.id] || service.name
   const phase = PHASE_LABELS[status?.phase ?? 'stopped']
   const hint = service.float ? ' · 点击开浮窗' : ''
   return `${base}${hint} · ${phase}`

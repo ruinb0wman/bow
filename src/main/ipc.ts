@@ -15,6 +15,7 @@ import { applyProxy, currentProxy, envProxy, resolvedProxy, testProxy } from './
 import { focusAddressBar } from './tabShortcuts'
 import { handleFindEvent } from './findBar'
 import { log } from './logger'
+import { exportBackup, restoreBackup } from './backup'
 
 /** 向某个窗口的 chrome 发消息(窗口/它的 webContents 已销毁则忽略) */
 export function sendToChrome(ctx: WindowContext, channel: string, payload?: unknown): void {
@@ -234,6 +235,11 @@ export function registerIpc(windows: WindowManager, kernel: PluginKernel): void 
     if ('proxyMode' in patch || 'proxyServer' in patch) await applyProxy()
     return settings
   })
+
+  // ---------- 统一备份 / 还原(设置页「备份」分区) ----------
+  // 两个通道都在主进程里自己弹对话框 ⇒ 不传路径、不需要多窗口协调(还原是**进程级**操作)。
+  ipcMain.handle('backup:export', () => exportBackup(kernel.storageFiles()))
+  ipcMain.handle('backup:restore', () => restoreBackup())
 
   // ---------- 网络代理(设置页「网络」分区) ----------
   ipcMain.handle('proxy:info', async () => ({

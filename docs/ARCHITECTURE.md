@@ -75,12 +75,12 @@ src/
       mcpHost.ts                 McpHost:缓冲插件工具声明,支持停用时热移除
       mcpHttpHost.ts             McpHttpHost:HTTP 服务的 owner/幂等/串行化
       mcpResult.ts               textContent / errorContent / imageContent(统一 isError 判定)
-      exportFile.ts              导出到 bow 下载目录(目录解析与下载插件同源;书签 / 密码共用)
+      exportFile.ts              「bow 下载目录」解析(统一备份的默认保存位置、文件白名单同源)
       fileRoots.ts               本地文件访问策略(白名单 + realpath + deny 名单);下载插件的 saveDir 过它
                                   (白名单的唯一来源:每次现读 files-settings.json,不缓存不写;写入方已随文件管理插件删除,现只读)
       tabTarget.ts               「tabId 指哪个标签 / 哪个窗口」的唯一实现(MCP 专属窗口 / 拒内部页 / 没标签就建 about:blank);
                                   核心 MCP 工具在用,将来给插件开页面类能力也必须复用这里 —— 两处各写一份必漂移
-      pickJsonFile.ts            弹系统文件选择框并读回 UTF-8 文本(书签 / 密码的导入共用)
+      fileDialogs.ts             弹系统文件选择 / 保存对话框(统一备份在用);pickFile 回 Buffer,不走文本
       fileOpeners.ts             FileOpenerHost:本地文件认领注册表(启动参数里的 file:// 目标先问一圈插件,
                                   认领了就不开浏览器标签)。纯逻辑;编辑器插件是唯一使用者
       registryOps.ts             Windows 注册表原语(reg.exe 参数 / 解析 / AssocQueryString 探测 / exeStem /
@@ -573,14 +573,14 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 | id | core / alwaysOn | capabilities | IPC 方法 | MCP 工具 | net | content | suggest | shortcut | events | 存储 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `history` | ✓ / — | ui, suggest | `list` `count` `remove(ids[])` `clear` `getSettings` `setSettings` | — | — | — | priority 10 | — | on `tab:navigated` `search:performed`;emit `changed` | `history.json` `history-settings.json` |
-| `bookmarks` | ✓ / — | ui, suggest, mcp | `list` `add` `addFolder` `update` `remove` `move(id, folderId, index?)` `findByUrl` `export` `import` | `browser_add_bookmark` `browser_list_bookmarks` | — | — | priority 20 | — | emit `changed` | `bookmarks.json`(`import` = 选一个 JSON → 校验归一 → **整树替换**;`move` 的 `index` = 目标列表里的最终下标,缺省追加末尾,位置没变时不写盘) |
+| `bookmarks` | ✓ / — | ui, suggest, mcp | `list` `add` `addFolder` `update` `remove` `move(id, folderId, index?)` `findByUrl` | `browser_add_bookmark` `browser_list_bookmarks` | — | — | priority 20 | — | emit `changed` | `bookmarks.json`(`move` 的 `index` = 目标列表里的最终下标,缺省追加末尾,位置没变时不写盘;备份/恢复走设置页「备份」的整包) |
 | `cors` | — / — | ui, net | `getSettings` `setSettings` | — | `onBeforeSendHeaders`(记预检 id)+ `onHeadersReceived`(注入 ACAO/ACAM/ACAH,预检覆盖 statusLine) | — | — | — | emit `changed` | `cors.json` |
 | `mcp-http` | ✓ / — | ui, service | `getState` `setSettings` `restart` `toggle` | — | — | — | — | — | on `mcp-http:ready`(经 `service.onMcpHttpReady`)+ `mcpActivity.onChange`;emit `changed` | `mcp-http.json` |
 | `default-browser` | — / — | ui | `status` `register` `unregister` `openSettings` | — | — | — | — | — | — | 无(状态现读系统:Linux 读 `mimeapps.list`;Windows 先按 UserChoice 主键→备用键→`Software\Classes` 默认值读“记录”,再用 PowerShell 调 shell 的 `AssocQueryString` 拿“**实际生效者**”,两者不一致时以实际为准并标注记录已失效) |
 | `device-inspect` | — / — | ui, mcp | `list` `open` `getSettings` `setSettings` `checkAdb` `connect` `pair` `cleanupForwards` `rawAdb` | `device_list_targets` `device_inspect` `device_snapshot` `device_tap` `device_type` `device_press_key` `device_scroll` `device_console` `device_eval` `device_screenshot` `device_connect` | — | — | — | — | — | `device-inspect.json`(adb 命令 / 前端策略 / 端口转发记录) |
 | `terminal` | ✓ / ✓ | ui, mcp | `getSettings` `setSettings` `listCandidates` `attach` `write` `resize` `detach` `listSessions` `readTail` `sendText` `createSession` `focusSession` `closeSession` | `terminal_list_sessions` `terminal_read` `terminal_send` `terminal_run` `terminal_close` | — | — | — | — | on `tab:closed`(按 tabId 回收 shell);emit `data` `exit` `settings-changed` `session-closed` `sessions-changed` | `terminal.json`(字体/字号/滚动缓冲 + shell 配置列表 + `mcpTools`:是否把 5 个 `terminal_*` 工具暴露给 AI,默认开) |
 | `downloads` | — / — | ui, mcp | `list` `pause` `resume` `cancel` `retry` `remove` `clear` `openFile` `showInFolder` `getSettings` `setSettings` `pickDirectory` `revealDir` | `browser_list_downloads` `browser_download` | — | — | — | — | emit `changed` | `downloads.json`(记录)+ `downloads-settings.json`(目录 / 询问 / 保留条数) |
-| `passwords` | — / — | ui, shortcut | `status` `setup` `unlock` `lock` `list` `getEntry` `save` `remove` `copy` `readPageFields` `fillEntry` `beginFill` `changeMaster` `getSettings` `setSettings` `wipe` `exportBackup` `importBackup` | —(刻意不贡献 MCP 工具:与 AI 隔离) | — | —(按需 `pages.execute` 注入探测 / 下拉 / 填入脚本,不注入常驻脚本) | — | `Ctrl/Cmd+Shift+P` | emit `state-changed` `settings-changed` `open-panel` | `passwords.json`(AES-256-GCM 密文)+ `passwords-settings.json`(自动锁定 / 剪贴板 / 子域匹配);`exportBackup` 只写**密文副本**到 bow 下载目录;`importBackup` 校验形状后**整库替换**(已初始化时先把当前库导出一份再覆盖,导入后强制锁定) |
+| `passwords` | — / — | ui, shortcut | `status` `setup` `unlock` `lock` `list` `getEntry` `save` `remove` `copy` `readPageFields` `fillEntry` `beginFill` `changeMaster` `getSettings` `setSettings` `wipe` | —(刻意不贡献 MCP 工具:与 AI 隔离) | — | —(按需 `pages.execute` 注入探测 / 下拉 / 填入脚本,不注入常驻脚本) | — | `Ctrl/Cmd+Shift+P` | emit `state-changed` `settings-changed` `open-panel` | `passwords.json`(AES-256-GCM 密文)+ `passwords-settings.json`(自动锁定 / 剪贴板 / 子域匹配);密文随统一备份整包带走,还原后需用该备份的主密码解锁 |
 | `pomo` | — / — | ui, mcp, shortcut | `getState` `getSettings` `setSettings` `start` `pause` `skip` `reset` `toggle` | `browser_pomo_status` `browser_pomo_start` `browser_pomo_pause` `browser_pomo_skip` | — | — | — | `Ctrl/Cmd+Shift+O` | emit `state` `phase-end` | `pomo.json`(设置 + 运行状态:阶段 / `endsAt` / 本轮计数 / 今日完成数;**只在状态转换时写盘**) |
 | `editor` | — / — | ui | `getSettings` `setSettings` `status` `register` `unregister` `openSystemSettings` `test` `pickFile` | — | — | — | — | — | 认领本地文件(`ctx.fileOpeners`);emit `terminal:run`(让终端插件在指定标签里跑 `wsl.exe -e nvim <file>`) | `editor.json`(命令模板 / 路径写法 / 扩展名白名单 + `lastRegistered`)。Windows 注册:ProgID `bowEditor`(open/edit 都指向 `--edit "%1"`)、`OpenWithProgids`、`SystemFileAssociations\.<ext>\shell\bow-edit`、`Capabilities\FileAssociations`(与 `default-browser` 共用,值名不重叠);**不写** `Classes\.<ext>` 默认值 |
 
@@ -589,7 +589,7 @@ setEnabled(id, enabled) 状态机;持久化 { disabled } → broadcast('plugins:
 
 | id | `addressbar-trailing` | `toolbar` | overlays | settingsSections |
 | --- | --- | --- | --- | --- |
-| `bookmarks` | `StarButton` | `BookmarksButton` | `plugin:bookmarks:panel`(full,`BookmarksModal`) | `BookmarksSettings`(导入 / 导出) |
+| `bookmarks` | `StarButton` | `BookmarksButton` | `plugin:bookmarks:panel`(full,`BookmarksModal`) | —(导入/导出已并入核心「备份」分区) |
 | `history` | — | — | — | `HistorySettings` |
 | `cors` | — | — | — | `CorsSettings` |
 | `mcp-http` | — | `McpStatusBadge` | — | `McpHttpSettings` |
@@ -844,7 +844,7 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | --- | --- | --- |
 | index | `renderer/index.html` → `App.vue`(13KB) | 标签栏 / 工具栏 / 地址栏 / 插件插槽 / chrome 高度上报 |
 | overlay | `renderer/overlay.html` → `OverlayApp.vue` | 按内容 id 从注册表渲染组件,回传 `overlay-event` |
-| settings | `renderer/settings.html` → `SettingsPage.vue` | 左侧导航 + 右侧内容(常规 / 快捷键 / 插件管理 / 插件分区) |
+| settings | `renderer/settings.html` → `SettingsPage.vue` | 左侧导航 + 右侧内容(常规 / 网络 / 工具栏 / 快捷键 / 备份 / 插件管理 / 插件分区) |
 | terminal | `renderer/terminal.html` → `terminal/TerminalApp.vue` | `bow://terminal` 页面:xterm + node-pty 会话接线(视图组件在终端插件的 `ui/TerminalView.vue`) |
 
 `App.vue` 关键机制:
@@ -927,7 +927,8 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 ### 7.3 设置页
 
 - 侧栏模型由 `shared/settingsNav.ts` 的 `buildSettingsNav()` 生成:
-  `[常规, 工具栏, 快捷键, 插件管理]` + 「enabled && hasSections」的插件(保持 `PLUGIN_UI` 顺序)。
+  `[常规, 网络, 工具栏, 快捷键, 备份, 插件管理]` + 「enabled && hasSections」的插件(保持 `PLUGIN_UI` 顺序)。
+  「备份」是**核心**分区(统一备份/还原,见 §8),不是插件;它排在插件管理之前,插件管理恒为最后一个核心项。
 - 分区 id 约定 `plugin:<pluginId>`(`settingsSectionId()`);插件被停用/失去分区时自动回落到「插件管理」。
 - 所有设置**即时保存**,没有保存/取消按钮。
 - **工具栏**分区(`ToolbarSettings.vue`)只调**插件贡献的按钮**:列表 = 当前贡献了 `toolbar` 插槽的插件
@@ -988,6 +989,18 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `passwords-settings.json` | `{autoLockMinutes, clipboardClearSeconds, matchSubdomains}` | `{autoLockMinutes:5, clipboardClearSeconds:30, matchSubdomains:true}`;读写都过 `normalizeSettings()`(只接受设置页下拉里的合法值) | passwords |
 | `pomo.json` | `{settings, state}` | `settings` = `{focusMinutes:25, shortBreakMinutes:5, longBreakMinutes:15, roundsBeforeLongBreak:4, autoStartNext:false, notify:true, sound:true}`;`state` = `{phase, running, endsAt, remainingMs, cycleIndex, completedToday, completedDate}`。读写都过 `normalizeSettings()` / `normalizeState()`(夹紧 + 跨天归零 + `running` 无 `endsAt` 退化);**只在状态转换时写盘**,不逐秒写 | pomo |
 | `browser.log` | 日志(MCP 模式) | — | logger |
+| `backup-before-restore.json.gz` | **还原前自动存的现态快照**(固定文件名,每次覆盖) | — | 核心(`main/backup.ts`) |
+
+**统一备份 / 还原**(设置页「备份」分区):把上表 **18 份**数据(插件 14 + 核心 4:
+`settings.json` / `split-layouts.json` / `plugins.json` / `files-settings.json`)打成一个 gzip 的 JSON 信封
+(`{version, appVersion, createdAt, files}`,**文件原文逐字保存**),保存目录由用户在保存对话框里指定。
+还原 = 整包校验(文件名白名单、每个值能 `JSON.parse`、版本来得及)→ 现态快照 → **冻结落盘**(`freezeStores`,否则
+活着的内存快照会把刚还原的内容盖回去)→ 逐文件 `.tmp`+rename → 自动 `app.relaunch()` + `exit`。
+**不支持热还原**:`JsonStore` 实例持有内存快照,插件还有内存态(终端会话 / 下载 live map / 密码库解锁态)。
+清单是**静态常量**(`@shared/backup` 的 `PLUGIN_DATA_FILES`,由 `tests/backupFiles.test.ts` 扫源码钉住),
+不用内核 `storageCache` —— 插件被停用就不会 activate,它的文件也就不在缓存里;缓存只用于交叉校验并打日志。
+**不含**:cookies / 登录态(Chromium profile)、已下载的文件、`browser.log`。
+还原时会裁掉 `device-inspect.json` 的 `forwards[]`(那是 adb server 里的登记,机器相关)。
 
 ---
 
@@ -1031,6 +1044,8 @@ contextBridge 暴露的唯一桥;`BrowserAPI` 接口是权威清单。
 | `nav:reload` / `nav:stop` | — | `void` |
 | `settings:get` | — | `Settings` |
 | `settings:set` | patch | `Settings` |
+| `backup:export` | — | `{ok, path}` / `{canceled}` / `{error}`(主进程弹保存对话框,`0o600` 写盘) |
+| `backup:restore` | — | `{ok}` / `{canceled}` / `{error}`(成功后 300ms 自动重启;先回响应再退出) |
 | `ui:overlay` | `OverlayContent \| null` | `true` |
 | `ui:overlay-event` | `OverlayEvent` | `true`(`find` 由 `findBar.ts` 处理;`confirm-close` 的 `confirm` 由 `closeConfirm.ts` 处理:置位后放行关闭;取消走通用 `close-request`) |
 | `ui:chrome-height` | height | `true`(同时重排页面视图与 overlay 条带) |
@@ -1159,7 +1174,9 @@ broadcaster 的投递面 = chrome + overlay + 内部页面标签(`tabs.broadcast
   ⚠️ 给主进程加新的 `tabs.*` / `wc.*` 调用时**必须同步补假实现**,否则测试会红得莫名其妙。
 - `tests/mcpServer.test.ts`(861 行)用 `InMemoryTransport` + 真实 `McpServer`/`Client` 握手,
   覆盖 instructions 下发、工具面与 schema、`waitUntil` 语义、失败一律 `isError`、内部页面边界、插件工具错误传播。
-- **当前基线(2026-10-29 复测)**:`bun run test` → **81 个文件 / 1402 个用例全绿**,约 6s。
+- **当前基线(2026-11-05 复测)**:`bun run test` → **79 个文件 / 1310 个用例全绿**,约 4s。
+  (2026-11-05:统一备份/还原 —— 新增 `backup`(14 例)/`backupFiles`(4 例)/`backupRestore`(8 例),
+  `settingsNav` 由 5 个核心项变 6 个。)
   (2026-10-27:整体删除「笔记」插件 —— 5 个测试文件 / 186 例随之删除,另 `internalPages` 少 2 例。)
   (2026-10-05:图谱布局换成 `force-graph`,删 `logseqGraphLayout.test.ts`(−10 例)、新增 `logseqGraphForce.test.ts`(+9 例:节点/边映射、`title` 字段、跨刷新复用同一批节点对象、标签可见性与盒子几何)。
   更早一次 +1 文件 / +18 例:`logseqGraphLayout.test.ts` 10 例钉布局的确定性 / 收敛 / 规模保护,`logseqGraph.test.ts` +6 例钉 `graphOf` / `localGraph`,`logseqPlugin.test.ts` +2 例钉 `graph` IPC 与新 MCP 工具 `browser_logseq_graph`。)
