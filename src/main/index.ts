@@ -52,6 +52,9 @@ function createWindow(role: WindowRole = 'user'): BrowserWindow {
     frame: false,
     show: false,
     backgroundColor: '#1e1f24',
+    // 网页全屏只在窗口内部生效(bow 的 chrome 是同级 view,窗口进全屏会把它一起顶掉)。
+    // 页面照旧以为自己在全屏,窗口侧由 TabManager 降级成最大化,见 enter-html-full-screen。
+    fullscreenable: false,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,

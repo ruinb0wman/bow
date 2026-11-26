@@ -263,6 +263,14 @@ export class TabManager extends EventEmitter {
       this.publish(id)
     })
     this.wireLifecycle(wc, id, info, '标签页')
+    // 网页全屏(视频的 ⛶ / F11 类站点按钮)不让它劫持整块屏幕 —— 窗口是 `fullscreenable: false`,
+    // 所以这里只按需把窗口最大化:标签栏/工具栏留在原位,页面自己仍处于 fullscreen 状态。
+    // 想彻底拒绝的话得 `exitFullscreen()`,但那会把视频缩回小窗,不如让它填满标签区。
+    wc.on('enter-html-full-screen', () => {
+      if (this.window.isDestroyed() || this.window.isMaximized()) return
+      log('网页全屏 → 窗口最大化', id)
+      this.window.maximize()
+    })
     const onNavigate = (): void => {
       this.syncNavigation(id)
       this.publish(id)

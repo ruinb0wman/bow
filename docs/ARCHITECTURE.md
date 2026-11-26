@@ -243,6 +243,12 @@ Electron 的合成顺序:`contentView` 的子视图按加入顺序从底到顶;*
 | Overlay `WebContentsView` | `OverlayManager.ensureView()` | 透明(`#00000000`)、**每窗口**单例、按需创建;`raise()` = 重新 `addChildView` 置顶 |
 | 内部页面标签 | `TabManager.create(internalId)` | 唯一的例外:普通标签视图 + **注入应用 preload** |
 
+网页全屏(`requestFullscreen`)一律**降级成窗口最大化**:窗口建出来就带 `fullscreenable: false`(否则页面会把整块屏幕接管掉,
+chrome 的标签栏/工具栏跟着被顶走),`TabManager.spawn()` 监听 `enter-html-full-screen` → `win.maximize()`。
+页面自己仍处于 fullscreen 状态(视频填满标签区),Esc 退出后窗口保持最大化。
+Electron 没有"拒绝"网页全屏的钩子(`setPermissionRequestHandler` 只管 `automatic-fullscreen`,用户手势触发的不经过它),
+要连页面态一起拒掉就得在事件里注入 `document.exitFullscreen()` —— 代价是视频缩回小窗,所以不做。
+
 布局引擎:
 
 - chrome 的高度由渲染层实测后经 `ui:chrome-height` 上报 → `TabManager.setChromeHeight()` → `layout()`。
